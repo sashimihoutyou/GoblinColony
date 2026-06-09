@@ -468,7 +468,7 @@ function stepReproduction(w: WorldState, rng: Rng, p: WorldParams): void {
     // 損耗バフ (surge) と食料バフ (foodBuff) が求愛成功率を底上げ (§2.5/KI-05)。
     // マクロの breedMult = 1 + surge + foodBuff に対応 (World は重みを 0.5 に割る)。
     const chance =
-      (p.courtBaseChance * (0.5 + compat) + favBonus + (isMated ? 0.3 : 0)) *
+      (p.courtBaseChance * (0.5 + compat) + favBonus + (isMated ? p.matedCourtBonus : 0)) *
       (1 + w.surge * 0.5 + w.foodBuff * 0.5);
     if (rng.nextFloat() < chance) {
       // 成立: 両者を寝床での性行為へ (matingTicks=0, 相手 id をセット)。

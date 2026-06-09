@@ -37,6 +37,7 @@ export interface WorldParams {
   matingDurationTicks: number; // 寝床にこもる tick (完了で雌が確定妊娠)
   courtBaseChance: number; // 雌 1 体が 1 tick に求愛成立する基礎確率 (相性0.5基準)
   favoriteCourtBonus: number; // お気に入り相手への求愛成功補正
+  matedCourtBonus: number; // つがい相手への求愛成功補正 (1 tick 確率に加算)
   favoriteChance: number; // 性行為後、相性×これでお気に入り登録
   bondMaleHpBonus: number; // つがい雄: 最大 HP 増 (生存力)
   bondMaleFearReduce: number; // つがい雄: 恐怖閾値の引き下げ (より粘る)
@@ -154,12 +155,44 @@ const LAG_COMPENSATION = 2.5;
  */
 const MALE_BIRTH_RATIO = 0.7;
 
+/**
+ * 基準の tick 解像度。机上検証・安定帯テスト (parity/world_test) と、
+ * 以下の per-tick 定数 (求愛率・ケンカ率・sm の欲求レート等) はすべて
+ * この解像度で校正されている。別解像度で動かすときは scale = tpd/BASE で
+ * レートを割り・tick 数を掛けて変換し、日単位の力学を不変に保つ (KI-02)。
+ * 可視化 (1 日 = 実時間 60 秒) は ticksPerDay=120 で滑らかに駆動する。
+ */
+export const TICKS_PER_DAY_BASE = 10;
+
+/**
+ * ステートマシン定数を tick 解像度 scale (= ticksPerDay / BASE) へ変換する。
+ * per-tick レートは scale で割り、tick 数で表す猶予は scale を掛ける。
+ * 閾値 (hungerOn 等) は比率なので不変。scale=1 で恒等 (基準解像度のまま)。
+ */
+export function scaleStateMachineParams(
+  base: StateMachineParams,
+  scale: number
+): StateMachineParams {
+  return {
+    ...base,
+    fearClearTicks: Math.max(1, Math.round(base.fearClearTicks * scale)),
+    uniqueDownedGraceTicks: Math.max(1, Math.round(base.uniqueDownedGraceTicks * scale)),
+    hungerRate: base.hungerRate / scale,
+    sleepRate: base.sleepRate / scale,
+    hpRegenPerTick: base.hpRegenPerTick / scale,
+    hungerRelievePerTick: base.hungerRelievePerTick / scale,
+    sleepRelievePerTick: base.sleepRelievePerTick / scale,
+  };
+}
+
 /** baseParams (日次・検証済み) を tick 次に変換して構築。 */
-export function makeWorldParams(ticksPerDay = 10): WorldParams {
+export function makeWorldParams(ticksPerDay = TICKS_PER_DAY_BASE): WorldParams {
   const b = baseParams;
+  // 基準解像度で校正された per-tick 定数の変換係数 (KI-02)。
+  const scale = ticksPerDay / TICKS_PER_DAY_BASE;
   return {
     ticksPerDay,
-    sm: defaultStateMachineParams,
+    sm: scaleStateMachineParams(defaultStateMachineParams, scale),
 
     // cycle.ts: pop += labor * BREED_PER_LABOR (1 日, ラグなしの即時増)。
     // World は妊娠ラグ (pregnancyTicks) + 子の成長ラグ (childGrowTicks) を持つ
@@ -187,20 +220,22 @@ export function makeWorldParams(ticksPerDay = 10): WorldParams {
     litterCdf: [0.3, 0.6, 0.78, 0.9, 0.96, 1.0],
 
     // 求愛・つがい (KI-18)。確定妊娠＋出産直後即可の高回転のため、求愛頻度は
-    // 控えめにして増殖速度を制御する。最終値は実機調整 (§15)。
-    matingDurationTicks: 3, // 寝床に数 tick こもる
-    courtBaseChance: 0.08, // 雌 1 体が 1 tick に求愛成立する基礎確率 (相性0.5基準)
-    favoriteCourtBonus: 0.06, // お気に入り相手なら成功しやすい
-    favoriteChance: 0.5, // 性行為後、相性×0.5 でお気に入り登録
+    // 控えめにして増殖速度を制御する。per-tick 値は基準解像度で校正済みのため
+    // scale で割って日次の期待頻度を保つ。最終値は実機調整 (§15)。
+    matingDurationTicks: Math.max(1, Math.round(3 * scale)), // 寝床に ≒0.3 日こもる
+    courtBaseChance: 0.08 / scale, // 雌 1 体が 1 tick に求愛成立する基礎確率 (相性0.5基準)
+    favoriteCourtBonus: 0.06 / scale, // お気に入り相手なら成功しやすい
+    matedCourtBonus: 0.3 / scale, // つがい相手なら高確率 (固定相手の高回転)
+    favoriteChance: 0.5, // 性行為後、相性×0.5 でお気に入り登録 (1 回ごとの判定で不変)
     bondMaleHpBonus: 3, // つがい雄: 最大 HP +3 (生存力)
     bondMaleFearReduce: 0.1, // つがい雄: 恐怖閾値 -0.1 (より粘る)
     bondFemaleWorkBonus: 0.3, // つがい雌: 仕事/採餌 +0.3 (内政効率)
 
-    // 雄同士のケンカ (KI-19) / 自然つがい化 (KI-21)。
-    rivalryChance: 0.05, // 競合雄ペアが 1 tick にケンカへ発展する確率
+    // 雄同士のケンカ (KI-19) / 自然つがい化 (KI-21)。per-tick 確率は scale で割る。
+    rivalryChance: 0.05 / scale, // 競合雄ペアが 1 tick にケンカへ発展する確率
     rivalryMateBonus: 3, // つがい持ちの雄はケンカで強い (HP 換算 +3)
     rivalryInjury: 3, // 敗者は HP-3 (即死はしない)
-    captiveBondChance: 0.002, // 捕虜が自然つがい化する 1 tick 確率 (ごく稀)
+    captiveBondChance: 0.002 / scale, // 捕虜が自然つがい化する 1 tick 確率 (ごく稀)
 
     surgeTrigger: b.SURGE_TRIGGER,
     surgeGain: b.SURGE_GAIN,
@@ -258,7 +293,7 @@ export function makeWorldParams(ticksPerDay = 10): WorldParams {
     captiveGainPerRaid: b.BIG_RAID_CAPTIVE_GAIN,
     // 投獄中の雄捕虜が加入する確率。即加入だが管理コスト (時間) として
     // 毎 tick 低確率で「気が向けば加わる」。襲撃が近いなら手動で前線投入も可。
-    maleCaptiveJoinChancePerTick: 0.02,
+    maleCaptiveJoinChancePerTick: 0.02 / scale,
     // cycle: faith_per_day = shamans * FAITH_PER_SHAMAN * (RAID_INTERVAL/3)。
     // World は tick 次へ。RAID_INTERVAL/3 = 10 倍率も含めて 1 tick 率にする。
     faithPerTickPerShaman:
