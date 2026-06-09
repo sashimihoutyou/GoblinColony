@@ -60,8 +60,8 @@ static func find_path(map: TileMapData, from: Vector2i, to: Vector2i) -> Array:
 
 static func _heuristic(a: Vector2i, b: Vector2i) -> float:
 	# オクタイル距離 (8 方向)。
-	var dx := abs(a.x - b.x)
-	var dy := abs(a.y - b.y)
+	var dx: int = abs(a.x - b.x)
+	var dy: int = abs(a.y - b.y)
 	return float(dx + dy) + (1.41421356 - 2.0) * float(min(dx, dy))
 
 static func _reconstruct(came_from: Dictionary, current: Vector2i) -> Array:
