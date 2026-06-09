@@ -74,8 +74,14 @@
   .day-readout {
     font-family: var(--font-display);
     font-size: 15px; color: var(--ink-dim);
+    text-align: right;
   }
   .day-readout b { color: var(--ember-bright); font-size: 22px; }
+  .day-progress { width: 160px; height: 3px; background: #00000060; border-radius: 2px;
+    margin-top: 5px; margin-left: auto; overflow: hidden; }
+  .day-progress > div { height: 100%; background: var(--ember); opacity: 0.7; }
+  .raid-eta { font-size: 10px; color: var(--ink-faint); letter-spacing: 0.1em; margin-top: 3px; }
+  .raid-eta.near { color: var(--blood); }
 
   .grid {
     display: grid;
@@ -104,7 +110,7 @@
   /* ── コロニー俯瞰 ── */
   #colony { width: 100%; display: block; border-radius: 2px;
     background: radial-gradient(ellipse at 50% 40%, #161009 0%, #0c0907 100%);
-    border: 1px solid #00000060; }
+    border: 1px solid #00000060; cursor: crosshair; }
 
   /* ── コントロール ── */
   .controls { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; align-items: center; }
@@ -127,9 +133,21 @@
   .ctrl-label { font-size: 10px; color: var(--ink-faint); letter-spacing: 0.15em;
     text-transform: uppercase; margin-right: 4px; }
 
+  /* ── 絆の承認バナー (KI-21 関係性イベントの可否判断 UI) ── */
+  .bond-banner {
+    display: none;
+    align-items: center; gap: 12px; flex-wrap: wrap;
+    background: linear-gradient(90deg, rgba(154,107,176,0.12), transparent);
+    border: 1px solid #9a6bb060; border-radius: 3px;
+    padding: 10px 14px; margin-bottom: 16px;
+    font-size: 12px;
+  }
+  .bond-banner.show { display: flex; }
+  .bond-banner .msg { flex: 1; min-width: 220px; color: var(--ink); }
+  .bond-banner .msg b { color: #c79be0; }
+
   /* ── メーター ── */
   .meters { display: flex; flex-direction: column; gap: 14px; }
-  .meter-row { }
   .meter-head { display: flex; justify-content: space-between; align-items: baseline;
     margin-bottom: 5px; }
   .meter-name { font-size: 11px; color: var(--ink-dim); letter-spacing: 0.08em; }
@@ -150,19 +168,40 @@
   .state-count { width: 30px; text-align: right; font-family: var(--font-display);
     color: var(--ink); }
 
+  /* ── 個体インスペクタ ── */
+  .inspector { font-size: 12px; }
+  .inspector .empty { color: var(--ink-faint); font-size: 11px; letter-spacing: 0.05em; }
+  .insp-name { font-family: var(--font-display); font-size: 18px; color: var(--ember-bright);
+    margin-bottom: 2px; }
+  .insp-sub { font-size: 10px; color: var(--ink-dim); letter-spacing: 0.12em; margin-bottom: 10px; }
+  .insp-rows { display: flex; flex-direction: column; gap: 7px; }
+  .insp-row { display: flex; align-items: center; gap: 8px; }
+  .insp-label { width: 44px; font-size: 10px; color: var(--ink-faint); letter-spacing: 0.1em; }
+  .insp-bar { flex: 1; height: 6px; background: #00000050; border-radius: 3px;
+    overflow: hidden; border: 1px solid var(--rock-line); }
+  .insp-bar > div { height: 100%; border-radius: 3px; transition: width 0.15s ease; }
+  .insp-num { width: 56px; text-align: right; font-size: 10px; color: var(--ink-dim); }
+  .insp-tags { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 5px; }
+  .tag { font-size: 10px; padding: 2px 7px; border-radius: 2px;
+    border: 1px solid var(--rock-line); color: var(--ink-dim); background: #00000030; }
+  .tag.warm { color: #e8a0b8; border-color: #e8a0b850; }
+  .tag.gold { color: var(--ember-bright); border-color: #e8943a50; }
+
   /* ── 推移グラフ ── */
   #chart { width: 100%; display: block; }
 
   /* ── ログ ── */
-  .log { font-size: 11px; color: var(--ink-dim); max-height: 120px; overflow-y: auto;
+  .log { font-size: 11px; color: var(--ink-dim); max-height: 180px; overflow-y: auto;
     line-height: 1.7; }
   .log-entry { border-left: 2px solid var(--rock-line); padding-left: 8px; margin-bottom: 2px; }
   .log-entry.raid { border-color: var(--blood); color: var(--ink); }
   .log-entry.event { border-color: var(--ember); }
+  .log-entry.birth { border-color: var(--moss); }
+  .log-entry.death { border-color: #7a4030; }
+  .log-entry.love { border-color: #e8a0b8; }
   .log .t { color: var(--ink-faint); }
 
   .stat-strip { display: flex; gap: 20px; margin-top: 12px; flex-wrap: wrap; }
-  .stat { }
   .stat-label { font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase;
     color: var(--ink-faint); }
   .stat-value { font-family: var(--font-display); font-size: 20px; color: var(--ink); }
@@ -176,7 +215,11 @@
 <div class="wrap">
   <header>
     <h1>巣<span class="sub">Goblin Colony · Observation</span></h1>
-    <div class="day-readout">第 <b id="day">0</b> 日 · <span id="phase">平時</span></div>
+    <div class="day-readout">
+      第 <b id="day">0</b> 日 · <span id="phase">平時</span>
+      <div class="day-progress"><div id="day-fill" style="width:0%"></div></div>
+      <div class="raid-eta" id="raid-eta"></div>
+    </div>
   </header>
 
   <div class="controls">
@@ -192,19 +235,33 @@
     <button id="btn-reset">巣を作り直す</button>
   </div>
 
+  <!-- 捕虜の自然つがい化 (KI-21): 承認/引き離しの2択を軽通知で提示 -->
+  <div class="bond-banner" id="bond-banner">
+    <span class="msg" id="bond-msg"></span>
+    <button id="btn-bond-approve">承認する</button>
+    <button id="btn-bond-tear" class="danger">引き離す (両方処刑)</button>
+  </div>
+
   <div class="grid">
     <div class="panel">
-      <div class="panel-title">コロニー俯瞰 — 個体ステート</div>
+      <div class="panel-title">コロニー俯瞰 — 個体をタップで観察</div>
       <canvas id="colony" width="680" height="380"></canvas>
       <div class="stat-strip">
         <div class="stat"><div class="stat-label">総頭数</div><div class="stat-value" id="s-pop">0</div></div>
         <div class="stat"><div class="stat-label">子</div><div class="stat-value" id="s-child">0</div></div>
         <div class="stat"><div class="stat-label">死亡累計</div><div class="stat-value" id="s-dead">0</div></div>
+        <div class="stat"><div class="stat-label">巣立ち</div><div class="stat-value" id="s-fledge">0</div></div>
         <div class="stat"><div class="stat-label">上限</div><div class="stat-value" id="s-cap">0</div></div>
       </div>
     </div>
 
     <div style="display:flex; flex-direction:column; gap:16px;">
+      <div class="panel">
+        <div class="panel-title">観察対象</div>
+        <div class="inspector" id="inspector">
+          <div class="empty">俯瞰図のゴブリンをタップすると、その個体の暮らしぶりが見える。</div>
+        </div>
+      </div>
       <div class="panel">
         <div class="panel-title">資源</div>
         <div class="meters" id="meters"></div>
@@ -221,13 +278,14 @@
     </div>
 
     <div class="panel full">
-      <div class="panel-title">記録</div>
+      <div class="panel-title">巣の記録</div>
       <div class="log" id="log"></div>
     </div>
   </div>
 
   <footer>
     検証済みコア (cycle/world/state_machine) を決定的に駆動。力学は机上検証と同一の出所。
+    1 日 = 実時間約 60 秒 (120 tick/日 × 2 tick/秒)。個体の移動は演出層のみで、力学には影響しない。
   </footer>
 </div>
 
@@ -236,10 +294,17 @@
 
 <script>
 /* ════ 可視化ロジック ════
-   検証済みコア (window.GoblinSim) を呼ぶだけ。力学はここに一切書かない。 */
+   検証済みコア (window.GoblinSim) を呼ぶだけ。力学はここに一切書かない。
+   個体の「位置」と移動はすべて演出層 (このファイル) のローカル状態で、
+   シミュレーション状態・RNG・スナップショットには一切触れない (KI-09 セーフ)。 */
 (function(){
   const GS = window.GoblinSim;
   if (!GS) { document.body.innerHTML = "<p style='padding:40px;color:#c0432e'>コアの読み込みに失敗しました。</p>"; return; }
+
+  // ── タイムスケール: 1 日 = 実時間 60 秒 ──
+  // ticksPerDay=120 (力学は world_params が日次→tick 次へ変換) × 2 tick/秒。
+  const TPD = 120;
+  const TPS = 2;
 
   // ── ステートごとの色 (CSS変数と対応) ──
   const STATE_COLORS = {
@@ -248,60 +313,243 @@
     Wander:  "#8a7d68", Enraged: "#ff5530", Dead: "#2a241d",
   };
   const STATE_ORDER = ["Combat","Fear","Dying","Hungry","Sleep","Work","Wander","Enraged"];
+  const STATE_JP = { Combat:"戦闘", Fear:"恐怖", Dying:"瀕死", Hungry:"空腹",
+    Sleep:"睡眠", Work:"仕事", Wander:"放浪", Enraged:"激昂", Dead:"死亡" };
+  const CAUSE_JP = { accident:"事故で死んだ", combat:"戦いで散った", fledge:"巣立っていった",
+    unique_downed:"倒れたまま息絶えた", execution:"処刑された", banishment:"追放された" };
+  const ORIGIN_JP = { Founder:"創設メンバー", Born:"巣の生まれ", Nursery:"苗床の生まれ",
+    Summoned:"信仰の落とし子", CaptiveJoined:"元捕虜", Concubine:"娶られた捕虜" };
+
+  // ── 決定的な名前生成 (id から。保存不要) ──
+  const M1 = ["ガ","グ","ゴ","ザ","ズ","ド","ブ","ギ","バ","ゲ"];
+  const M2 = ["ルク","ザク","ナグ","グル","ボグ","ラグ","ジク","ドズ","ブズ","ガク"];
+  const F1 = ["ニャ","ミ","リ","シャ","メ","ヤ","ル","ピ"];
+  const F2 = ["ッカ","ーラ","ズミ","ニェ","ッタ","ーシャ","リン","ュム"];
+  function hashId(id){ let s=(id*2654435761)>>>0; s^=s>>>13; s=(s*1274126177)>>>0; return s; }
+  function nameOf(g){
+    const h = hashId(g.id);
+    const name = g.sex === GS.Sex.Female
+      ? F1[h % F1.length] + F2[(h>>>4) % F2.length]
+      : M1[h % M1.length] + M2[(h>>>4) % M2.length];
+    return (g.role === GS.Role.Chief ? "族長" : "") + name;
+  }
 
   // ── 状態 ──
-  let p, w, deadCount, history, logs, raidCountdown;
-  const driver = new GS.TickDriver({ ticksPerSecondAt1x: 8 });
+  let p, w, history, logs, selectedId, prevSnap;
+  const driver = new GS.TickDriver({ ticksPerSecondAt1x: TPS });
 
   function reset() {
-    p = GS.makeWorldParams(10);
+    p = GS.makeWorldParams(TPD);
+    p.autoRaidEnabled = true; // 敵対度連動の自動襲撃 + 小規模の恵み (§11/§13)
     w = GS.initWorld(p, { startGoblins: 10, capPop: 24, seed: (Math.random()*1e9)|0, withChief: true, startCaptives: 4 });
-    deadCount = 0;
     history = [];
     logs = [];
-    raidCountdown = 0;
+    selectedId = null;
+    prevSnap = snapshotForDiff(w);
+    vmap.clear();
     driver.resync();
     pushLog("event", "巣が築かれた。10 体のゴブリンと 1 体の族長。");
   }
 
   function pushLog(kind, text) {
     logs.unshift({ kind, day: w.day, text });
-    if (logs.length > 40) logs.pop();
+    if (logs.length > 60) logs.pop();
+    logDirty = true;
   }
 
-  // ── 個体描画用の固定座標 (id→位置。決定的に散らす) ──
-  const posCache = new Map();
-  function posFor(id, cw, ch) {
-    if (!posCache.has(id)) {
-      // id を種にした擬似ランダムで洞窟内に配置
-      let s = (id * 2654435761) >>> 0;
-      const rnd = () => { s = (s*1664525 + 1013904223) >>> 0; return s / 4294967296; };
-      posCache.set(id, { rx: 0.08 + rnd()*0.84, ry: 0.12 + rnd()*0.76, ph: rnd()*Math.PI*2 });
+  /* ════ 演出層: 洞窟のゾーンと個体の移動 ════
+     ステートを「行き先」に翻訳し、毎フレーム補間で滑らかに動かす。 */
+
+  // 洞窟内の名所 (相対座標)。
+  const ZONES = {
+    entrance: { x: 0.50, y: 0.13, r: 0.075, label: "巣口" },
+    den:      { x: 0.20, y: 0.72, r: 0.105, label: "寝床" },
+    food:     { x: 0.82, y: 0.30, r: 0.075, label: "食料庫" },
+    work:     { x: 0.79, y: 0.78, r: 0.090, label: "採掘場" },
+    deep:     { x: 0.12, y: 0.30, r: 0.075, label: "奥" },
+    totem:    { x: 0.46, y: 0.50, r: 0.050, label: "トーテム" },
+  };
+  const BOUNDS = { x0: 0.07, y0: 0.10, x1: 0.93, y1: 0.90 };
+
+  // 演出層の個体状態: id → { x,y, tx,ty, nextWanderAt, deadAt }
+  const vmap = new Map();
+
+  // id から決定的にゾーン内の持ち場 (スロット) を散らす。
+  function slotIn(zone, id, spread) {
+    const h = hashId(id);
+    const ang = (h % 360) * Math.PI / 180;
+    const rad = ((h >>> 9) % 1000) / 1000 * zone.r * (spread || 0.9);
+    return { x: zone.x + Math.cos(ang) * rad, y: zone.y + Math.sin(ang) * rad * 0.8 };
+  }
+  function randIn(a, b) { return a + Math.random() * (b - a); }
+
+  function vstateOf(g) {
+    let v = vmap.get(g.id);
+    if (!v) {
+      // 初出の個体: 出自に応じた登場位置。
+      const o = g.origin;
+      const at = (o === GS.GoblinOrigin.Summoned || o === GS.GoblinOrigin.CaptiveJoined)
+        ? slotIn(ZONES.entrance, g.id)
+        : (o === GS.GoblinOrigin.Born || o === GS.GoblinOrigin.Nursery)
+          ? slotIn(ZONES.den, g.id)
+          : { x: randIn(BOUNDS.x0+0.1, BOUNDS.x1-0.1), y: randIn(BOUNDS.y0+0.1, BOUNDS.y1-0.1) };
+      v = { x: at.x, y: at.y, tx: at.x, ty: at.y, nextWanderAt: 0, deadAt: null };
+      vmap.set(g.id, v);
     }
-    const pt = posCache.get(id);
-    return { x: pt.rx*cw, y: pt.ry*ch, ph: pt.ph };
+    return v;
   }
 
-  // ── コロニー俯瞰描画 ──
+  // ステート → 行き先と速度 (キャンバス幅比/秒)。
+  function decideTarget(g, v, nowSec) {
+    const name = GS.stateName(g.state);
+    if (name === "Combat" || name === "Enraged") {
+      const s = slotIn(ZONES.entrance, g.id, 1.4);
+      return { tx: s.x, ty: s.y, speed: 0.22 };
+    }
+    if (name === "Fear") {
+      const s = slotIn(ZONES.deep, g.id);
+      return { tx: s.x, ty: s.y, speed: 0.26 };
+    }
+    if (name === "Dying") {
+      const s = slotIn(ZONES.den, g.id);
+      return { tx: s.x, ty: s.y, speed: 0.07 };
+    }
+    if (g.matingTicks >= 0 && g.matingWithId !== null) {
+      // 求愛成立 → 二体で同じ寝床スロットへ (ペアの小さい方の id で場所を決める)。
+      const pairKey = Math.min(g.id, g.matingWithId);
+      const s = slotIn(ZONES.den, pairKey);
+      const off = g.id === pairKey ? -0.008 : 0.008;
+      return { tx: s.x + off, ty: s.y, speed: 0.14 };
+    }
+    if (name === "Sleep") {
+      const s = slotIn(ZONES.den, g.id);
+      return { tx: s.x, ty: s.y, speed: 0.10 };
+    }
+    if (name === "Hungry") {
+      const s = slotIn(ZONES.food, g.id);
+      return { tx: s.x, ty: s.y, speed: 0.13 };
+    }
+    if (name === "Work") {
+      const zone = g.role === GS.Role.Shaman || g.role === GS.Role.Chief ? ZONES.totem : ZONES.work;
+      const s = slotIn(zone, g.id);
+      return { tx: s.x, ty: s.y, speed: 0.09 };
+    }
+    // 放浪: 数秒ごとに洞窟内の新しい行き先を引く (常に何かしている感の土台)。
+    if (nowSec >= v.nextWanderAt) {
+      v.nextWanderAt = nowSec + randIn(2.5, 6.5);
+      v.tx = randIn(BOUNDS.x0, BOUNDS.x1);
+      v.ty = randIn(BOUNDS.y0, BOUNDS.y1);
+    }
+    return { tx: v.tx, ty: v.ty, speed: 0.045 };
+  }
+
+  // 毎フレーム: 補間移動。simSpeed=0 (停止) なら世界ごと止まる。
+  function moveGoblins(dtSec, nowSec, simSpeed) {
+    const dt = dtSec * (simSpeed === 0 ? 0 : 1) * (simSpeed === 3 ? 1.6 : 1);
+    for (const g of w.goblins) {
+      const v = vstateOf(g);
+      if (GS.stateName(g.state) === "Dead") {
+        if (v.deadAt === null) v.deadAt = nowSec;
+        continue;
+      }
+      v.deadAt = null;
+      const d = decideTarget(g, v, nowSec);
+      v.tx = d.tx; v.ty = d.ty;
+      const isChild = g.childBornTick !== null && g.childBornTick !== undefined;
+      const speed = d.speed * (isChild ? 0.7 : 1) * (0.85 + (hashId(g.id) % 100) / 333);
+      const dx = v.tx - v.x, dy = v.ty - v.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist > 0.004) {
+        const step = Math.min(dist, speed * dt);
+        v.x += (dx / dist) * step;
+        v.y += (dy / dist) * step;
+      }
+    }
+  }
+
+  /* ════ コロニー俯瞰の描画 ════ */
   const colony = document.getElementById("colony");
   const cctx = colony.getContext("2d");
+
   function drawColony(t) {
     const cw = colony.width, ch = colony.height;
+    const nowSec = t / 1000;
     cctx.clearRect(0,0,cw,ch);
-    // 上限の囲い (洞窟の輪郭)
+
+    // 洞窟の輪郭
     cctx.strokeStyle = "#3a322830";
     cctx.lineWidth = 1;
-    cctx.strokeRect(cw*0.05, ch*0.07, cw*0.9, ch*0.86);
+    cctx.strokeRect(cw*0.05, ch*0.06, cw*0.9, ch*0.88);
 
+    // ゾーンの気配 (うっすら描いて場所として読めるように)
+    for (const key in ZONES) {
+      const z = ZONES[key];
+      cctx.beginPath();
+      cctx.arc(z.x*cw, z.y*ch, z.r*cw, 0, Math.PI*2);
+      cctx.setLineDash([2,5]);
+      cctx.strokeStyle = "#3a322855";
+      cctx.stroke();
+      cctx.setLineDash([]);
+      cctx.fillStyle = "#5a4f4088";
+      cctx.font = "9px monospace";
+      cctx.textAlign = "center";
+      cctx.fillText(z.label, z.x*cw, (z.y - z.r*0.72)*ch - 4);
+    }
+    cctx.textAlign = "left";
+    // トーテムの炎 (信仰の中心)
+    {
+      const z = ZONES.totem;
+      const flick = 0.6 + 0.4*Math.sin(nowSec*5.1) * Math.sin(nowSec*3.3);
+      cctx.beginPath();
+      cctx.arc(z.x*cw, z.y*ch, 7 + flick*2, 0, Math.PI*2);
+      cctx.fillStyle = "rgba(232,148,58,0.10)";
+      cctx.fill();
+      cctx.beginPath();
+      cctx.arc(z.x*cw, z.y*ch, 2.4, 0, Math.PI*2);
+      cctx.fillStyle = "#ffb454";
+      cctx.fill();
+    }
+
+    // 交戦中: 巣口の外に残敵を描く
+    if (w.phase === "combat" && w.enemiesRemaining > 0) {
+      const n = Math.min(30, Math.ceil(w.enemiesRemaining));
+      const z = ZONES.entrance;
+      for (let i = 0; i < n; i++) {
+        const h = hashId(i + 7777);
+        const ex = (z.x + ((h % 200) - 100) / 1000) * cw;
+        const ey = (0.045 + ((h >>> 8) % 40) / 1000) * ch + Math.sin(nowSec*3 + i)*1.5;
+        cctx.beginPath();
+        cctx.moveTo(ex, ey - 3.5); cctx.lineTo(ex - 3, ey + 2.5); cctx.lineTo(ex + 3, ey + 2.5);
+        cctx.closePath();
+        cctx.fillStyle = w.raidIsHuman ? "#c0432e" : "#a05838";
+        cctx.fill();
+      }
+    }
+
+    // 個体
     for (const g of w.goblins) {
-      if (GS.stateName(g.state) === "Dead") continue;
-      const { x, y, ph } = posFor(g.id, cw, ch);
+      const v = vmap.get(g.id);
+      if (!v) continue;
       const name = GS.stateName(g.state);
+      if (name === "Dead") {
+        // 死亡: 2.5 秒かけて骨の色に沈み、消える。
+        if (v.deadAt === null) continue;
+        const age = nowSec - v.deadAt;
+        if (age > 2.5) continue;
+        cctx.globalAlpha = Math.max(0, 1 - age / 2.5) * 0.7;
+        cctx.beginPath();
+        cctx.arc(v.x*cw, v.y*ch, 3, 0, Math.PI*2);
+        cctx.fillStyle = "#cbbfa6";
+        cctx.fill();
+        cctx.globalAlpha = 1;
+        continue;
+      }
+      const x = v.x*cw, y = v.y*ch;
       const col = STATE_COLORS[name] || "#8a7d68";
       const isChief = g.role === GS.Role.Chief;
       const isChild = g.childBornTick !== null && g.childBornTick !== undefined;
-      // 呼吸のような微かな明滅
-      const pulse = 0.7 + 0.3*Math.sin(t*0.003 + ph);
+      const ph = (hashId(g.id) % 628) / 100;
+      const pulse = 0.7 + 0.3*Math.sin(nowSec*3 + ph);
       const r = isChief ? 6 : (isChild ? 2.2 : 3.6);
 
       // グロー
@@ -326,6 +574,12 @@
         cctx.stroke();
         cctx.globalAlpha = 1;
       }
+      // 求愛中はハートの気配
+      if (g.matingTicks >= 0) {
+        cctx.fillStyle = "#e8a0b8";
+        cctx.font = "8px monospace";
+        cctx.fillText("♥", x + r + 1, y - r - 1 + Math.sin(nowSec*4 + ph));
+      }
       // HP が低い個体は赤い縁
       if (g.hp / g.maxHp < 0.4) {
         cctx.beginPath();
@@ -334,7 +588,23 @@
         cctx.lineWidth = 1.5;
         cctx.stroke();
       }
+      // 選択中の個体
+      if (g.id === selectedId) {
+        cctx.beginPath();
+        cctx.arc(x, y, r + 6 + Math.sin(nowSec*5)*1.2, 0, Math.PI*2);
+        cctx.strokeStyle = "#e8dcc8";
+        cctx.lineWidth = 1;
+        cctx.setLineDash([3,3]);
+        cctx.stroke();
+        cctx.setLineDash([]);
+        cctx.fillStyle = "#e8dcc8";
+        cctx.font = "10px monospace";
+        cctx.textAlign = "center";
+        cctx.fillText(nameOf(g), x, y - r - 10);
+        cctx.textAlign = "left";
+      }
     }
+
     // 戦闘中は赤いヴィネット
     if (w.phase === "combat") {
       const grad = cctx.createRadialGradient(cw/2,ch/2,ch*0.3, cw/2,ch/2,ch*0.7);
@@ -342,21 +612,171 @@
       grad.addColorStop(1, "rgba(192,67,46,0.18)");
       cctx.fillStyle = grad;
       cctx.fillRect(0,0,cw,ch);
-      // 敵の存在を画面端の数で示す
       cctx.fillStyle = "#c0432e";
       cctx.font = "11px monospace";
-      cctx.fillText("⚔ 残敵 " + Math.ceil(w.enemiesRemaining), cw*0.06, ch*0.05);
+      cctx.fillText("⚔ 残敵 " + Math.ceil(w.enemiesRemaining) + (w.raidIsHuman ? " (人間の討伐隊)" : " (敵対氏族)"), cw*0.06, ch*0.05);
     }
   }
 
-  // ── メーター ──
+  // タップで個体を選択 (一番近い生存個体)
+  colony.addEventListener("click", (e) => {
+    const rect = colony.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) * (colony.width / rect.width);
+    const my = (e.clientY - rect.top) * (colony.height / rect.height);
+    let best = null, bestD = 20; // 20px 以内
+    for (const g of w.goblins) {
+      if (GS.stateName(g.state) === "Dead") continue;
+      const v = vmap.get(g.id);
+      if (!v) continue;
+      const d = Math.hypot(v.x*colony.width - mx, v.y*colony.height - my);
+      if (d < bestD) { bestD = d; best = g.id; }
+    }
+    selectedId = best;
+    renderInspector();
+  });
+
+  /* ════ 個体インスペクタ ════ */
+  function renderInspector() {
+    const el = document.getElementById("inspector");
+    const g = w.goblins.find((x) => x.id === selectedId);
+    if (!g) {
+      el.innerHTML = `<div class="empty">俯瞰図のゴブリンをタップすると、その個体の暮らしぶりが見える。</div>`;
+      return;
+    }
+    const name = GS.stateName(g.state);
+    const dead = name === "Dead";
+    const ageDays = ((w.tick - g.bornTick) / w.ticksPerDay).toFixed(1);
+    const sexJp = g.sex === GS.Sex.Female ? "♀ 雌" : "♂ 雄";
+    const originJp = ORIGIN_JP[GS.originName(g.origin)] || "";
+    const mate = g.mateId !== null ? w.goblins.find((x) => x.id === g.mateId) : null;
+    const fav = g.favoriteId !== null ? w.goblins.find((x) => x.id === g.favoriteId) : null;
+    const bar = (frac, color) =>
+      `<div class="insp-bar"><div style="width:${Math.max(0,Math.min(100,frac*100))}%;background:${color}"></div></div>`;
+    const tags = [];
+    if (g.role === GS.Role.Chief) tags.push(`<span class="tag gold">族長 — 恐怖を持たない盾</span>`);
+    if (g.childBornTick !== null) tags.push(`<span class="tag">子ゴブリン</span>`);
+    if (g.pregnant) tags.push(`<span class="tag warm">身ごもっている (${Math.ceil((p.pregnancyTicks - g.pregnantTicks)/w.ticksPerDay*10)/10} 日で出産)</span>`);
+    if (g.matingTicks >= 0) tags.push(`<span class="tag warm">寝床にこもっている…</span>`);
+    if (mate) tags.push(`<span class="tag warm">つがい: ${nameOf(mate)}</span>`);
+    if (!mate && fav) tags.push(`<span class="tag">想い人: ${nameOf(fav)}</span>`);
+    if (g.bereaved) tags.push(`<span class="tag">伴侶を失った悲しみ</span>`);
+    if (g.pendingBond) tags.push(`<span class="tag warm">絆の承認待ち</span>`);
+    el.innerHTML = `
+      <div class="insp-name">${nameOf(g)}${dead ? " †" : ""}</div>
+      <div class="insp-sub">${sexJp} · ${originJp} · ${ageDays} 日齢 · <span style="color:${STATE_COLORS[name]||"#8a7d68"}">${STATE_JP[name]||name}</span></div>
+      <div class="insp-rows">
+        <div class="insp-row"><span class="insp-label">体力</span>${bar(g.hp/g.maxHp, "#7a9a4e")}<span class="insp-num">${g.hp.toFixed(1)}/${g.maxHp}</span></div>
+        <div class="insp-row"><span class="insp-label">空腹</span>${bar(g.hunger, "#c08a3a")}<span class="insp-num">${(g.hunger*100|0)}%</span></div>
+        <div class="insp-row"><span class="insp-label">眠気</span>${bar(g.sleepiness, "#4a6b8a")}<span class="insp-num">${(g.sleepiness*100|0)}%</span></div>
+      </div>
+      <div class="insp-tags">${tags.join("")}</div>`;
+  }
+
+  /* ════ イベントフィード: stepWorld 前後の差分から出来事を検出 ════
+     コアはログを返さないため、状態のスナップショット差分で物語を拾う。 */
+  function snapshotForDiff(world) {
+    const m = new Map();
+    for (const g of world.goblins) {
+      m.set(g.id, {
+        pregnant: g.pregnant,
+        mateId: g.mateId,
+        isChild: g.childBornTick !== null,
+        dead: GS.stateName(g.state) === "Dead",
+      });
+    }
+    return {
+      ids: m,
+      deathLen: world.deathLog.length,
+      phase: world.phase,
+      foodBuff: world.foodBuff,
+      captives: world.capMaleGoblin + world.capFemaleGoblin + world.capMaleHuman + world.capFemaleHuman,
+    };
+  }
+
+  function diffEvents(prev, cur) {
+    const find = (id) => cur.goblins.find((g) => g.id === id);
+    // 死亡ログの新規分 (KI-20 の資産をそのまま物語に)
+    for (let i = prev.deathLen; i < cur.deathLog.length; i++) {
+      const d = cur.deathLog[i];
+      const pseudo = { id: d.id, sex: d.sex, role: d.role };
+      const txt = `${nameOf(pseudo)} (${d.ageDays} 日齢) が${CAUSE_JP[d.cause] || d.cause}。`;
+      pushLog(d.cause === "fledge" ? "event" : "death", txt);
+    }
+    // 新規個体 = 出生・加入
+    const bornByMother = new Map();
+    for (const g of cur.goblins) {
+      if (prev.ids.has(g.id)) continue;
+      const o = GS.originName(g.origin);
+      if (o === "Born") {
+        const key = g.motherId ?? -1;
+        bornByMother.set(key, (bornByMother.get(key) || 0) + 1);
+      } else if (o === "Nursery") {
+        bornByMother.set("nursery", (bornByMother.get("nursery") || 0) + 1);
+      } else if (o === "Summoned") {
+        pushLog("event", `信仰が ${nameOf(g)} を呼び出した。`);
+      } else if (o === "CaptiveJoined") {
+        pushLog("event", `雄捕虜 ${nameOf(g)} が気まぐれに群れへ加わった。`);
+      } else if (o === "Concubine") {
+        pushLog("love", `捕虜 ${nameOf(g)} が巣に迎え入れられた。`);
+      }
+    }
+    for (const [key, n] of bornByMother) {
+      if (key === "nursery") {
+        pushLog("birth", `苗床から ${n} 匹の子が這い出した。`);
+      } else {
+        const mother = find(key);
+        pushLog("birth", `${mother ? nameOf(mother) : "誰か"} が ${n} 匹の子を産んだ。`);
+      }
+    }
+    // 妊娠・つがい成立・成体化
+    const pairLogged = new Set();
+    for (const g of cur.goblins) {
+      const was = prev.ids.get(g.id);
+      if (!was || was.dead) continue;
+      if (!was.pregnant && g.pregnant) {
+        pushLog("love", `${nameOf(g)} が身ごもった。`);
+      }
+      if (was.mateId === null && g.mateId !== null && GS.originName(g.origin) !== "Concubine") {
+        const key = Math.min(g.id, g.mateId) + ":" + Math.max(g.id, g.mateId);
+        if (!pairLogged.has(key)) {
+          pairLogged.add(key);
+          const mate = find(g.mateId);
+          if (mate) pushLog("love", `${nameOf(g)} と ${nameOf(mate)} がつがいになった。`);
+        }
+      }
+      if (was.isChild && g.childBornTick === null) {
+        pushLog("birth", `${nameOf(g)} が一人前に育った。`);
+      }
+    }
+    // フェーズ遷移 = 襲撃の開始/終結
+    if (prev.phase !== "combat" && cur.phase === "combat") {
+      const who = cur.raidIsHuman ? "人間の討伐隊" : "敵対氏族の群れ";
+      pushLog("raid", `襲撃! ${who} ${Math.round(cur.enemiesRemaining)} 体が巣口に迫る。`);
+    } else if (prev.phase === "combat" && cur.phase !== "combat") {
+      const pop = GS.livePop(cur);
+      pushLog("raid", pop > 0 ? `襲撃を退けた。生存 ${pop} 体。` : "巣は陥落した……");
+    }
+    // 小規模襲撃の恵み (平時のまま食料バフ/捕虜が増えた)
+    if (prev.phase === "peace" && cur.phase === "peace") {
+      if (cur.foodBuff > prev.foodBuff + 1e-9) {
+        pushLog("event", "若い衆が小競り合いに勝ち、食料を持ち帰った。");
+      } else if (cur.captives > prev.captives + 1e-9) {
+        pushLog("event", "小競り合いに勝ち、捕虜を引きずってきた。");
+      }
+    }
+  }
+
+  /* ════ 右ペイン: メーター・分布 ════ */
   function renderMeters() {
     const pop = GS.livePop(w);
+    const captives = w.capMaleGoblin + w.capFemaleGoblin + w.capMaleHuman + w.capFemaleHuman;
     const rows = [
       { name: "信仰", val: w.faith, max: p.faithCap, color: "var(--ember)", fmt: v=>v.toFixed(0) },
-      { name: "捕虜", val: w.captives, max: 20, color: "var(--bone)", fmt: v=>v.toFixed(1) },
+      { name: "捕虜", val: captives, max: 20, color: "var(--bone)", fmt: v=>v.toFixed(1) },
+      { name: "人間の敵対度", val: w.humanHostility, max: 1, color: "var(--blood)", fmt: v=>(v*100).toFixed(0)+"%" },
       { name: "損耗バフ (surge)", val: w.surge, max: p.surgeMax, color: "var(--blood)", fmt: v=>v.toFixed(2) },
-      { name: "頭数 / 上限", val: pop, max: w.capPop, color: "var(--moss)", fmt: v=>String(pop) },
+      { name: "食料バフ", val: w.foodBuff, max: p.foodBuffMax, color: "var(--moss)", fmt: v=>v.toFixed(2) },
+      { name: "頭数 / 上限", val: pop, max: w.capPop, color: "var(--moss)", fmt: ()=>String(pop) },
     ];
     document.getElementById("meters").innerHTML = rows.map(r => {
       const pct = Math.max(0, Math.min(100, (r.val/r.max)*100));
@@ -370,7 +790,6 @@
     }).join("");
   }
 
-  // ── ステート分布 ──
   function renderStates() {
     const counts = {};
     let total = 0;
@@ -383,19 +802,16 @@
       const c = counts[name] || 0;
       const pct = total ? (c/total)*100 : 0;
       const col = STATE_COLORS[name];
-      const jp = STATE_JP[name] || name;
       return `<div class="state-row">
         <span class="state-dot" style="background:${col};color:${col}"></span>
-        <span class="state-name">${jp}</span>
+        <span class="state-name">${STATE_JP[name] || name}</span>
         <span class="state-track"><span class="state-fill" style="width:${pct}%;background:${col}"></span></span>
         <span class="state-count">${c}</span>
       </div>`;
     }).join("");
   }
-  const STATE_JP = { Combat:"戦闘", Fear:"恐怖", Dying:"瀕死", Hungry:"空腹",
-    Sleep:"睡眠", Work:"仕事", Wander:"放浪", Enraged:"激昂" };
 
-  // ── 推移グラフ ──
+  /* ════ 推移グラフ ════ */
   const chart = document.getElementById("chart");
   const chctx = chart.getContext("2d");
   function drawChart() {
@@ -408,7 +824,6 @@
     const xAt = i => pad + (i/(n-1))*(cw-pad*2);
     const yAt = v => ch-pad - (v/maxPop)*(ch-pad*1.5);
 
-    // 上限ライン
     chctx.strokeStyle = "#7a9a4e30";
     chctx.setLineDash([4,4]);
     chctx.beginPath(); chctx.moveTo(pad, yAt(w.capPop)); chctx.lineTo(cw-pad, yAt(w.capPop)); chctx.stroke();
@@ -416,14 +831,12 @@
     chctx.fillStyle = "#7a9a4e60"; chctx.font = "9px monospace";
     chctx.fillText("上限 "+Math.round(w.capPop), pad+2, yAt(w.capPop)-3);
 
-    // 襲撃マーカー
     for (let i=0;i<n;i++){
       if (history[i].raid) {
         chctx.fillStyle = "#c0432e22";
         chctx.fillRect(xAt(i)-2, pad*0.5, 4, ch-pad*1.5);
       }
     }
-    // 頭数の塗り
     chctx.beginPath();
     chctx.moveTo(xAt(0), yAt(history[0].pop));
     for (let i=1;i<n;i++) chctx.lineTo(xAt(i), yAt(history[i].pop));
@@ -432,85 +845,98 @@
     fill.addColorStop(0, "rgba(232,148,58,0.25)");
     fill.addColorStop(1, "rgba(232,148,58,0.02)");
     chctx.fillStyle = fill; chctx.fill();
-    // 頭数のライン
     chctx.beginPath();
     chctx.moveTo(xAt(0), yAt(history[0].pop));
     for (let i=1;i<n;i++) chctx.lineTo(xAt(i), yAt(history[i].pop));
     chctx.strokeStyle = "#ffb454"; chctx.lineWidth = 1.6; chctx.stroke();
   }
 
-  // ── ログ描画 ──
+  /* ════ ログ・HUD ════ */
+  let logDirty = true;
   function renderLog() {
+    if (!logDirty) return;
+    logDirty = false;
     document.getElementById("log").innerHTML = logs.map(l =>
       `<div class="log-entry ${l.kind}"><span class="t">[${l.day}日]</span> ${l.text}</div>`
     ).join("");
   }
 
-  // ── HUD 更新 ──
+  function renderBondBanner() {
+    const banner = document.getElementById("bond-banner");
+    const pending = w.goblins.find((g) => g.pendingBond && GS.stateName(g.state) !== "Dead" && g.role === GS.Role.Concubine);
+    if (!pending) { banner.classList.remove("show"); banner.dataset.captiveId = ""; return; }
+    const mate = w.goblins.find((g) => g.id === pending.mateId);
+    document.getElementById("bond-msg").innerHTML =
+      `捕虜 <b>${nameOf(pending)}</b> と <b>${mate ? nameOf(mate) : "誰か"}</b> の間に、いつのまにか絆が芽生えている。`;
+    banner.dataset.captiveId = String(pending.id);
+    banner.classList.add("show");
+  }
+
   function renderHUD() {
     document.getElementById("day").textContent = w.day;
     document.getElementById("phase").textContent =
       w.phase === "combat" ? "⚔ 交戦" : (w.phase === "omen" ? "予兆" : "平時");
     document.getElementById("phase").style.color =
       w.phase === "combat" ? "var(--blood)" : "var(--ink-dim)";
+    document.getElementById("day-fill").style.width = ((w.tick % w.ticksPerDay) / w.ticksPerDay * 100) + "%";
+    // 次の大規模襲撃まで (自動スケジューラの予約 tick から)
+    const eta = document.getElementById("raid-eta");
+    if (w.phase === "peace") {
+      const days = (w.nextBigRaidTick - w.tick) / w.ticksPerDay;
+      eta.textContent = days > 0 ? `次の大襲撃まで 約 ${days < 1 ? "1 日未満" : Math.ceil(days) + " 日"}` : "";
+      eta.className = "raid-eta" + (days <= 1 ? " near" : "");
+    } else {
+      eta.textContent = "";
+    }
     const pop = GS.livePop(w);
     let children = 0;
     for (const g of w.goblins) if (g.childBornTick!=null && GS.stateName(g.state)!=="Dead") children++;
+    let deaths = 0, fledges = 0;
+    for (const d of w.deathLog) (d.cause === "fledge" ? fledges++ : deaths++);
     document.getElementById("s-pop").textContent = pop;
     document.getElementById("s-child").textContent = children;
-    document.getElementById("s-dead").textContent = deadCount;
+    document.getElementById("s-dead").textContent = deaths;
+    document.getElementById("s-fledge").textContent = fledges;
     document.getElementById("s-cap").textContent = Math.round(w.capPop);
-    renderMeters(); renderStates();
+    renderMeters(); renderStates(); renderBondBanner();
   }
 
-  // ── tick 前進 (死亡カウント・履歴・自動襲撃) ──
+  /* ════ tick 前進と差分検出 ════ */
   function advanceTicks(count) {
+    if (count <= 0) return;
     for (let i=0;i<count;i++){
-      const beforeDay = w.day;
-      const beforeDead = countDead();
       w = GS.stepWorld(w, p);
-      const afterDead = countDead();
-      deadCount += Math.max(0, afterDead - beforeDead);
-
-      // 日が進んだら履歴に記録
-      if (w.day !== beforeDay) {
-        const raidedToday = w.phase === "combat";
-        history.push({ day: w.day, pop: GS.livePop(w), raid: raidedToday });
-        if (history.length > 120) history.shift();
-        // 巣立ちの気配
-        if (GS.livePop(w) >= w.capPop) pushLog("event", "巣が手狭だ。若者が巣立っていく。");
+      // 日境界 (stepWorld が day を進めた直後) に履歴へ 1 点記録。
+      if (w.tick % w.ticksPerDay === 0) {
+        history.push({ day: w.day, pop: GS.livePop(w), raid: w.phase === "combat" });
+        if (history.length > 150) history.shift();
       }
-      // 戦闘の自然終了を検知
-      if (w.phase !== "combat" && raidCountdown > 0) raidCountdown = 0;
     }
+    // 差分からイベントを拾う (フレーム単位のバッチで十分細かい)
+    diffEvents(prevSnap, w);
+    prevSnap = snapshotForDiff(w);
   }
-  function countDead(){ let d=0; for(const g of w.goblins) if(GS.stateName(g.state)==="Dead") d++; return d; }
 
-  // ── メインループ ──
-  let lastPop = 0;
+  /* ════ メインループ ════ */
+  let lastT = null;
   function loop(t) {
+    const dtSec = lastT === null ? 0 : Math.min(0.1, (t - lastT) / 1000);
+    lastT = t;
     const ticks = driver.pump();
-    if (ticks > 0) {
-      const wasInRaid = w.phase === "combat";
-      advanceTicks(ticks);
-      // 戦闘が終わった瞬間のログ
-      if (wasInRaid && w.phase !== "combat") {
-        const pop = GS.livePop(w);
-        pushLog("raid", pop>0 ? `襲撃を退けた。生存 ${pop} 体。` : "巣は陥落した……");
-        renderLog();
-      }
-    }
+    if (ticks > 0) advanceTicks(ticks);
+    moveGoblins(dtSec, t/1000, driver.getSpeed());
     drawColony(t);
     drawChart();
     renderHUD();
+    renderLog();
+    if (selectedId !== null) renderInspector();
     requestAnimationFrame(loop);
   }
 
-  // ── コントロール ──
+  /* ════ コントロール ════ */
   document.getElementById("speed-group").addEventListener("click", e => {
     const b = e.target.closest("button"); if (!b) return;
-    const sp = parseInt(b.dataset.speed,10);
-    driver.setSpeed(sp);
+    driver.setSpeed(parseInt(b.dataset.speed,10));
     [...document.querySelectorAll("#speed-group button")].forEach(x=>x.classList.remove("active"));
     b.classList.add("active");
   });
@@ -518,23 +944,43 @@
     if (w.phase === "combat") return;
     const enemies = 6 + w.day*0.5 + GS.livePop(w)*0.3;
     w = GS.beginRaid(w, enemies);
-    pushLog("raid", `襲撃! 敵 ${Math.round(enemies)} 体が巣に迫る。`);
-    renderLog(); renderHUD();
+    prevSnap.phase = "peace"; // 次の diff で開始ログが出るように
   });
   document.getElementById("btn-reinforce").addEventListener("click", () => {
     const before = GS.livePop(w);
     w = GS.emergencyReinforce(w, p, Math.floor(w.capPop*0.85));
     const gained = GS.livePop(w) - before;
-    pushLog("event", gained>0 ? `召喚と苗床放出で ${gained} 体を補充。` : "補充できる信仰も捕虜もない。");
-    renderLog(); renderHUD();
+    if (gained <= 0) pushLog("event", "補充できる信仰も捕虜もない。");
+    diffEvents(prevSnap, w);
+    prevSnap = snapshotForDiff(w);
   });
   document.getElementById("btn-reset").addEventListener("click", () => {
-    posCache.clear(); reset(); renderLog(); renderHUD();
+    reset(); renderHUD();
+  });
+  document.getElementById("btn-bond-approve").addEventListener("click", (e) => {
+    const id = parseInt(document.getElementById("bond-banner").dataset.captiveId, 10);
+    if (!Number.isFinite(id)) return;
+    const g = w.goblins.find((x) => x.id === id);
+    w = GS.approveBond(w, p, id);
+    if (g) pushLog("love", `${nameOf(g)} の絆を認めた。今日から巣の一員だ。`);
+    prevSnap = snapshotForDiff(w);
+  });
+  document.getElementById("btn-bond-tear").addEventListener("click", () => {
+    const id = parseInt(document.getElementById("bond-banner").dataset.captiveId, 10);
+    if (!Number.isFinite(id)) return;
+    w = GS.tearApartBond(w, id, "execution");
+    diffEvents(prevSnap, w); // 処刑ログが出る
+    prevSnap = snapshotForDiff(w);
+  });
+
+  // タブ復帰時は経過分を破棄 (シミュレーションが一気に飛ぶのを防ぐ)
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) driver.resync();
   });
 
   // ── 起動 ──
   reset();
-  renderLog();
+  renderHUD();
   requestAnimationFrame(loop);
 })();
 </script>

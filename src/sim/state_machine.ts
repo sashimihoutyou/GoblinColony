@@ -53,20 +53,31 @@ export interface StateMachineParams {
   uniqueDownedGraceTicks: number;
 }
 
+/**
+ * 既定値は基準解像度 (10 tick/日 = world_params.TICKS_PER_DAY_BASE) での
+ * per-tick 値。別の tick 解像度で動かすときは world_params の
+ * scaleStateMachineParams で変換する (KI-02: tick/day を混同しない)。
+ *
+ * 欲求ペーシングは §15 調整で「観賞に耐える日次リズム」へ寄せた:
+ *  - 空腹: 約 0.3〜0.4 日周期で発火 (1 日 2〜3 回食事)、食事は約 0.05 日。
+ *  - 睡眠: 約 0.8 日周期で発火 (1 日 1 回眠る)、睡眠は約 0.2 日。
+ * 旧値 (空腹 7 日 / 睡眠 10 日周期) は安定帯検証時の仮値で、個体が
+ * ほぼ Work/Wander に張り付き観察に何も映らなかった。
+ */
 export const defaultStateMachineParams: StateMachineParams = {
   fearHpFrac: 0.45,
   dyingHpFrac: 0.25,
-  fearClearTicks: 8,
+  fearClearTicks: 8, // 0.8 日ぶんの安全確認
   hungerOn: 0.7,
   hungerOff: 0.2,
   sleepOn: 0.8,
   sleepOff: 0.15,
-  hungerRate: 0.01,
-  sleepRate: 0.008,
+  hungerRate: 0.175, // 0.7 まで 0.4 日 (≒1 日 2〜3 回の食事)
+  sleepRate: 0.1, // 0.8 まで 0.8 日 (≒1 日 1 回の睡眠)
   hpRegenPerTick: 0.15,
-  hungerRelievePerTick: 0.2,
-  sleepRelievePerTick: 0.15,
-  uniqueDownedGraceTicks: 30,
+  hungerRelievePerTick: 1.0, // 食事 ≒0.05 日で完了
+  sleepRelievePerTick: 0.325, // 睡眠 ≒0.2 日で完了
+  uniqueDownedGraceTicks: 30, // 3 日の搬送猶予
 };
 
 /**

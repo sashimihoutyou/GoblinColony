@@ -72,7 +72,9 @@ const underThreat: GoblinContext = {
   g.hunger = P.hungerOff + 0.05;
   g = stepGoblin(g, safe, P);
   check("Off閾値に達するまでラッチ維持(往復しない)", g.hungerLatched);
-  g.hunger = P.hungerOff - 0.01;
+  // step 内の自然上昇 (hungerRate) 後も Off 閾値以下に留まる値まで下げる
+  // (余裕値をペーシング定数に相対化し、§15 調整でテストが割れないように)。
+  g.hunger = P.hungerOff - P.hungerRate - 0.01;
   g = stepGoblin(g, safe, P);
   check("Off閾値を下回ってラッチ解除", !g.hungerLatched);
 }
