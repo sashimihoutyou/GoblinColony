@@ -9,6 +9,8 @@ var y: int = 0
 var hp: float = 6.0
 var max_hp: float = 6.0
 var target_gate_idx: int = 0   # 向かっている巣口インデックス
+var target_x: int = -1         # 現在の移動目標 (パス再計算判定用)
+var target_y: int = -1
 var path: Array = []           # Array[Vector2i]
 var is_human: bool = false
 
@@ -19,6 +21,7 @@ func snapshot() -> Dictionary:
 	return {
 		"id": id, "x": x, "y": y, "hp": hp, "max_hp": max_hp,
 		"target_gate_idx": target_gate_idx,
+		"target_x": target_x, "target_y": target_y,
 		"path": path.map(func(p): return [p.x, p.y]),
 		"is_human": is_human,
 	}
