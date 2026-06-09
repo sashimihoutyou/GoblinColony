@@ -75,7 +75,7 @@ func _update_camera() -> void:
 
 func _update_status() -> void:
 	if status_label:
-		var phase_txt := ["平時", "予兆", "交戦"][world.phase]
+		var phase_txt: String = (["平時", "予兆", "交戦"] as Array)[world.phase]
 		var time_txt := "昼" if world.is_day() else "夜"
 		status_label.text = "日 %d/%d (%s/%s)  頭数 %d/%d  信仰 %.0f  食料 %.0f  敵 %d  出生%d/死亡%d" % [
 			world.day, params.final_day, time_txt, phase_txt,

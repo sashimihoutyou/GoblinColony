@@ -77,9 +77,9 @@ func is_child() -> bool:
 static func compatibility(a: Goblin, b: Goblin) -> float:
 	var sa := (a.id * 2654435761) & 0xFFFFFFFF
 	var sb := (b.id * 2654435761) & 0xFFFFFFFF
-	var lo := min(sa, sb)
-	var hi := max(sa, sb)
-	var mixed := ((lo + 1) * 2246822519) ^ ((hi + 1) * 3266489917)
+	var lo: int = min(sa, sb)
+	var hi: int = max(sa, sb)
+	var mixed: int = ((lo + 1) * 2246822519) ^ ((hi + 1) * 3266489917)
 	return float((mixed & 0xFFFFFFFF) % 1000) / 1000.0
 
 func snapshot() -> Dictionary:
