@@ -12,30 +12,43 @@ TypeScript に正確に移植し、その一致を機械的に保証すること
 （辛勝レンジ）とズレた実装を後から発見すると手戻りが大きいため、先に「力学が正しく乗っているか」
 を保証してから可視化を被せる。Unity/Godot 等のゲームエンジンには依存しない純 TypeScript 実装。
 
-## 実際のディレクトリ構成（重要）
+## ディレクトリ構成（重要）
 
-現状は**ルート直下のフラット構成**。README が記す `src/sim/` `parity/` `viz/` の階層は
-まだ反映されていない（後述の「落とし穴」を参照）。
+README が記す `src/sim/` `parity/` `viz/` の階層へ整理済み。各 import パスはこの階層を前提に
+書かれている（コア同士は `./xxx.ts`、テストは `../src/sim/xxx.ts`、browser_entry は `./sim/xxx.ts`）。
 
-| ファイル | 役割 |
-|----------|------|
-| `rng.ts` | 決定的 xorshift128 PRNG。状態を完全に保存・復元できる（KI-09）。`Math.random` は使わない。 |
-| `params.ts` | マクロ集計サイクルの定数型 + 既定値（v5 の base）。**力学定数の単一の真実源**。 |
-| `cycle.ts` | マクロ層。単一 state を純粋 step で 1 日進める。Python (`cycle.py`) と照合済み。 |
-| `world_state.ts` | World 層の状態スキーマ（個体ゴブリン配列 + レイド等）。 |
-| `world_params.ts` | 日次サイクルのパラメータを tick ベースへ変換する。レートを再定義しない。 |
-| `world.ts` | World 層。全個体を 1 tick 進め、戦闘解決・出生・事故死などを処理する。 |
-| `goblin.ts` | 個体ゴブリンの型（§5 ステート / 性格 / 役職 / 進行中フラグ）。 |
-| `state_machine.ts` | §5 個体ステートマシン。個体 1 体・1 tick の純粋遷移（副作用なし）。 |
-| `tick_driver.ts` | 実時間→tick 変換層。**実時間に触れるのはここだけ**（KI-09）。速度倍率・端数持ち越し。 |
-| `browser_entry.ts` | ブラウザ可視化用の薄い再エクスポート（コアを `globalThis.GoblinSim` に載せる）。 |
-| `cycle.py` | TS 版の照合基準（Python 移植）。共有 Rng でビット単位一致を保つ。 |
-| `snapshot_test.ts` | KI-09 スナップショット往復テスト（セーブ/ロードがバイト一致するか）。 |
-| `state_machine_test.ts` | §5/§8 ステートマシンの確定仕様検証。 |
-| `tick_driver_test.ts` | 速度倍率・端数持ち越し・暴走防止・実時間非依存。 |
-| `world_test.ts` | World 層の統合テスト。 |
+```
+src/
+  browser_entry.ts          可視化用の薄い再エクスポート。
+  sim/                      コア（純粋シミュレーション層。互いに ./xxx.ts で import）
+    rng.ts params.ts cycle.ts goblin.ts state_machine.ts tick_driver.ts
+    world_state.ts world_params.ts world.ts
+parity/                     テスト + Python 照合基準（../src/sim/... を import）
+  cycle.py snapshot_test.ts state_machine_test.ts tick_driver_test.ts world_test.ts
+viz/                        可視化アセット
+  dashboard_template.html goblin_colony_dashboard.html
+build_dashboard.mjs         ビルドスクリプト（リポジトリ直下から実行。src/ と viz/ を参照）
+```
+
+| パス | 役割 |
+|------|------|
+| `src/sim/rng.ts` | 決定的 xorshift128 PRNG。状態を完全に保存・復元できる（KI-09）。`Math.random` は使わない。 |
+| `src/sim/params.ts` | マクロ集計サイクルの定数型 + 既定値（v5 の base）。**力学定数の単一の真実源**。 |
+| `src/sim/cycle.ts` | マクロ層。単一 state を純粋 step で 1 日進める。Python (`cycle.py`) と照合する基準。 |
+| `src/sim/world_state.ts` | World 層の状態スキーマ（個体ゴブリン配列 + レイド等）。 |
+| `src/sim/world_params.ts` | 日次サイクルのパラメータを tick ベースへ変換する。レートを再定義しない。 |
+| `src/sim/world.ts` | World 層。全個体を 1 tick 進め、戦闘解決・出生・事故死などを処理する。 |
+| `src/sim/goblin.ts` | 個体ゴブリンの型（§5 ステート / 性格 / 役職 / 進行中フラグ）。 |
+| `src/sim/state_machine.ts` | §5 個体ステートマシン。個体 1 体・1 tick の純粋遷移（副作用なし）。 |
+| `src/sim/tick_driver.ts` | 実時間→tick 変換層。**実時間に触れるのはここだけ**（KI-09）。速度倍率・端数持ち越し。 |
+| `src/browser_entry.ts` | ブラウザ可視化用の薄い再エクスポート（コアを `globalThis.GoblinSim` に載せる）。 |
+| `parity/cycle.py` | TS 版の照合基準（Python 移植）。共有 Rng でビット単位一致を狙う。※下記「落とし穴」参照。 |
+| `parity/snapshot_test.ts` | KI-09 スナップショット往復テスト（セーブ/ロードがバイト一致するか）。 |
+| `parity/state_machine_test.ts` | §5/§8 ステートマシンの確定仕様検証。 |
+| `parity/tick_driver_test.ts` | 速度倍率・端数持ち越し・暴走防止・実時間非依存。 |
+| `parity/world_test.ts` | World 層の統合テスト。 |
 | `build_dashboard.mjs` | esbuild でコアを IIFE バンドルし HTML テンプレートへ注入、自己完結 HTML を出力。 |
-| `dashboard_template.html` | `<!--CORE_BUNDLE-->` プレースホルダを持つダッシュボードのテンプレート。 |
+| `viz/dashboard_template.html` | `<!--CORE_BUNDLE-->` プレースホルダを持つダッシュボードのテンプレート。 |
 
 ## アーキテクチャ（層構造）
 
@@ -67,31 +80,33 @@ World 層     world.ts        tick 単位。個体集合 + 一括戦闘解決（
 
 ## ビルド / テストコマンド
 
-README が掲げる想定コマンド:
+`package.json` は未整備のため、現状は Node ネイティブの型ストリップで直接実行する。
+コアが `enum`（`GoblinState` 等）を使うため **`--experimental-transform-types` が必須**
+（素の `--experimental-strip-types` だと enum で失敗する）。リポジトリ直下から:
 
 ```
-npm run test:all          # 下記すべてを順に実行
-npm run parity:check      # Python版とTS版の中心サイクル一致 (ALL_MATCH)
-npm run test:snapshot     # セーブ/ロード往復が通しと一致 (KI-09)
-npm run test:statemachine # §5/§8 ステートマシンの確定仕様
-npm run test:tickdriver   # 速度倍率・実時間非依存 (KI-09)
+node --experimental-transform-types parity/snapshot_test.ts       # SNAPSHOT_ROUNDTRIP_OK
+node --experimental-transform-types parity/state_machine_test.ts  # STATEMACHINE_OK
+node --experimental-transform-types parity/tick_driver_test.ts    # TICKDRIVER_OK
+node --experimental-transform-types parity/world_test.ts          # World 層統合テスト（現状一部 FAIL）
 ```
 
-ビルド: `node build_dashboard.mjs <出力先>` で自己完結 HTML を生成（esbuild 利用）。
+ビルド: `node build_dashboard.mjs viz/goblin_colony_dashboard.html` で自己完結 HTML を生成
+（esbuild 利用。esbuild は未インストールのため別途 `npm i -D esbuild` 等が必要）。
 
 ### ⚠ 既知の落とし穴（着手前に必読）
 
-現リポジトリには **`package.json` / `tsconfig.json` / `deno.json` がいずれも無い**。
-そのため上記 `npm run ...` スクリプトはそのままでは動かない。さらに構成の不整合がある:
+ファイル階層は README どおり `src/sim/` `parity/` `viz/` へ整理済みで、import パスの不整合は解消した。
+ただし以下はまだ残っている:
 
-- `snapshot_test.ts` は `../src/sim/params.ts` を、`build_dashboard.mjs` は `src/browser_entry.ts`
-  および `viz/...` を参照しているが、これらのパスは**フラットな現構成には存在しない**。
-- 一方コア（`cycle.ts` 等）は `./rng.ts` のようにフラット構成と整合した相対 import を使っている。
-
-テスト/ビルドを動かすには、(a) README どおり `src/sim/` `parity/` `viz/` 階層へファイルを
-移動する、または (b) テスト/ビルドの import パスをフラット構成に合わせる、のどちらかが必要。
-実行ランタイムは `.ts` 拡張子付き import + `process.exit` の利用から、Node の型ストリップ
-（`node --experimental-strip-types` / `tsx`）または Deno を想定している。
+- **`package.json` / `tsconfig.json` が無い。** `npm run ...` スクリプトは存在せず、上記のとおり
+  `node --experimental-transform-types` で直接実行する。テストランナーを整えるなら Node ネイティブ前提で。
+- **Python パリティ照合ハーネスが未実装。** `parity/cycle.py` は `from rng import Rng` を import するが
+  `parity/rng.py` が無く、単体では実行できない。照合ハーネス `cycle_ts.ts` / `compare.mjs` も未作成のため
+  `parity:check`（Python ↔ TS のビット一致 = ALL_MATCH）は未成立。実装するなら rng.ts を Python へ移植し、
+  RNG 消費順序を TS と完全に揃えること。
+- **World 層の照合が未着手。** `parity/world_test.ts` は現状一部 FAIL する（`次の一手` 1 を参照）。
+  これは World 層ロジックの未検証事項であり、力学の確定前提を崩さないよう安易に塞がないこと。
 
 ## 設計資料への入口（最初に読むべき順）
 
