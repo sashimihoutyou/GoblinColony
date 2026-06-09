@@ -16,6 +16,8 @@ import {
   takeConcubine,
   approveBond,
   tearApartBond,
+  releaseHumanCaptive,
+  raidIntervalDays,
   livePop,
   cloneWorld,
 } from "../src/sim/world.ts";
@@ -276,6 +278,42 @@ const p = makeWorldParams(10);
     `人間=${humanYield} > ゴブリン=${goblinYield}`);
   check("中立ルートでは人間母体の苗床が封じられる (§13)", humanBlocked === 0,
     `封鎖時の人間苗床産=${humanBlocked}`);
+}
+
+// --- 9d. 敵対度ループ: 人間捕虜の残虐使用→敵対度↑→大規模襲撃が短間隔 (§13/§11) ---
+// 残虐 (苗床/生贄) が憎悪を募らせ、解放が控えめに戻す。敵対度は §11/KI-08 の
+// 大規模襲撃間隔 (和平5日→MAX1日) を駆動する = 残虐→憎悪→報復の因果が閉じる。
+{
+  // (a) 人間母体の苗床で敵対度が上がる。ゴブリン母体では上がらない。
+  let wh = initWorld(p, { startGoblins: 6, capPop: 9999, seed: 1, withChief: true });
+  wh.capFemaleHuman = 12;
+  for (let d = 0; d < 10; d++) for (let i = 0; i < p.ticksPerDay; i++) wh = stepWorld(wh, p);
+  check("人間母体の苗床で敵対度が上がる (§13)", wh.humanHostility > 0, `hostility=${wh.humanHostility.toFixed(2)}`);
+
+  let wg = initWorld(p, { startGoblins: 6, capPop: 9999, seed: 1, withChief: true });
+  wg.capFemaleGoblin = 12;
+  for (let d = 0; d < 10; d++) for (let i = 0; i < p.ticksPerDay; i++) wg = stepWorld(wg, p);
+  check("ゴブリン母体では敵対度は上がらない (人間への加害ではない)", wg.humanHostility === 0, `hostility=${wg.humanHostility.toFixed(2)}`);
+
+  // (b) 敵対度が上がるほど大規模襲撃間隔が短くなる (高難度化)。
+  const peaceGap = raidIntervalDays(0, p);
+  const warGap = raidIntervalDays(wh.humanHostility, p);
+  check("敵対度が高いほど大規模襲撃が短間隔 (§11/KI-08)", warGap < peaceGap,
+    `和平${peaceGap}日 → 敵対${warGap.toFixed(1)}日`);
+  check("敵対度の写像が検証帯 (和平5日/MAX1日) に収まる",
+    raidIntervalDays(0, p) === 5 && raidIntervalDays(1, p) === 1, "");
+
+  // (c) 解放で敵対度が下がる (§13 控えめ)。
+  const beforeRel = wh.humanHostility;
+  const wr = releaseHumanCaptive(wh, p, Sex.Female);
+  check("人間捕虜の解放で敵対度が下がる (§13)", wr.humanHostility < beforeRel,
+    `${beforeRel.toFixed(2)} → ${wr.humanHostility.toFixed(2)}`);
+
+  // (d) 人間捕虜の生贄でも敵対度が上がる。
+  let ws = initWorld(p, { startGoblins: 4, capPop: 30, seed: 1, withChief: true });
+  ws.capMaleHuman = 6;
+  ws = emergencyReinforce(ws, p, 20); // 信仰生成で人間捕虜を生贄に
+  check("人間捕虜の生贄で敵対度が上がる (§13)", ws.humanHostility > 0, `hostility=${ws.humanHostility.toFixed(2)}`);
 }
 
 // --- 10. 性別: 出産は雄に偏る (世界観: 雄が多産) ---

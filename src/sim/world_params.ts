@@ -76,6 +76,15 @@ export interface WorldParams {
   // humanNurseryAllowed=false でこの出口を封じる (生贄/苗床/売却/朝貢の禁止と整合)。
   humanNurseryAllowed: boolean; // 人間雌捕虜を苗床に置けるか (中立ルートで false)
   humanNurseryYieldFactor: number; // 人間母体の産出倍率 (>1: 多産)
+
+  // --- 人間勢力の敵対度 (§13 メーター → §11 大規模襲撃間隔 / KI-08) ---
+  // 残虐な仕打ちで上昇し、解放/朝貢で下降。敵対度が高いほど大規模襲撃が短間隔
+  // (高難度) になる。プレイヤーの選択で動く表の静的ダイヤル (KI-10 の DDA とは別)。
+  hostilityPerHumanNurseryBirth: number; // 人間母体での 1 出産あたり上昇
+  hostilityPerHumanSacrifice: number; // 人間捕虜 1 体の生贄あたり上昇
+  hostilityReleaseDrop: number; // 人間捕虜 1 体の解放での下降 (§13 控えめ)
+  raidIntervalDaysAtPeace: number; // 敵対度 0 のときの大規模襲撃間隔 (日)
+  raidIntervalDaysAtMax: number; // 敵対度 1 (MAX) のときの間隔 (日・最短)
   // 召喚: 信仰を消費して即時頭数補充 (§4 下僕召喚)。
   summonCost: number; // 召喚 1 回の信仰コスト
   summonPop: number; // 召喚 1 回で増える頭数
@@ -194,6 +203,14 @@ export function makeWorldParams(ticksPerDay = 10): WorldParams {
     // 死蔵しがちだった人間雌捕虜 (KI-17) に高価値な出口を与える。最終値は §15。
     humanNurseryAllowed: true,
     humanNurseryYieldFactor: 2.0,
+    // 敵対度 (§13)。苗床/生贄での人間捕虜の消費が積み上げ、解放が控えめに戻す
+    // (GDD §13: 解放の低下量は「自然悪化一回ぶん」相当 = 増分の数倍は使い潰している)。
+    // §11/KI-08 の検証帯に合わせ、和平 5 日 → MAX 1 日の間隔へ写像する。最終値は §15。
+    hostilityPerHumanNurseryBirth: 0.03,
+    hostilityPerHumanSacrifice: 0.05,
+    hostilityReleaseDrop: 0.04,
+    raidIntervalDaysAtPeace: 5,
+    raidIntervalDaysAtMax: 1,
     summonCost: b.SUMMON_COST,
     summonPop: b.SUMMON_POP,
     sacrificeFaith: b.SACRIFICE_FAITH,

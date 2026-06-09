@@ -71,6 +71,7 @@ export function initWorld(
     cum: 0,
     totemRank: 0,
     capPop: opts.capPop,
+    humanHostility: 0, // §13 敵対度: 開始時は和平 (人間への加害なし)
     rng: rng.snapshot(),
     capMaleGoblin: 0,
     // 初期捕虜は「すでに巣にいる産み手候補」とみなし雌ゴブリン扱い (苗床の種)。
@@ -275,6 +276,10 @@ function stepFaithAndNursery(w: WorldState, p: WorldParams): void {
   const humanBorn = Math.floor(humanHosts * p.nurseryYieldPerCaptive * p.humanNurseryYieldFactor);
   birthNurseryChildren(w, p, humanBorn, goblinBorn); // k オフセットで性別パターンを分離
   w.capFemaleHuman = Math.max(0, w.capFemaleHuman - humanBorn * p.nurseryCaptiveConsume);
+  // 人間の胎を仔産み機にする残虐が人間勢力の憎悪を募らせる (§13)。
+  if (humanBorn > 0) {
+    w.humanHostility = clamp01(w.humanHostility + humanBorn * p.hostilityPerHumanNurseryBirth);
+  }
 }
 
 /**
@@ -935,10 +940,12 @@ export function emergencyReinforce(
         w.faith += p.sacrificeFaith;
         w.cum += p.sacrificeFaith;
         w.capMaleHuman -= 1;
+        w.humanHostility = clamp01(w.humanHostility + p.hostilityPerHumanSacrifice); // §13
       } else if (w.capFemaleHuman >= 1) {
         w.faith += p.sacrificeFaith;
         w.cum += p.sacrificeFaith;
         w.capFemaleHuman -= 1;
+        w.humanHostility = clamp01(w.humanHostility + p.hostilityPerHumanSacrifice); // §13
       } else if (w.capFemaleGoblin >= 1) {
         // 希少な産み手を泣く泣く生贄に (最後の手段)。
         w.faith += p.sacrificeFaith;
@@ -1005,6 +1012,36 @@ function drawLitterSize(rng: Rng, p: WorldParams): number {
     if (r < cdf[i]) return i + 1;
   }
   return cdf.length;
+}
+
+/** 0..1 にクランプ (敵対度メーター用 / §13)。 */
+function clamp01(x: number): number {
+  return x < 0 ? 0 : x > 1 ? 1 : x;
+}
+
+/**
+ * 人間捕虜を 1 体解放する (§13 解放/追放の出口)。所属勢力の敵対度をわずかに
+ * 下げる (GDD §13: 低下量は控えめ = 「捕獲→解放」で敵対度をリセットさせない)。
+ * 解放は中立ルートでも許される唯一の人間捕虜の出口 (生贄/苗床/売却/朝貢は不可)。
+ */
+export function releaseHumanCaptive(prev: WorldState, p: WorldParams, sex: Sex): WorldState {
+  const w = cloneWorld(prev);
+  if (sex === Sex.Male && w.capMaleHuman >= 1) w.capMaleHuman -= 1;
+  else if (sex === Sex.Female && w.capFemaleHuman >= 1) w.capFemaleHuman -= 1;
+  else return prev; // 解放できる人間捕虜がいない
+  w.humanHostility = clamp01(w.humanHostility - p.hostilityReleaseDrop);
+  return w;
+}
+
+/**
+ * 敵対度 → 大規模襲撃の間隔 (日) を線形写像する (§11/KI-08 の検証帯)。
+ * 和平 (0) で raidIntervalDaysAtPeace、MAX (1) で raidIntervalDaysAtMax (最短)。
+ * 襲撃トリガ層がこの間隔を読んで大規模襲撃を仕掛ける = 敵対度ループの消費側。
+ * 純粋関数: state を持たず、敵対度メーターだけから難度ダイヤルを引く。
+ */
+export function raidIntervalDays(hostility: number, p: WorldParams): number {
+  const h = clamp01(hostility);
+  return p.raidIntervalDaysAtPeace + (p.raidIntervalDaysAtMax - p.raidIntervalDaysAtPeace) * h;
 }
 
 // --- 子フラグの管理 (Goblin 本体の childBornTick を使う / KI-14 で一元化) ---
