@@ -26,6 +26,7 @@ import {
   type Personality,
 } from "./goblin.ts";
 import { stepGoblin, type GoblinContext } from "./state_machine.ts";
+import { rankFromCumulative } from "./cycle.ts";
 import type { WorldState, RaidPhase, DeathCause } from "./world_state.ts";
 import {
   CAPTIVE_COMP,
@@ -85,6 +86,8 @@ export function initWorld(
     phase: "peace",
     surge: 0,
     overCapTicks: 0,
+    // 初回大規模襲撃は和平間隔 (敵対度 0) ぶん先に予約 (自動スケジューラ §11)。
+    nextBigRaidTick: Math.max(1, Math.round(raidIntervalDays(0, p) * p.ticksPerDay)),
     enemiesRemaining: 0,
     raidLossThisFight: 0,
     raidStartPop: 0,
@@ -231,6 +234,28 @@ export function stepWorld(prev: WorldState, p: WorldParams): WorldState {
         w.overCapTicks = 0;
       }
     }
+  }
+
+  // --- 7. 自動襲撃スケジューラ (§11/§13: 敵対度連動の大規模襲撃) ---
+  // opt-in。平時に予約 tick へ達したら大規模襲撃を発火し、次回を現在の敵対度で
+  // 予約する (敵対度が高いほど短間隔 = 高難度 / KI-08)。発火は beginRaid と同等の
+  // 設定を in-place で行う (w は既にクローン済み)。実時間に触れない (KI-09)。
+  if (p.autoRaidEnabled && w.phase === "peace" && w.tick >= w.nextBigRaidTick) {
+    // 規模: 検証済みマクロと同式 (cycle.ts / KI-01)。ランクは累計信仰から。
+    const rank = rankFromCumulative(w.cum, p.rankThresholds);
+    const enemies = p.baseEnemies + w.day * p.enemySlope + p.enemyPerRank * rank;
+    // 勢力: 怒らせた相手が攻めてくる。人間敵対度が高いほど人間勢力が来やすい。
+    const comp = rng.nextFloat() < w.humanHostility ? CAPTIVE_COMP.human : CAPTIVE_COMP.goblin;
+    w.phase = "combat";
+    w.enemiesRemaining = enemies;
+    w.raidStartPop = livePop(w);
+    w.raidStartHp = totalHp(w);
+    w.raidLossThisFight = 0;
+    w.raidIsHuman = comp.isHuman;
+    w.raidMaleFrac = comp.maleFrac;
+    // 次回を現在の敵対度で予約 (§11/§13 の難度ダイヤル)。
+    const gapTicks = Math.max(1, Math.round(raidIntervalDays(w.humanHostility, p) * p.ticksPerDay));
+    w.nextBigRaidTick = w.tick + gapTicks;
   }
 
   w.rng = rng.snapshot();

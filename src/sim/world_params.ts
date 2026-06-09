@@ -85,6 +85,17 @@ export interface WorldParams {
   hostilityReleaseDrop: number; // 人間捕虜 1 体の解放での下降 (§13 控えめ)
   raidIntervalDaysAtPeace: number; // 敵対度 0 のときの大規模襲撃間隔 (日)
   raidIntervalDaysAtMax: number; // 敵対度 1 (MAX) のときの間隔 (日・最短)
+
+  // --- 自動襲撃スケジューラ (§11/§12。raidIntervalDays を読んで大規模襲撃を発火) ---
+  // opt-in (既定 false): 既存の外部トリガ (beginRaid) ベースのテスト/手動運用を
+  // 壊さないため。real game / §12 夜間バッチ自動プレイヤーが true にして使う。
+  autoRaidEnabled: boolean;
+  // 大規模襲撃の規模 = 検証済みマクロと同式 (cycle.ts / KI-01): baseEnemies
+  // + day*enemySlope + enemyPerRank*rank。率を再定義せず baseParams から写す。
+  baseEnemies: number;
+  enemySlope: number;
+  enemyPerRank: number;
+  rankThresholds: number[]; // 累計信仰 → ランク (cycle.ts rankFromCumulative と共有)
   // 召喚: 信仰を消費して即時頭数補充 (§4 下僕召喚)。
   summonCost: number; // 召喚 1 回の信仰コスト
   summonPop: number; // 召喚 1 回で増える頭数
@@ -211,6 +222,12 @@ export function makeWorldParams(ticksPerDay = 10): WorldParams {
     hostilityReleaseDrop: 0.04,
     raidIntervalDaysAtPeace: 5,
     raidIntervalDaysAtMax: 1,
+    // 自動襲撃スケジューラ: 既定はオフ。規模式は cycle.ts と同一の出所 (KI-01)。
+    autoRaidEnabled: false,
+    baseEnemies: b.BASE_ENEMIES,
+    enemySlope: b.ENEMY_SLOPE,
+    enemyPerRank: b.ENEMY_PER_RANK,
+    rankThresholds: b.RANK_THRESHOLDS,
     summonCost: b.SUMMON_COST,
     summonPop: b.SUMMON_POP,
     sacrificeFaith: b.SACRIFICE_FAITH,

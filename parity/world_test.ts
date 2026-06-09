@@ -316,6 +316,37 @@ const p = makeWorldParams(10);
   check("人間捕虜の生贄で敵対度が上がる (§13)", ws.humanHostility > 0, `hostility=${ws.humanHostility.toFixed(2)}`);
 }
 
+// --- 9e. 自動襲撃スケジューラ: 敵対度が高いほど大規模襲撃が頻発 (§11/§13/KI-08) ---
+// raidIntervalDays を読んで大規模襲撃を自動発火する。敵対度を上げた群れほど
+// 一定期間の襲撃回数が増えること (難度ダイヤルが実挙動に出る) を確認する。
+{
+  // 一定期間の大規模襲撃回数を数える (phase が peace→combat へ立った回数)。
+  const countRaids = (hostility: number, days: number): number => {
+    const pp = { ...makeWorldParams(10), autoRaidEnabled: true };
+    let w = initWorld(pp, { startGoblins: 16, capPop: 60, seed: 1, withChief: true, startCaptives: 6 });
+    w.humanHostility = hostility; // 敵対度を固定して間隔への効きだけを見る
+    let raids = 0, prevPhase = w.phase;
+    for (let d = 0; d < days; d++) for (let i = 0; i < pp.ticksPerDay; i++) {
+      w = stepWorld(w, pp);
+      w.humanHostility = hostility; // 苗床等で動かさず固定 (本テストは間隔の検証)
+      if (prevPhase !== "combat" && w.phase === "combat") raids++;
+      prevPhase = w.phase;
+    }
+    return raids;
+  };
+  const peaceRaids = countRaids(0, 30); // 間隔 5 日 → ~6 回
+  const warRaids = countRaids(1, 30); // 間隔 1 日 → 平時 tick で頻発
+  check("自動スケジューラが大規模襲撃を発火する", peaceRaids > 0, `和平30日=${peaceRaids}回`);
+  check("敵対度MAXの方が襲撃が頻発する (§11/§13 難度ダイヤル)", warRaids > peaceRaids,
+    `和平=${peaceRaids}回 < 敵対MAX=${warRaids}回`);
+
+  // 既定 (autoRaidEnabled=false) では自動襲撃は起きない (既存挙動を壊さない)。
+  let wq = initWorld(p, { startGoblins: 10, capPop: 24, seed: 1, withChief: true });
+  let off = true;
+  for (let d = 0; d < 30; d++) for (let i = 0; i < p.ticksPerDay; i++) { wq = stepWorld(wq, p); if (wq.phase === "combat") off = false; }
+  check("既定では自動襲撃は起きない (opt-in)", off, "");
+}
+
 // --- 10. 性別: 出産は雄に偏る (世界観: 雄が多産) ---
 // 注: 個体群の最終比率は雌の生存率が高い (事故死 1/3・非戦闘) ため雄偏りが
 // 薄まる = 「雄は多く産まれ多く死に、雌は希少だが生き延びる」という均衡が

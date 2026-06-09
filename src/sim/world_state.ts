@@ -96,6 +96,7 @@ export interface WorldState {
   phase: RaidPhase;
   surge: number; // 損耗時バフ残量 (§2.5 必須骨格 / KI-04)
   overCapTicks: number; // 上限超過が続いた平時 tick (巣立ち猶予 §2.5)
+  nextBigRaidTick: number; // 次の大規模襲撃を発火する tick (自動スケジューラ §11)
   enemiesRemaining: number; // 交戦中の残敵数 (0 なら非交戦)
   raidLossThisFight: number; // この戦闘で失った頭数 (参考指標)
   raidStartPop: number; // 戦闘開始時の頭数 (全滅判定の分母)
