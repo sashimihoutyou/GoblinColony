@@ -51,20 +51,14 @@ export function initWorld(
     // 族長は雄 (ユニークな盾)。性別別性格は付けず中立 (個性は別途)。
     goblins.push(makeGoblin(id++, neutralPersonality, Role.Chief, Sex.Male));
   }
-  // 初期群れ: 雌が少なすぎると即絶滅するため、最低数を保証してから残りを
-  // 出生比で埋める (世界観の希少さは保ちつつ、スタート即詰みを回避 KI-16)。
-  const minFemales = Math.max(3, Math.floor((opts.startGoblins - (opts.withChief ? 1 : 0)) * 0.3));
+  // 初期群れ: 出生比どおりオス7:メス3 で固定配置する (抽選せず決定的)。
+  // 雌が希少な世界観を初期状態にも一貫させつつ、シードによる雌数のブレを無くす。
+  // 端数は四捨五入。雌を先頭側に置いてから残りを雄で埋める。
+  const nonChief = opts.startGoblins - (opts.withChief ? 1 : 0);
+  const targetFemales = Math.round(nonChief * (1 - p.maleBirthRatio));
   let femalesPlaced = 0;
   for (; id <= opts.startGoblins; ) {
-    const remaining = opts.startGoblins - id + 1;
-    const needFemale = minFemales - femalesPlaced;
-    // 残り枠が必要な雌数以下になったら雌を確定配置、でなければ出生比で抽選。
-    let sex: Sex;
-    if (needFemale >= remaining) {
-      sex = Sex.Female;
-    } else {
-      sex = rng.nextFloat() < p.maleBirthRatio ? Sex.Male : Sex.Female;
-    }
+    const sex = femalesPlaced < targetFemales ? Sex.Female : Sex.Male;
     if (sex === Sex.Female) femalesPlaced++;
     const pers = sexedPersonality(sex, () => rng.nextFloat() - 0.5);
     goblins.push(makeGoblin(id++, pers, Role.None, sex));
@@ -340,19 +334,23 @@ function stepReproduction(w: WorldState, rng: Rng, p: WorldParams): void {
       }
       const pt = g.pregnantTicks + 1;
       if (pt >= p.pregnancyTicks) {
-        // 出産: 性別決定 → 性別別性格。つがいの雌なら親の charmSeed を一部継承
+        // 出産: 一腹の数を引いて (1〜6・中央値2) その数だけ子を産む。各子は
+        // 性別決定 → 性別別性格。つがいの雌なら親の charmSeed を一部継承
         // (将来の血統表現の布石だが第一期は性別のみ)。
-        const sex = rng.nextFloat() < p.maleBirthRatio ? Sex.Male : Sex.Female;
-        const pers = sexedPersonality(sex, () => rng.nextFloat() - 0.5);
-        const child = makeGoblin(w.nextGoblinId++, pers, Role.None, sex, {
-          bornTick: w.tick,
-          motherId: g.id,
-          fatherId: g.mateId, // つがいの父 (乱婚で不定なら null)
-          origin: GoblinOrigin.Born,
-        });
-        markChild(child, w.tick);
+        const litter = drawLitterSize(rng, p);
+        for (let k = 0; k < litter; k++) {
+          const sex = rng.nextFloat() < p.maleBirthRatio ? Sex.Male : Sex.Female;
+          const pers = sexedPersonality(sex, () => rng.nextFloat() - 0.5);
+          const child = makeGoblin(w.nextGoblinId++, pers, Role.None, sex, {
+            bornTick: w.tick,
+            motherId: g.id,
+            fatherId: g.mateId, // つがいの父 (乱婚で不定なら null)
+            origin: GoblinOrigin.Born,
+          });
+          markChild(child, w.tick);
+          w.goblins.push(child);
+        }
         w.goblins[i] = { ...g, pregnant: false, pregnantTicks: 0 };
-        w.goblins.push(child);
       } else {
         w.goblins[i] = { ...g, pregnantTicks: pt };
       }
@@ -977,6 +975,20 @@ function fledge(w: WorldState, rng: Rng): void {
     killGoblin(w, idx, "fledge"); // 巣立ち (巣からの除外) を一元処理
     removed++;
   }
+}
+
+/**
+ * 一腹の数を引く (1..litterCdf.length)。litterCdf は累積分布で末尾が 1.0。
+ * 既定 (world_params) は中央値 2・期待値 ≈ 2.46 の裾の長い分布。
+ * rng を 1 回だけ消費する (決定性・スナップショット安全 / KI-09)。
+ */
+function drawLitterSize(rng: Rng, p: WorldParams): number {
+  const r = rng.nextFloat();
+  const cdf = p.litterCdf;
+  for (let i = 0; i < cdf.length; i++) {
+    if (r < cdf[i]) return i + 1;
+  }
+  return cdf.length;
 }
 
 // --- 子フラグの管理 (Goblin 本体の childBornTick を使う / KI-14 で一元化) ---

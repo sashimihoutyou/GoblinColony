@@ -118,10 +118,13 @@ const p = makeWorldParams(10);
 // --- 5. 戦闘: 雄の戦線が過酷な襲撃で損耗する (§8/§5/性別) ---
 // 性別導入で戦力 = 雄。雌は戦線に立たず温存される。雄を十分確保した規模で
 // 損耗が出ることを確認する。cycle との全滅閾値一致は構造上不可能 (KI-12)。
+// 初期比を 7:3 で固定したぶん雄主力 (~14) が厚く、§5 の一斉離脱で死者が出にくい
+// (KI-13: World は離脱で死者が出にくい)。死者で測る本テストは「明確に過酷」な
+// 規模に校正する (28 体。24 では全シードで離脱しきり損耗 0 になる)。
 {
   let w = initWorld(p, { startGoblins: 20, capPop: 99, seed: 5, withChief: false });
   const before = livePop(w);
-  w = beginRaid(w, 24); // 雄 ~14 に対し過酷な規模
+  w = beginRaid(w, 28); // 雄 ~14 に対し過酷な規模
   let combatTicks = 0;
   while (w.phase === "combat" && combatTicks < 500) {
     w = stepWorld(w, p);
@@ -134,7 +137,7 @@ const p = makeWorldParams(10);
   // 族長ありは盾効果で損耗が同等以下になる (§8)
   let w2 = initWorld(p, { startGoblins: 20, capPop: 99, seed: 5, withChief: true });
   const before2 = livePop(w2);
-  w2 = beginRaid(w2, 24);
+  w2 = beginRaid(w2, 28);
   let t2 = 0;
   while (w2.phase === "combat" && t2 < 500) {
     w2 = stepWorld(w2, p);

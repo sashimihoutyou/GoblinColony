@@ -29,6 +29,24 @@ export interface WorldParams {
   femaleDeathFactor: number; // 雌の事故死率の倍率 (<1: 逃げ上手で死ににくい)
   pregnancyTicks: number; // 妊娠フラグ → 出産フラグまでの tick
   childGrowTicks: number; // 子 → 通常個体へ成長する tick
+  // 1 回の出産で生まれる子の数 (一腹) の累積分布。litterCdf[i] = P(litter <= i+1)。
+  // 末尾は必ず 1.0。drawLitterSize が rng と突き合わせて 1..litterCdf.length を引く。
+  litterCdf: number[];
+
+  // --- 求愛・つがい (乱婚制 / KI-18) ---
+  matingDurationTicks: number; // 寝床にこもる tick (完了で雌が確定妊娠)
+  courtBaseChance: number; // 雌 1 体が 1 tick に求愛成立する基礎確率 (相性0.5基準)
+  favoriteCourtBonus: number; // お気に入り相手への求愛成功補正
+  favoriteChance: number; // 性行為後、相性×これでお気に入り登録
+  bondMaleHpBonus: number; // つがい雄: 最大 HP 増 (生存力)
+  bondMaleFearReduce: number; // つがい雄: 恐怖閾値の引き下げ (より粘る)
+  bondFemaleWorkBonus: number; // つがい雌: 仕事/採餌の重み増 (内政効率)
+
+  // --- 雄同士のケンカ / 自然つがい化 (KI-19/KI-21) ---
+  rivalryChance: number; // 競合雄ペアがケンカに発展する 1 tick 確率
+  rivalryMateBonus: number; // ケンカ強さ: つがい持ちの雄に乗る補正
+  rivalryInjury: number; // 敗者が負う HP 減
+  captiveBondChance: number; // 捕虜が自然につがい化する 1 tick 確率 (ごく稀)
 
   // 損耗時バフ (§2.5 / KI-04: 必須骨格)
   surgeTrigger: number;
@@ -120,8 +138,30 @@ export function makeWorldParams(ticksPerDay = 10): WorldParams {
       ((b.BREED_PER_LABOR / ticksPerDay) * LAG_COMPENSATION) / (1 - MALE_BIRTH_RATIO),
     maleBirthRatio: MALE_BIRTH_RATIO,
     femaleDeathFactor: 0.33, // 雌は逃げ上手で事故死 1/3 (希少資源の保護)
-    pregnancyTicks: ticksPerDay * 2, // 約 2 日で出産フラグ (§15 調整)
-    childGrowTicks: ticksPerDay * 2, // 約 2 日で成長 (即戦力にならないラグ §2.5)
+    // 妊娠・成熟をどちらも 1 日に短縮 (生死を軽くする調整 §15)。出産も成体化も
+    // 速くなり、個体が「すぐ産まれてすぐ一人前」= 1 体の重みが下がる方向。
+    pregnancyTicks: ticksPerDay, // 約 1 日で出産フラグ
+    childGrowTicks: ticksPerDay, // 約 1 日で成長 (短い成長ラグ)
+    // 一腹の数 = 1〜6、中央値 2 (生死を軽くする: 1 回でまとまった補充)。
+    // weights [.30,.30,.18,.12,.06,.04] → cdf。cdf(1)=.30<.5≤.60=cdf(2) で中央値 2。
+    // 期待値 ≈ 2.46。少産が大半で稀に大量に産む裾の長い分布。
+    litterCdf: [0.3, 0.6, 0.78, 0.9, 0.96, 1.0],
+
+    // 求愛・つがい (KI-18)。確定妊娠＋出産直後即可の高回転のため、求愛頻度は
+    // 控えめにして増殖速度を制御する。最終値は実機調整 (§15)。
+    matingDurationTicks: 3, // 寝床に数 tick こもる
+    courtBaseChance: 0.08, // 雌 1 体が 1 tick に求愛成立する基礎確率 (相性0.5基準)
+    favoriteCourtBonus: 0.06, // お気に入り相手なら成功しやすい
+    favoriteChance: 0.5, // 性行為後、相性×0.5 でお気に入り登録
+    bondMaleHpBonus: 3, // つがい雄: 最大 HP +3 (生存力)
+    bondMaleFearReduce: 0.1, // つがい雄: 恐怖閾値 -0.1 (より粘る)
+    bondFemaleWorkBonus: 0.3, // つがい雌: 仕事/採餌 +0.3 (内政効率)
+
+    // 雄同士のケンカ (KI-19) / 自然つがい化 (KI-21)。
+    rivalryChance: 0.05, // 競合雄ペアが 1 tick にケンカへ発展する確率
+    rivalryMateBonus: 3, // つがい持ちの雄はケンカで強い (HP 換算 +3)
+    rivalryInjury: 3, // 敗者は HP-3 (即死はしない)
+    captiveBondChance: 0.002, // 捕虜が自然つがい化する 1 tick 確率 (ごく稀)
 
     surgeTrigger: b.SURGE_TRIGGER,
     surgeGain: b.SURGE_GAIN,
