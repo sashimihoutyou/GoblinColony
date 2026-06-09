@@ -26,6 +26,7 @@ import {
   type Personality,
 } from "./goblin.ts";
 import { stepGoblin, type GoblinContext } from "./state_machine.ts";
+import { rankFromCumulative } from "./cycle.ts";
 import type { WorldState, RaidPhase, DeathCause } from "./world_state.ts";
 import {
   CAPTIVE_COMP,
@@ -51,20 +52,14 @@ export function initWorld(
     // 族長は雄 (ユニークな盾)。性別別性格は付けず中立 (個性は別途)。
     goblins.push(makeGoblin(id++, neutralPersonality, Role.Chief, Sex.Male));
   }
-  // 初期群れ: 雌が少なすぎると即絶滅するため、最低数を保証してから残りを
-  // 出生比で埋める (世界観の希少さは保ちつつ、スタート即詰みを回避 KI-16)。
-  const minFemales = Math.max(3, Math.floor((opts.startGoblins - (opts.withChief ? 1 : 0)) * 0.3));
+  // 初期群れ: 出生比どおりオス7:メス3 で固定配置する (抽選せず決定的)。
+  // 雌が希少な世界観を初期状態にも一貫させつつ、シードによる雌数のブレを無くす。
+  // 端数は四捨五入。雌を先頭側に置いてから残りを雄で埋める。
+  const nonChief = opts.startGoblins - (opts.withChief ? 1 : 0);
+  const targetFemales = Math.round(nonChief * (1 - p.maleBirthRatio));
   let femalesPlaced = 0;
   for (; id <= opts.startGoblins; ) {
-    const remaining = opts.startGoblins - id + 1;
-    const needFemale = minFemales - femalesPlaced;
-    // 残り枠が必要な雌数以下になったら雌を確定配置、でなければ出生比で抽選。
-    let sex: Sex;
-    if (needFemale >= remaining) {
-      sex = Sex.Female;
-    } else {
-      sex = rng.nextFloat() < p.maleBirthRatio ? Sex.Male : Sex.Female;
-    }
+    const sex = femalesPlaced < targetFemales ? Sex.Female : Sex.Male;
     if (sex === Sex.Female) femalesPlaced++;
     const pers = sexedPersonality(sex, () => rng.nextFloat() - 0.5);
     goblins.push(makeGoblin(id++, pers, Role.None, sex));
@@ -77,6 +72,7 @@ export function initWorld(
     cum: 0,
     totemRank: 0,
     capPop: opts.capPop,
+    humanHostility: 0, // §13 敵対度: 開始時は和平 (人間への加害なし)
     rng: rng.snapshot(),
     capMaleGoblin: 0,
     // 初期捕虜は「すでに巣にいる産み手候補」とみなし雌ゴブリン扱い (苗床の種)。
@@ -89,7 +85,10 @@ export function initWorld(
     deathLog: [],
     phase: "peace",
     surge: 0,
+    foodBuff: 0,
     overCapTicks: 0,
+    // 初回大規模襲撃は和平間隔 (敵対度 0) ぶん先に予約 (自動スケジューラ §11)。
+    nextBigRaidTick: Math.max(1, Math.round(raidIntervalDays(0, p) * p.ticksPerDay)),
     enemiesRemaining: 0,
     raidLossThisFight: 0,
     raidStartPop: 0,
@@ -218,8 +217,9 @@ export function stepWorld(prev: WorldState, p: WorldParams): WorldState {
     stepCombat(w, p);
   }
 
-  // --- 5. 損耗バフ減衰 (日次率を tick 次へ) ---
+  // --- 5. 損耗バフ・食料バフ減衰 (日次率を tick 次へ) ---
   w.surge = Math.max(0, w.surge - p.surgeDecayPerDay / p.ticksPerDay);
+  w.foodBuff = Math.max(0, w.foodBuff - p.foodDecayPerDay / p.ticksPerDay);
 
   // --- 6. 日境界処理 ---
   if (w.tick % w.ticksPerDay === 0) {
@@ -235,7 +235,33 @@ export function stepWorld(prev: WorldState, p: WorldParams): WorldState {
       } else {
         w.overCapTicks = 0;
       }
+      // 小規模襲撃 = 二層襲撃の恵み側 (§11/KI-05)。平時に日次 0〜1 回、間接報酬。
+      if (p.autoRaidEnabled) {
+        stepSmallRaid(w, rng, p);
+      }
     }
+  }
+
+  // --- 7. 自動襲撃スケジューラ (§11/§13: 敵対度連動の大規模襲撃) ---
+  // opt-in。平時に予約 tick へ達したら大規模襲撃を発火し、次回を現在の敵対度で
+  // 予約する (敵対度が高いほど短間隔 = 高難度 / KI-08)。発火は beginRaid と同等の
+  // 設定を in-place で行う (w は既にクローン済み)。実時間に触れない (KI-09)。
+  if (p.autoRaidEnabled && w.phase === "peace" && w.tick >= w.nextBigRaidTick) {
+    // 規模: 検証済みマクロと同式 (cycle.ts / KI-01)。ランクは累計信仰から。
+    const rank = rankFromCumulative(w.cum, p.rankThresholds);
+    const enemies = p.baseEnemies + w.day * p.enemySlope + p.enemyPerRank * rank;
+    // 勢力: 怒らせた相手が攻めてくる。人間敵対度が高いほど人間勢力が来やすい。
+    const comp = rng.nextFloat() < w.humanHostility ? CAPTIVE_COMP.human : CAPTIVE_COMP.goblin;
+    w.phase = "combat";
+    w.enemiesRemaining = enemies;
+    w.raidStartPop = livePop(w);
+    w.raidStartHp = totalHp(w);
+    w.raidLossThisFight = 0;
+    w.raidIsHuman = comp.isHuman;
+    w.raidMaleFrac = comp.maleFrac;
+    // 次回を現在の敵対度で予約 (§11/§13 の難度ダイヤル)。
+    const gapTicks = Math.max(1, Math.round(raidIntervalDays(w.humanHostility, p) * p.ticksPerDay));
+    w.nextBigRaidTick = w.tick + gapTicks;
   }
 
   w.rng = rng.snapshot();
@@ -245,9 +271,10 @@ export function stepWorld(prev: WorldState, p: WorldParams): WorldState {
 /**
  * 信仰蓄積 (§3) と苗床の確定生産 (§2.5)。
  * 信仰: 頭数比例のシャーマンが毎 tick 蓄積、上限でキャップ (青天井防止 §3)。
- * 苗床: 産み手は雌ゴブリン捕虜のみ (KI-17)。雄ゴブリンは産めず、人間は
- *       中立ルートでは苗床不可 (§13/§14.5.7)。希少な雌ゴブリン捕虜が
- *       ラグ迂回の補充を握る = 雌の希少さが捕虜経済にも一貫する。
+ * 苗床: 産み手は雌の捕虜 (胎を産み手とする部屋 / §2.5 異種交配)。雄は産めない。
+ *       雌ゴブリン捕虜は遅く持続する希少な産み手 (KI-17)。雌人間捕虜も中立
+ *       ルート以外なら母体にでき (§13 ゲート)、大柄ゆえ多産だが消耗も速い
+ *       = 速いが続かない産み手。仔は母体の種を問わず必ずゴブリン (§2.5)。
  */
 function stepFaithAndNursery(w: WorldState, p: WorldParams): void {
   // 信仰: 生存頭数からシャーマン数を頭数比例で出す (KI-03)。
@@ -257,32 +284,51 @@ function stepFaithAndNursery(w: WorldState, p: WorldParams): void {
   w.cum += gain; // 累計は減らない (ランク用 §3)
   w.faith = Math.min(p.faithCap, w.faith + gain); // faithCap で頭打ち (§3)
 
-  // 苗床: 産み手は雌ゴブリン捕虜のみ。
-  const usable = Math.max(0, w.capFemaleGoblin);
-  if (usable > 0) {
-    w.nurseryTimer += 1;
-    if (w.nurseryTimer >= p.nurseryPeriodTicks) {
-      w.nurseryTimer = 0;
-      const born = usable * p.nurseryYieldPerCaptive;
-      // 確定生産: 子として追加 (成長ラグは付くが、自然増より確実 §2.5)。
-      const wholeBorn = Math.floor(born);
-      for (let k = 0; k < wholeBorn; k++) {
-        // 性別はtickとkから決定的に決め、maleBirthRatio に寄せる
-        // (stepFaithAndNursery は rng を持たないため。スナップショット不変)。
-        const hash = ((w.tick * 2654435761) ^ (k * 40503)) >>> 0;
-        const sex = (hash % 100) / 100 < p.maleBirthRatio ? Sex.Male : Sex.Female;
-        const pers = sexedPersonality(sex, () => 0); // 苗床産は個体差なし(簡略)
-        const child = makeGoblin(w.nextGoblinId++, pers, Role.None, sex, {
-          bornTick: w.tick, origin: GoblinOrigin.Nursery,
-        });
-        markChild(child, w.tick);
-        w.goblins.push(child);
-      }
-      // 苗床は産み手 (雌ゴブリン捕虜) を緩やかに消耗する (§2.5 即物性)。
-      w.capFemaleGoblin = Math.max(0, w.capFemaleGoblin - wholeBorn * p.nurseryCaptiveConsume);
-    }
-  } else {
+  // 苗床の母体: 雌ゴブリン捕虜 (基準) と、解禁時のみ雌人間捕虜 (多産)。
+  const goblinHosts = Math.max(0, w.capFemaleGoblin);
+  const humanHosts = p.humanNurseryAllowed ? Math.max(0, w.capFemaleHuman) : 0;
+  if (goblinHosts <= 0 && humanHosts <= 0) {
     w.nurseryTimer = 0;
+    return;
+  }
+
+  w.nurseryTimer += 1;
+  if (w.nurseryTimer < p.nurseryPeriodTicks) return;
+  w.nurseryTimer = 0;
+
+  // ゴブリン母体ぶん (基準レート)。確定生産で子を追加 (成長ラグ付き §2.5)。
+  const goblinBorn = Math.floor(goblinHosts * p.nurseryYieldPerCaptive);
+  birthNurseryChildren(w, p, goblinBorn, 0);
+  // 苗床は産み手を緩やかに消耗する (§2.5 即物性)。
+  w.capFemaleGoblin = Math.max(0, w.capFemaleGoblin - goblinBorn * p.nurseryCaptiveConsume);
+
+  // 人間母体ぶん (大柄ゆえ多産 = 倍率を乗せる)。多産のぶん消耗も速く、人間雌
+  // 捕虜は「速いが続かない」高価値な産み手になる (KI-17 の死蔵を解消)。
+  const humanBorn = Math.floor(humanHosts * p.nurseryYieldPerCaptive * p.humanNurseryYieldFactor);
+  birthNurseryChildren(w, p, humanBorn, goblinBorn); // k オフセットで性別パターンを分離
+  w.capFemaleHuman = Math.max(0, w.capFemaleHuman - humanBorn * p.nurseryCaptiveConsume);
+  // 人間の胎を仔産み機にする残虐が人間勢力の憎悪を募らせる (§13)。
+  if (humanBorn > 0) {
+    w.humanHostility = clamp01(w.humanHostility + humanBorn * p.hostilityPerHumanNurseryBirth);
+  }
+}
+
+/**
+ * 苗床の確定生産で子ゴブリンを count 体追加する (母体の種を問わず仔はゴブリン)。
+ * 性別は tick と (k+kOffset) から決定的に決め maleBirthRatio に寄せる
+ * (stepFaithAndNursery は rng を持たないため / スナップショット不変)。kOffset で
+ * ゴブリン母体ぶんと人間母体ぶんの性別パターンが衝突しないよう分離する。
+ */
+function birthNurseryChildren(w: WorldState, p: WorldParams, count: number, kOffset: number): void {
+  for (let k = 0; k < count; k++) {
+    const hash = ((w.tick * 2654435761) ^ ((k + kOffset) * 40503)) >>> 0;
+    const sex = (hash % 100) / 100 < p.maleBirthRatio ? Sex.Male : Sex.Female;
+    const pers = sexedPersonality(sex, () => 0); // 苗床産は個体差なし(簡略)
+    const child = makeGoblin(w.nextGoblinId++, pers, Role.None, sex, {
+      bornTick: w.tick, origin: GoblinOrigin.Nursery,
+    });
+    markChild(child, w.tick);
+    w.goblins.push(child);
   }
 }
 
@@ -340,19 +386,23 @@ function stepReproduction(w: WorldState, rng: Rng, p: WorldParams): void {
       }
       const pt = g.pregnantTicks + 1;
       if (pt >= p.pregnancyTicks) {
-        // 出産: 性別決定 → 性別別性格。つがいの雌なら親の charmSeed を一部継承
+        // 出産: 一腹の数を引いて (1〜6・中央値2) その数だけ子を産む。各子は
+        // 性別決定 → 性別別性格。つがいの雌なら親の charmSeed を一部継承
         // (将来の血統表現の布石だが第一期は性別のみ)。
-        const sex = rng.nextFloat() < p.maleBirthRatio ? Sex.Male : Sex.Female;
-        const pers = sexedPersonality(sex, () => rng.nextFloat() - 0.5);
-        const child = makeGoblin(w.nextGoblinId++, pers, Role.None, sex, {
-          bornTick: w.tick,
-          motherId: g.id,
-          fatherId: g.mateId, // つがいの父 (乱婚で不定なら null)
-          origin: GoblinOrigin.Born,
-        });
-        markChild(child, w.tick);
+        const litter = drawLitterSize(rng, p);
+        for (let k = 0; k < litter; k++) {
+          const sex = rng.nextFloat() < p.maleBirthRatio ? Sex.Male : Sex.Female;
+          const pers = sexedPersonality(sex, () => rng.nextFloat() - 0.5);
+          const child = makeGoblin(w.nextGoblinId++, pers, Role.None, sex, {
+            bornTick: w.tick,
+            motherId: g.id,
+            fatherId: g.mateId, // つがいの父 (乱婚で不定なら null)
+            origin: GoblinOrigin.Born,
+          });
+          markChild(child, w.tick);
+          w.goblins.push(child);
+        }
         w.goblins[i] = { ...g, pregnant: false, pregnantTicks: 0 };
-        w.goblins.push(child);
       } else {
         w.goblins[i] = { ...g, pregnantTicks: pt };
       }
@@ -415,9 +465,11 @@ function stepReproduction(w: WorldState, rng: Rng, p: WorldParams): void {
     const favBonus =
       female.favoriteId === target.id || target.favoriteId === female.id ? p.favoriteCourtBonus : 0;
     const isMated = female.mateId === target.id;
+    // 損耗バフ (surge) と食料バフ (foodBuff) が求愛成功率を底上げ (§2.5/KI-05)。
+    // マクロの breedMult = 1 + surge + foodBuff に対応 (World は重みを 0.5 に割る)。
     const chance =
       (p.courtBaseChance * (0.5 + compat) + favBonus + (isMated ? 0.3 : 0)) *
-      (1 + w.surge * 0.5);
+      (1 + w.surge * 0.5 + w.foodBuff * 0.5);
     if (rng.nextFloat() < chance) {
       // 成立: 両者を寝床での性行為へ (matingTicks=0, 相手 id をセット)。
       const ti = idx.get(target.id)!;
@@ -921,10 +973,12 @@ export function emergencyReinforce(
         w.faith += p.sacrificeFaith;
         w.cum += p.sacrificeFaith;
         w.capMaleHuman -= 1;
+        w.humanHostility = clamp01(w.humanHostility + p.hostilityPerHumanSacrifice); // §13
       } else if (w.capFemaleHuman >= 1) {
         w.faith += p.sacrificeFaith;
         w.cum += p.sacrificeFaith;
         w.capFemaleHuman -= 1;
+        w.humanHostility = clamp01(w.humanHostility + p.hostilityPerHumanSacrifice); // §13
       } else if (w.capFemaleGoblin >= 1) {
         // 希少な産み手を泣く泣く生贄に (最後の手段)。
         w.faith += p.sacrificeFaith;
@@ -976,6 +1030,93 @@ function fledge(w: WorldState, rng: Rng): void {
     const { idx } = arr.splice(pick, 1)[0];
     killGoblin(w, idx, "fledge"); // 巣立ち (巣からの除外) を一元処理
     removed++;
+  }
+}
+
+/**
+ * 一腹の数を引く (1..litterCdf.length)。litterCdf は累積分布で末尾が 1.0。
+ * 既定 (world_params) は中央値 2・期待値 ≈ 2.46 の裾の長い分布。
+ * rng を 1 回だけ消費する (決定性・スナップショット安全 / KI-09)。
+ */
+function drawLitterSize(rng: Rng, p: WorldParams): number {
+  const r = rng.nextFloat();
+  const cdf = p.litterCdf;
+  for (let i = 0; i < cdf.length; i++) {
+    if (r < cdf[i]) return i + 1;
+  }
+  return cdf.length;
+}
+
+/** 0..1 にクランプ (敵対度メーター用 / §13)。 */
+function clamp01(x: number): number {
+  return x < 0 ? 0 : x > 1 ? 1 : x;
+}
+
+/**
+ * 人間捕虜を 1 体解放する (§13 解放/追放の出口)。所属勢力の敵対度をわずかに
+ * 下げる (GDD §13: 低下量は控えめ = 「捕獲→解放」で敵対度をリセットさせない)。
+ * 解放は中立ルートでも許される唯一の人間捕虜の出口 (生贄/苗床/売却/朝貢は不可)。
+ */
+export function releaseHumanCaptive(prev: WorldState, p: WorldParams, sex: Sex): WorldState {
+  const w = cloneWorld(prev);
+  if (sex === Sex.Male && w.capMaleHuman >= 1) w.capMaleHuman -= 1;
+  else if (sex === Sex.Female && w.capFemaleHuman >= 1) w.capFemaleHuman -= 1;
+  else return prev; // 解放できる人間捕虜がいない
+  w.humanHostility = clamp01(w.humanHostility - p.hostilityReleaseDrop);
+  return w;
+}
+
+/**
+ * 敵対度 → 大規模襲撃の間隔 (日) を線形写像する (§11/KI-08 の検証帯)。
+ * 和平 (0) で raidIntervalDaysAtPeace、MAX (1) で raidIntervalDaysAtMax (最短)。
+ * 襲撃トリガ層がこの間隔を読んで大規模襲撃を仕掛ける = 敵対度ループの消費側。
+ * 純粋関数: state を持たず、敵対度メーターだけから難度ダイヤルを引く。
+ */
+export function raidIntervalDays(hostility: number, p: WorldParams): number {
+  const h = clamp01(hostility);
+  return p.raidIntervalDaysAtPeace + (p.raidIntervalDaysAtMax - p.raidIntervalDaysAtPeace) * h;
+}
+
+/**
+ * 小規模襲撃 (二層襲撃の恵み側 / §11/KI-05)。平時に日次 0〜1 回。検証済みマクロ
+ * (cycle.ts) と同一ロジック: 微小損耗 (余裕で勝つ) の後、食料/捕虜の間接報酬を引く。
+ * 報酬は必ず間接経路 (食料バフ→増殖 / 捕虜→苗床) を通しインフレを避ける (KI-05)。
+ * 報酬は隣接ゴブリン勢力からの小競り合いとし、人間勢力の敵対度は動かさない。
+ * RNG 消費順は cycle.ts と揃える (発生判定 → 報酬分岐)。
+ */
+function stepSmallRaid(w: WorldState, rng: Rng, p: WorldParams): void {
+  if (rng.nextFloat() >= p.smallRaidProb) return;
+
+  // 微小損耗: 頭数比ぶんを離散化 (第一期スケールでは多くの日で 0 = 余裕で勝つ)。
+  const losses = Math.floor(livePop(w) * p.smallLossFrac);
+  for (let n = 0; n < losses; n++) {
+    const idx = w.goblins.findIndex(
+      (g) => g.state !== GoblinState.Dead && !g.isUnique && !isChild(g, p)
+    );
+    if (idx < 0) break;
+    killGoblin(w, idx, "combat");
+  }
+
+  // 報酬分岐 (食料のみ / 捕虜のみ / 両取り)。間接経路のみ (KI-05)。
+  const roll = rng.nextFloat();
+  const rs = p.smallRewardScale;
+  const gainFood = () => {
+    w.foodBuff = Math.min(p.foodBuffMax, w.foodBuff + p.foodGain * rs);
+  };
+  const gainCaptives = () => {
+    // 隣接ゴブリン勢力から。出生比どおり雄寄りで雌雄に振り分け (CAPTIVE_COMP.goblin)。
+    const total = p.captiveGainSmall * rs;
+    const males = total * CAPTIVE_COMP.goblin.maleFrac;
+    w.capMaleGoblin += males;
+    w.capFemaleGoblin += total - males;
+  };
+  if (roll < p.smallFoodOnly) {
+    gainFood();
+  } else if (roll < p.smallFoodOnly + p.smallCaptiveOnly) {
+    gainCaptives();
+  } else {
+    gainFood();
+    gainCaptives();
   }
 }
 

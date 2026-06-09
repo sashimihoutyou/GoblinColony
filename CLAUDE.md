@@ -88,7 +88,7 @@ World 層     world.ts        tick 単位。個体集合 + 一括戦闘解決（
 node --experimental-transform-types parity/snapshot_test.ts       # SNAPSHOT_ROUNDTRIP_OK
 node --experimental-transform-types parity/state_machine_test.ts  # STATEMACHINE_OK
 node --experimental-transform-types parity/tick_driver_test.ts    # TICKDRIVER_OK
-node --experimental-transform-types parity/world_test.ts          # World 層統合テスト（現状一部 FAIL）
+node --experimental-transform-types parity/world_test.ts          # World 層統合テスト（WORLD_OK）
 ```
 
 ビルド: `node build_dashboard.mjs viz/goblin_colony_dashboard.html` で自己完結 HTML を生成
@@ -105,8 +105,10 @@ node --experimental-transform-types parity/world_test.ts          # World 層統
   `parity/rng.py` が無く、単体では実行できない。照合ハーネス `cycle_ts.ts` / `compare.mjs` も未作成のため
   `parity:check`（Python ↔ TS のビット一致 = ALL_MATCH）は未成立。実装するなら rng.ts を Python へ移植し、
   RNG 消費順序を TS と完全に揃えること。
-- **World 層の照合が未着手。** `parity/world_test.ts` は現状一部 FAIL する（`次の一手` 1 を参照）。
-  これは World 層ロジックの未検証事項であり、力学の確定前提を崩さないよう安易に塞がないこと。
+- **World 層の reproduction/襲撃系は稼働済み（KI-22〜25）。** `parity/world_test.ts` は WORLD_OK。
+  求愛→つがい→出産、人間母体の苗床、敵対度メーター、自動襲撃スケジューラ、二層襲撃の小規模側まで
+  実装・検証済み。実数バランス（一腹分布 / 人間母体倍率 / 敵対度係数 / 小規模報酬）は §15 調整対象で、
+  力学の確定前提を崩さないよう安易にいじらないこと（KI-22/25 の相互作用に注意）。
 
 ## 設計資料への入口（最初に読むべき順）
 
@@ -118,7 +120,10 @@ node --experimental-transform-types parity/world_test.ts          # World 層統
 
 ## 次の一手（未着手 / README より）
 
-1. **World 層の照合** — 個体 tick + 一括戦闘の集計統計が `cycle.ts` のマクロ安定帯に収まるか検証。
-2. **World のスナップショット往復** — 個体配列・進行中フラグが増えた状態で再度 KI-09 往復を通す。
+World 層の照合・reproduction・襲撃系は達成済み（KI-22〜25）。残りは:
+
+1. **§13 外交の双方向化** — 朝貢での敵対度低下・3 勢力分の敵対度メーター分離（KI-24 残り）。
+2. **§15 実数調整** — §12 夜間バッチ自動プレイヤーで多シードを回し、一腹分布 / 人間母体倍率 /
+   敵対度係数 / 小規模報酬 をまとめてチューニング（KI-22/25 の相互作用が論点）。
 3. **描画層（Canvas 2D）** — state を描くだけの状態を持たない Renderer。重くなれば PixiJS へ。
-4. **簡易自動プレイヤー（§12 夜間バッチ）** で多数プレイを回し実数調整（§15）。
+4. **食料生産** — 増殖の食料従属（§2.5）・信仰のトーテムランク連動（§3）。

@@ -29,6 +29,24 @@ export interface WorldParams {
   femaleDeathFactor: number; // 雌の事故死率の倍率 (<1: 逃げ上手で死ににくい)
   pregnancyTicks: number; // 妊娠フラグ → 出産フラグまでの tick
   childGrowTicks: number; // 子 → 通常個体へ成長する tick
+  // 1 回の出産で生まれる子の数 (一腹) の累積分布。litterCdf[i] = P(litter <= i+1)。
+  // 末尾は必ず 1.0。drawLitterSize が rng と突き合わせて 1..litterCdf.length を引く。
+  litterCdf: number[];
+
+  // --- 求愛・つがい (乱婚制 / KI-18) ---
+  matingDurationTicks: number; // 寝床にこもる tick (完了で雌が確定妊娠)
+  courtBaseChance: number; // 雌 1 体が 1 tick に求愛成立する基礎確率 (相性0.5基準)
+  favoriteCourtBonus: number; // お気に入り相手への求愛成功補正
+  favoriteChance: number; // 性行為後、相性×これでお気に入り登録
+  bondMaleHpBonus: number; // つがい雄: 最大 HP 増 (生存力)
+  bondMaleFearReduce: number; // つがい雄: 恐怖閾値の引き下げ (より粘る)
+  bondFemaleWorkBonus: number; // つがい雌: 仕事/採餌の重み増 (内政効率)
+
+  // --- 雄同士のケンカ / 自然つがい化 (KI-19/KI-21) ---
+  rivalryChance: number; // 競合雄ペアがケンカに発展する 1 tick 確率
+  rivalryMateBonus: number; // ケンカ強さ: つがい持ちの雄に乗る補正
+  rivalryInjury: number; // 敗者が負う HP 減
+  captiveBondChance: number; // 捕虜が自然につがい化する 1 tick 確率 (ごく稀)
 
   // 損耗時バフ (§2.5 / KI-04: 必須骨格)
   surgeTrigger: number;
@@ -51,7 +69,46 @@ export interface WorldParams {
   // 苗床: 捕虜を産み手とする確定生産 (ラグを迂回する補充 / KI-13)。
   nurseryPeriodTicks: number; // 何 tick ごとに確定生産するか
   nurseryYieldPerCaptive: number; // 1 生産あたり、捕虜 1 人が産む頭数
-  nurseryCaptiveConsume: number; // 1 体生むごとに消耗する雌ゴブリン捕虜数
+  nurseryCaptiveConsume: number; // 1 体生むごとに消耗する雌捕虜数
+  // 人間の雌捕虜も苗床の母体になれる (§2.5 異種交配: 仔は必ずゴブリン)。人間の
+  // 胎は大柄ゆえ多産 = 産出が雌ゴブリンの humanNurseryYieldFactor 倍 (ゴブリンの
+  // 残虐さ / 人間雌捕虜の価値高騰)。中立ルート (§13) は人間への加害不可のため
+  // humanNurseryAllowed=false でこの出口を封じる (生贄/苗床/売却/朝貢の禁止と整合)。
+  humanNurseryAllowed: boolean; // 人間雌捕虜を苗床に置けるか (中立ルートで false)
+  humanNurseryYieldFactor: number; // 人間母体の産出倍率 (>1: 多産)
+
+  // --- 人間勢力の敵対度 (§13 メーター → §11 大規模襲撃間隔 / KI-08) ---
+  // 残虐な仕打ちで上昇し、解放/朝貢で下降。敵対度が高いほど大規模襲撃が短間隔
+  // (高難度) になる。プレイヤーの選択で動く表の静的ダイヤル (KI-10 の DDA とは別)。
+  hostilityPerHumanNurseryBirth: number; // 人間母体での 1 出産あたり上昇
+  hostilityPerHumanSacrifice: number; // 人間捕虜 1 体の生贄あたり上昇
+  hostilityReleaseDrop: number; // 人間捕虜 1 体の解放での下降 (§13 控えめ)
+  raidIntervalDaysAtPeace: number; // 敵対度 0 のときの大規模襲撃間隔 (日)
+  raidIntervalDaysAtMax: number; // 敵対度 1 (MAX) のときの間隔 (日・最短)
+
+  // --- 自動襲撃スケジューラ (§11/§12。raidIntervalDays を読んで大規模襲撃を発火) ---
+  // opt-in (既定 false): 既存の外部トリガ (beginRaid) ベースのテスト/手動運用を
+  // 壊さないため。real game / §12 夜間バッチ自動プレイヤーが true にして使う。
+  autoRaidEnabled: boolean;
+  // 大規模襲撃の規模 = 検証済みマクロと同式 (cycle.ts / KI-01): baseEnemies
+  // + day*enemySlope + enemyPerRank*rank。率を再定義せず baseParams から写す。
+  baseEnemies: number;
+  enemySlope: number;
+  enemyPerRank: number;
+  rankThresholds: number[]; // 累計信仰 → ランク (cycle.ts rankFromCumulative と共有)
+
+  // --- 小規模襲撃 = 二層襲撃の「恵み」側 (§11/KI-05。日次0〜1回・間接報酬) ---
+  // 検証済みマクロ (cycle.ts) と同一出所。報酬は必ず間接経路 (食料バフ→増殖 /
+  // 捕虜→苗床) を経由しインフレを避ける (KI-05)。autoRaidEnabled 配下で平時に発生。
+  smallRaidProb: number; // 1 日に小規模襲撃が起きる確率
+  smallLossFrac: number; // 微小損耗 (頭数比・余裕で勝つ)
+  smallFoodOnly: number; // 報酬が食料のみになる確率
+  smallCaptiveOnly: number; // 報酬が捕虜のみになる確率 (残りは両取り)
+  foodGain: number; // 1 回の食料報酬で増える食料バフ
+  foodBuffMax: number; // 食料バフの上限 (青天井防止 §3)
+  foodDecayPerDay: number; // 食料バフの 1 日あたり減衰
+  smallRewardScale: number; // 小規模報酬の倍率 (難度ダイヤルの調整代)
+  captiveGainSmall: number; // 小規模襲撃 1 回の捕虜獲得数
   // 召喚: 信仰を消費して即時頭数補充 (§4 下僕召喚)。
   summonCost: number; // 召喚 1 回の信仰コスト
   summonPop: number; // 召喚 1 回で増える頭数
@@ -120,8 +177,30 @@ export function makeWorldParams(ticksPerDay = 10): WorldParams {
       ((b.BREED_PER_LABOR / ticksPerDay) * LAG_COMPENSATION) / (1 - MALE_BIRTH_RATIO),
     maleBirthRatio: MALE_BIRTH_RATIO,
     femaleDeathFactor: 0.33, // 雌は逃げ上手で事故死 1/3 (希少資源の保護)
-    pregnancyTicks: ticksPerDay * 2, // 約 2 日で出産フラグ (§15 調整)
-    childGrowTicks: ticksPerDay * 2, // 約 2 日で成長 (即戦力にならないラグ §2.5)
+    // 妊娠・成熟をどちらも 1 日に短縮 (生死を軽くする調整 §15)。出産も成体化も
+    // 速くなり、個体が「すぐ産まれてすぐ一人前」= 1 体の重みが下がる方向。
+    pregnancyTicks: ticksPerDay, // 約 1 日で出産フラグ
+    childGrowTicks: ticksPerDay, // 約 1 日で成長 (短い成長ラグ)
+    // 一腹の数 = 1〜6、中央値 2 (生死を軽くする: 1 回でまとまった補充)。
+    // weights [.30,.30,.18,.12,.06,.04] → cdf。cdf(1)=.30<.5≤.60=cdf(2) で中央値 2。
+    // 期待値 ≈ 2.46。少産が大半で稀に大量に産む裾の長い分布。
+    litterCdf: [0.3, 0.6, 0.78, 0.9, 0.96, 1.0],
+
+    // 求愛・つがい (KI-18)。確定妊娠＋出産直後即可の高回転のため、求愛頻度は
+    // 控えめにして増殖速度を制御する。最終値は実機調整 (§15)。
+    matingDurationTicks: 3, // 寝床に数 tick こもる
+    courtBaseChance: 0.08, // 雌 1 体が 1 tick に求愛成立する基礎確率 (相性0.5基準)
+    favoriteCourtBonus: 0.06, // お気に入り相手なら成功しやすい
+    favoriteChance: 0.5, // 性行為後、相性×0.5 でお気に入り登録
+    bondMaleHpBonus: 3, // つがい雄: 最大 HP +3 (生存力)
+    bondMaleFearReduce: 0.1, // つがい雄: 恐怖閾値 -0.1 (より粘る)
+    bondFemaleWorkBonus: 0.3, // つがい雌: 仕事/採餌 +0.3 (内政効率)
+
+    // 雄同士のケンカ (KI-19) / 自然つがい化 (KI-21)。
+    rivalryChance: 0.05, // 競合雄ペアが 1 tick にケンカへ発展する確率
+    rivalryMateBonus: 3, // つがい持ちの雄はケンカで強い (HP 換算 +3)
+    rivalryInjury: 3, // 敗者は HP-3 (即死はしない)
+    captiveBondChance: 0.002, // 捕虜が自然つがい化する 1 tick 確率 (ごく稀)
 
     surgeTrigger: b.SURGE_TRIGGER,
     surgeGain: b.SURGE_GAIN,
@@ -143,6 +222,35 @@ export function makeWorldParams(ticksPerDay = 10): WorldParams {
     nurseryPeriodTicks: ticksPerDay * 2, // 2 日に一度 確定生産
     nurseryYieldPerCaptive: b.NURSERY_RATE * 2, // 2 日ぶんをまとめて (≒0.16/捕虜)
     nurseryCaptiveConsume: b.CAPTIVE_CONSUME, // 出産で雌捕虜が消耗 (§2.5)
+    // 人間母体: 中立ルート以外では解禁し、大柄ゆえ多産 (×2)。多産ぶん消耗も速く
+    // 「速いが続かない人間 vs 遅く持続する雌ゴブリン」の前向きトレードオフになる。
+    // 死蔵しがちだった人間雌捕虜 (KI-17) に高価値な出口を与える。最終値は §15。
+    humanNurseryAllowed: true,
+    humanNurseryYieldFactor: 2.0,
+    // 敵対度 (§13)。苗床/生贄での人間捕虜の消費が積み上げ、解放が控えめに戻す
+    // (GDD §13: 解放の低下量は「自然悪化一回ぶん」相当 = 増分の数倍は使い潰している)。
+    // §11/KI-08 の検証帯に合わせ、和平 5 日 → MAX 1 日の間隔へ写像する。最終値は §15。
+    hostilityPerHumanNurseryBirth: 0.03,
+    hostilityPerHumanSacrifice: 0.05,
+    hostilityReleaseDrop: 0.04,
+    raidIntervalDaysAtPeace: 5,
+    raidIntervalDaysAtMax: 1,
+    // 自動襲撃スケジューラ: 既定はオフ。規模式は cycle.ts と同一の出所 (KI-01)。
+    autoRaidEnabled: false,
+    baseEnemies: b.BASE_ENEMIES,
+    enemySlope: b.ENEMY_SLOPE,
+    enemyPerRank: b.ENEMY_PER_RANK,
+    rankThresholds: b.RANK_THRESHOLDS,
+    // 小規模襲撃 (二層襲撃の恵み側 / KI-05)。すべて cycle.ts と同一出所。
+    smallRaidProb: b.SMALL_PROB,
+    smallLossFrac: b.SMALL_LOSS_FRAC,
+    smallFoodOnly: b.SMALL_FOOD_ONLY,
+    smallCaptiveOnly: b.SMALL_CAPTIVE_ONLY,
+    foodGain: b.FOOD_GAIN,
+    foodBuffMax: b.FOOD_BUFF_MAX,
+    foodDecayPerDay: b.FOOD_DECAY,
+    smallRewardScale: b.SMALL_REWARD_SCALE,
+    captiveGainSmall: b.CAPTIVE_GAIN,
     summonCost: b.SUMMON_COST,
     summonPop: b.SUMMON_POP,
     sacrificeFaith: b.SACRIFICE_FAITH,

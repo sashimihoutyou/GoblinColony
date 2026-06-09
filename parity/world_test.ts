@@ -6,7 +6,7 @@
  * 「検証済み安定帯に統計的に収まるか」「決定的か」「KI-09 を満たすか」を見る。
  */
 import { makeWorldParams, CAPTIVE_COMP } from "../src/sim/world_params.ts";
-import { GoblinState, Sex, Role } from "../src/sim/goblin.ts";
+import { GoblinState, Sex, Role, GoblinOrigin } from "../src/sim/goblin.ts";
 const CAPTIVE_COMP_HUMAN = CAPTIVE_COMP.human;
 import {
   initWorld,
@@ -16,6 +16,8 @@ import {
   takeConcubine,
   approveBond,
   tearApartBond,
+  releaseHumanCaptive,
+  raidIntervalDays,
   livePop,
   cloneWorld,
 } from "../src/sim/world.ts";
@@ -118,10 +120,13 @@ const p = makeWorldParams(10);
 // --- 5. 戦闘: 雄の戦線が過酷な襲撃で損耗する (§8/§5/性別) ---
 // 性別導入で戦力 = 雄。雌は戦線に立たず温存される。雄を十分確保した規模で
 // 損耗が出ることを確認する。cycle との全滅閾値一致は構造上不可能 (KI-12)。
+// 初期比を 7:3 で固定したぶん雄主力 (~14) が厚く、§5 の一斉離脱で死者が出にくい
+// (KI-13: World は離脱で死者が出にくい)。死者で測る本テストは「明確に過酷」な
+// 規模に校正する (28 体。24 では全シードで離脱しきり損耗 0 になる)。
 {
   let w = initWorld(p, { startGoblins: 20, capPop: 99, seed: 5, withChief: false });
   const before = livePop(w);
-  w = beginRaid(w, 24); // 雄 ~14 に対し過酷な規模
+  w = beginRaid(w, 28); // 雄 ~14 に対し過酷な規模
   let combatTicks = 0;
   while (w.phase === "combat" && combatTicks < 500) {
     w = stepWorld(w, p);
@@ -134,7 +139,7 @@ const p = makeWorldParams(10);
   // 族長ありは盾効果で損耗が同等以下になる (§8)
   let w2 = initWorld(p, { startGoblins: 20, capPop: 99, seed: 5, withChief: true });
   const before2 = livePop(w2);
-  w2 = beginRaid(w2, 24);
+  w2 = beginRaid(w2, 28);
   let t2 = 0;
   while (w2.phase === "combat" && t2 < 500) {
     w2 = stepWorld(w2, p);
@@ -243,6 +248,128 @@ const p = makeWorldParams(10);
   check("人間勢力撃退で人間捕虜を得る", w.capMaleHuman + w.capFemaleHuman > 0,
     `人間捕虜 M${w.capMaleHuman.toFixed(1)}/F${w.capFemaleHuman.toFixed(1)}`);
   check("人間勢力からはゴブリン捕虜を得ない", w.capMaleGoblin + w.capFemaleGoblin === 0, "");
+}
+
+// --- 9c. 人間母体の苗床: 多産で価値が高く、中立ルートでは封じられる (§2.5/§13) ---
+// 人間雌捕虜は中立ルート以外なら苗床の母体になれ、大柄ゆえ多産 (§2.5 異種交配)。
+// 同数の母体ならゴブリン雌より多く産むこと、humanNurseryAllowed=false で完全に
+// 封じられること (中立ルート §13) を確認する。
+{
+  // 同じ母体数 (6) を、人間/ゴブリンで別々に与えて産出を比較する。
+  const yieldFrom = (host: "human" | "goblin", allowed: boolean): number => {
+    const pp = { ...makeWorldParams(10), humanNurseryAllowed: allowed };
+    let w = initWorld(pp, { startGoblins: 8, capPop: 9999, seed: 1, withChief: true });
+    if (host === "human") w.capFemaleHuman = 6;
+    else w.capFemaleGoblin = 6;
+    const initial = new Set(w.goblins.map((g) => g.id));
+    let nursery = 0;
+    for (let d = 0; d < 8; d++) for (let i = 0; i < pp.ticksPerDay; i++) {
+      w = stepWorld(w, pp);
+    }
+    for (const g of w.goblins) {
+      if (!initial.has(g.id) && g.origin === GoblinOrigin.Nursery) nursery++;
+    }
+    return nursery;
+  };
+  const humanYield = yieldFrom("human", true);
+  const goblinYield = yieldFrom("goblin", true);
+  const humanBlocked = yieldFrom("human", false);
+  check("人間母体の苗床はゴブリン母体より多産 (§2.5 異種交配)", humanYield > goblinYield,
+    `人間=${humanYield} > ゴブリン=${goblinYield}`);
+  check("中立ルートでは人間母体の苗床が封じられる (§13)", humanBlocked === 0,
+    `封鎖時の人間苗床産=${humanBlocked}`);
+}
+
+// --- 9d. 敵対度ループ: 人間捕虜の残虐使用→敵対度↑→大規模襲撃が短間隔 (§13/§11) ---
+// 残虐 (苗床/生贄) が憎悪を募らせ、解放が控えめに戻す。敵対度は §11/KI-08 の
+// 大規模襲撃間隔 (和平5日→MAX1日) を駆動する = 残虐→憎悪→報復の因果が閉じる。
+{
+  // (a) 人間母体の苗床で敵対度が上がる。ゴブリン母体では上がらない。
+  let wh = initWorld(p, { startGoblins: 6, capPop: 9999, seed: 1, withChief: true });
+  wh.capFemaleHuman = 12;
+  for (let d = 0; d < 10; d++) for (let i = 0; i < p.ticksPerDay; i++) wh = stepWorld(wh, p);
+  check("人間母体の苗床で敵対度が上がる (§13)", wh.humanHostility > 0, `hostility=${wh.humanHostility.toFixed(2)}`);
+
+  let wg = initWorld(p, { startGoblins: 6, capPop: 9999, seed: 1, withChief: true });
+  wg.capFemaleGoblin = 12;
+  for (let d = 0; d < 10; d++) for (let i = 0; i < p.ticksPerDay; i++) wg = stepWorld(wg, p);
+  check("ゴブリン母体では敵対度は上がらない (人間への加害ではない)", wg.humanHostility === 0, `hostility=${wg.humanHostility.toFixed(2)}`);
+
+  // (b) 敵対度が上がるほど大規模襲撃間隔が短くなる (高難度化)。
+  const peaceGap = raidIntervalDays(0, p);
+  const warGap = raidIntervalDays(wh.humanHostility, p);
+  check("敵対度が高いほど大規模襲撃が短間隔 (§11/KI-08)", warGap < peaceGap,
+    `和平${peaceGap}日 → 敵対${warGap.toFixed(1)}日`);
+  check("敵対度の写像が検証帯 (和平5日/MAX1日) に収まる",
+    raidIntervalDays(0, p) === 5 && raidIntervalDays(1, p) === 1, "");
+
+  // (c) 解放で敵対度が下がる (§13 控えめ)。
+  const beforeRel = wh.humanHostility;
+  const wr = releaseHumanCaptive(wh, p, Sex.Female);
+  check("人間捕虜の解放で敵対度が下がる (§13)", wr.humanHostility < beforeRel,
+    `${beforeRel.toFixed(2)} → ${wr.humanHostility.toFixed(2)}`);
+
+  // (d) 人間捕虜の生贄でも敵対度が上がる。
+  let ws = initWorld(p, { startGoblins: 4, capPop: 30, seed: 1, withChief: true });
+  ws.capMaleHuman = 6;
+  ws = emergencyReinforce(ws, p, 20); // 信仰生成で人間捕虜を生贄に
+  check("人間捕虜の生贄で敵対度が上がる (§13)", ws.humanHostility > 0, `hostility=${ws.humanHostility.toFixed(2)}`);
+}
+
+// --- 9e. 自動襲撃スケジューラ: 敵対度が高いほど大規模襲撃が頻発 (§11/§13/KI-08) ---
+// raidIntervalDays を読んで大規模襲撃を自動発火する。敵対度を上げた群れほど
+// 一定期間の襲撃回数が増えること (難度ダイヤルが実挙動に出る) を確認する。
+{
+  // 一定期間の大規模襲撃回数を数える (phase が peace→combat へ立った回数)。
+  const countRaids = (hostility: number, days: number): number => {
+    const pp = { ...makeWorldParams(10), autoRaidEnabled: true };
+    let w = initWorld(pp, { startGoblins: 16, capPop: 60, seed: 1, withChief: true, startCaptives: 6 });
+    w.humanHostility = hostility; // 敵対度を固定して間隔への効きだけを見る
+    let raids = 0, prevPhase = w.phase;
+    for (let d = 0; d < days; d++) for (let i = 0; i < pp.ticksPerDay; i++) {
+      w = stepWorld(w, pp);
+      w.humanHostility = hostility; // 苗床等で動かさず固定 (本テストは間隔の検証)
+      if (prevPhase !== "combat" && w.phase === "combat") raids++;
+      prevPhase = w.phase;
+    }
+    return raids;
+  };
+  const peaceRaids = countRaids(0, 30); // 間隔 5 日 → ~6 回
+  const warRaids = countRaids(1, 30); // 間隔 1 日 → 平時 tick で頻発
+  check("自動スケジューラが大規模襲撃を発火する", peaceRaids > 0, `和平30日=${peaceRaids}回`);
+  check("敵対度MAXの方が襲撃が頻発する (§11/§13 難度ダイヤル)", warRaids > peaceRaids,
+    `和平=${peaceRaids}回 < 敵対MAX=${warRaids}回`);
+
+  // 既定 (autoRaidEnabled=false) では自動襲撃は起きない (既存挙動を壊さない)。
+  let wq = initWorld(p, { startGoblins: 10, capPop: 24, seed: 1, withChief: true });
+  let off = true;
+  for (let d = 0; d < 30; d++) for (let i = 0; i < p.ticksPerDay; i++) { wq = stepWorld(wq, p); if (wq.phase === "combat") off = false; }
+  check("既定では自動襲撃は起きない (opt-in)", off, "");
+}
+
+// --- 9f. 小規模襲撃: 二層襲撃の恵み側が間接報酬を降らせる (§11/KI-05) ---
+// 平時に日次0〜1回、食料バフ/捕虜の間接報酬。インフレせず増殖を底上げする。
+{
+  const pp = { ...makeWorldParams(10), autoRaidEnabled: true,
+    // 大規模襲撃を遠ざけて小規模の恵みだけを観測する。
+    raidIntervalDaysAtPeace: 9999, raidIntervalDaysAtMax: 9999 };
+  let w = initWorld(pp, { startGoblins: 12, capPop: 40, seed: 1, withChief: true });
+  const capBefore = w.capMaleGoblin + w.capFemaleGoblin;
+  let sawFood = false;
+  for (let d = 0; d < 30; d++) {
+    for (let i = 0; i < pp.ticksPerDay; i++) w = stepWorld(w, pp);
+    if (w.foodBuff > 0) sawFood = true;
+  }
+  const capAfter = w.capMaleGoblin + w.capFemaleGoblin;
+  check("小規模襲撃で捕虜の恵みが積もる (§11/KI-05)", capAfter > capBefore,
+    `捕虜 ${capBefore.toFixed(1)} → ${capAfter.toFixed(1)}`);
+  check("小規模襲撃で食料バフが発生する (増殖を底上げ)", sawFood, "");
+
+  // 既定 (autoRaidEnabled=false) では小規模襲撃も起きない (opt-in)。
+  let wq = initWorld(p, { startGoblins: 12, capPop: 40, seed: 1, withChief: true });
+  for (let d = 0; d < 30; d++) for (let i = 0; i < p.ticksPerDay; i++) wq = stepWorld(wq, p);
+  check("既定では小規模襲撃も起きない (食料バフ0/捕虜不変)",
+    wq.foodBuff === 0 && wq.capMaleGoblin + wq.capFemaleGoblin === 0, "");
 }
 
 // --- 10. 性別: 出産は雄に偏る (世界観: 雄が多産) ---
