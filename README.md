@@ -63,17 +63,24 @@ node --experimental-transform-types parity/tick_driver_test.ts    # 速度倍率
 node --experimental-transform-types parity/world_test.ts          # World 層の統合テスト
 ```
 
-現状: snapshot / statemachine / tickdriver はグリーン (SNAPSHOT_ROUNDTRIP_OK /
-STATEMACHINE_OK / TICKDRIVER_OK)。world_test は World 層の照合が未着手のため一部 FAIL する
-(`次の一手` 1. を参照)。Python ↔ TS の `parity:check` (ALL_MATCH) は照合ハーネス未実装のため未成立。
+現状: 4 スイートとも グリーン (SNAPSHOT_ROUNDTRIP_OK / STATEMACHINE_OK /
+TICKDRIVER_OK / WORLD_OK)。world_test の旧 FAIL (reproduction 未稼働) は KI-22 で解消。
+Python ↔ TS の `parity:check` (ALL_MATCH) は照合ハーネス未実装のため未成立 (cycle 層)。
+
+## 達成済み (World 層・KI-12〜25)
+
+- 個体ステートマシンの群れ tick 駆動・平時安定帯・巣立ち安全弁・戦闘 (族長盾/surge)。
+- 捕虜システム (苗床 / 生贄+召喚) と襲撃込み通し 30 日の安定帯 (KI-13/15)。
+- 求愛→つがい→出産の reproduction 稼働 (KI-22)。初期 7:3・妊娠/成熟 1 日・一腹 1〜6。
+- 人間母体の苗床 (多産・中立ルート封鎖 / KI-23)。
+- 敵対度メーター + 自動襲撃スケジューラ (残虐→憎悪→報復の自走 / KI-24)。
+- 二層襲撃の小規模 (恵み) 側 (§11/KI-05 / KI-25)。
 
 ## 次の一手 (未着手)
 
-1. **World 層**: 個体集合 + 一括戦闘解決 (§8 簡易ランチェスター) + 事故死の
-   離散イベント (§2.5) を tick で回し、その集計統計が cycle.ts の
-   マクロ安定帯 (辛勝レンジ) に収まるか照合する。個体層とマクロ層の橋渡し。
-2. **World のスナップショット往復**: 個体配列・進行中フラグが増えた状態で
-   再度 KI-09 の往復テストを通す (フラグが増えるたびに足すだけ、の運用)。
+1. **§13 外交の双方向化**: 朝貢での敵対度低下・3 勢力分の敵対度メーター分離 (KI-24 残り)。
+2. **§15 実数調整**: 簡易自動プレイヤー (§12 夜間バッチ) で多シードを回し、一腹分布 /
+   人間母体倍率 / 敵対度係数 / 小規模報酬 をまとめてチューニング (KI-22/25 の相互作用が論点)。
 3. **描画層 (Canvas 2D)**: state を描くだけの状態を持たない Renderer。
    個体数が増えて重くなったら PixiJS へ。frontend-design スキルを参照。
-4. 簡易自動プレイヤー (§12 夜間バッチ) で多数プレイを回し実数調整 (§15)。
+4. **食料生産**: 増殖の食料従属 (§2.5)・信仰のトーテムランク連動 (§3)。
