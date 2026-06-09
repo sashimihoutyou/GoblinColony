@@ -69,7 +69,13 @@ export interface WorldParams {
   // 苗床: 捕虜を産み手とする確定生産 (ラグを迂回する補充 / KI-13)。
   nurseryPeriodTicks: number; // 何 tick ごとに確定生産するか
   nurseryYieldPerCaptive: number; // 1 生産あたり、捕虜 1 人が産む頭数
-  nurseryCaptiveConsume: number; // 1 体生むごとに消耗する雌ゴブリン捕虜数
+  nurseryCaptiveConsume: number; // 1 体生むごとに消耗する雌捕虜数
+  // 人間の雌捕虜も苗床の母体になれる (§2.5 異種交配: 仔は必ずゴブリン)。人間の
+  // 胎は大柄ゆえ多産 = 産出が雌ゴブリンの humanNurseryYieldFactor 倍 (ゴブリンの
+  // 残虐さ / 人間雌捕虜の価値高騰)。中立ルート (§13) は人間への加害不可のため
+  // humanNurseryAllowed=false でこの出口を封じる (生贄/苗床/売却/朝貢の禁止と整合)。
+  humanNurseryAllowed: boolean; // 人間雌捕虜を苗床に置けるか (中立ルートで false)
+  humanNurseryYieldFactor: number; // 人間母体の産出倍率 (>1: 多産)
   // 召喚: 信仰を消費して即時頭数補充 (§4 下僕召喚)。
   summonCost: number; // 召喚 1 回の信仰コスト
   summonPop: number; // 召喚 1 回で増える頭数
@@ -183,6 +189,11 @@ export function makeWorldParams(ticksPerDay = 10): WorldParams {
     nurseryPeriodTicks: ticksPerDay * 2, // 2 日に一度 確定生産
     nurseryYieldPerCaptive: b.NURSERY_RATE * 2, // 2 日ぶんをまとめて (≒0.16/捕虜)
     nurseryCaptiveConsume: b.CAPTIVE_CONSUME, // 出産で雌捕虜が消耗 (§2.5)
+    // 人間母体: 中立ルート以外では解禁し、大柄ゆえ多産 (×2)。多産ぶん消耗も速く
+    // 「速いが続かない人間 vs 遅く持続する雌ゴブリン」の前向きトレードオフになる。
+    // 死蔵しがちだった人間雌捕虜 (KI-17) に高価値な出口を与える。最終値は §15。
+    humanNurseryAllowed: true,
+    humanNurseryYieldFactor: 2.0,
     summonCost: b.SUMMON_COST,
     summonPop: b.SUMMON_POP,
     sacrificeFaith: b.SACRIFICE_FAITH,

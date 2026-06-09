@@ -6,7 +6,7 @@
  * 「検証済み安定帯に統計的に収まるか」「決定的か」「KI-09 を満たすか」を見る。
  */
 import { makeWorldParams, CAPTIVE_COMP } from "../src/sim/world_params.ts";
-import { GoblinState, Sex, Role } from "../src/sim/goblin.ts";
+import { GoblinState, Sex, Role, GoblinOrigin } from "../src/sim/goblin.ts";
 const CAPTIVE_COMP_HUMAN = CAPTIVE_COMP.human;
 import {
   initWorld,
@@ -246,6 +246,36 @@ const p = makeWorldParams(10);
   check("人間勢力撃退で人間捕虜を得る", w.capMaleHuman + w.capFemaleHuman > 0,
     `人間捕虜 M${w.capMaleHuman.toFixed(1)}/F${w.capFemaleHuman.toFixed(1)}`);
   check("人間勢力からはゴブリン捕虜を得ない", w.capMaleGoblin + w.capFemaleGoblin === 0, "");
+}
+
+// --- 9c. 人間母体の苗床: 多産で価値が高く、中立ルートでは封じられる (§2.5/§13) ---
+// 人間雌捕虜は中立ルート以外なら苗床の母体になれ、大柄ゆえ多産 (§2.5 異種交配)。
+// 同数の母体ならゴブリン雌より多く産むこと、humanNurseryAllowed=false で完全に
+// 封じられること (中立ルート §13) を確認する。
+{
+  // 同じ母体数 (6) を、人間/ゴブリンで別々に与えて産出を比較する。
+  const yieldFrom = (host: "human" | "goblin", allowed: boolean): number => {
+    const pp = { ...makeWorldParams(10), humanNurseryAllowed: allowed };
+    let w = initWorld(pp, { startGoblins: 8, capPop: 9999, seed: 1, withChief: true });
+    if (host === "human") w.capFemaleHuman = 6;
+    else w.capFemaleGoblin = 6;
+    const initial = new Set(w.goblins.map((g) => g.id));
+    let nursery = 0;
+    for (let d = 0; d < 8; d++) for (let i = 0; i < pp.ticksPerDay; i++) {
+      w = stepWorld(w, pp);
+    }
+    for (const g of w.goblins) {
+      if (!initial.has(g.id) && g.origin === GoblinOrigin.Nursery) nursery++;
+    }
+    return nursery;
+  };
+  const humanYield = yieldFrom("human", true);
+  const goblinYield = yieldFrom("goblin", true);
+  const humanBlocked = yieldFrom("human", false);
+  check("人間母体の苗床はゴブリン母体より多産 (§2.5 異種交配)", humanYield > goblinYield,
+    `人間=${humanYield} > ゴブリン=${goblinYield}`);
+  check("中立ルートでは人間母体の苗床が封じられる (§13)", humanBlocked === 0,
+    `封鎖時の人間苗床産=${humanBlocked}`);
 }
 
 // --- 10. 性別: 出産は雄に偏る (世界観: 雄が多産) ---

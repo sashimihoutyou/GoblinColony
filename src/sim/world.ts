@@ -239,9 +239,10 @@ export function stepWorld(prev: WorldState, p: WorldParams): WorldState {
 /**
  * 信仰蓄積 (§3) と苗床の確定生産 (§2.5)。
  * 信仰: 頭数比例のシャーマンが毎 tick 蓄積、上限でキャップ (青天井防止 §3)。
- * 苗床: 産み手は雌ゴブリン捕虜のみ (KI-17)。雄ゴブリンは産めず、人間は
- *       中立ルートでは苗床不可 (§13/§14.5.7)。希少な雌ゴブリン捕虜が
- *       ラグ迂回の補充を握る = 雌の希少さが捕虜経済にも一貫する。
+ * 苗床: 産み手は雌の捕虜 (胎を産み手とする部屋 / §2.5 異種交配)。雄は産めない。
+ *       雌ゴブリン捕虜は遅く持続する希少な産み手 (KI-17)。雌人間捕虜も中立
+ *       ルート以外なら母体にでき (§13 ゲート)、大柄ゆえ多産だが消耗も速い
+ *       = 速いが続かない産み手。仔は母体の種を問わず必ずゴブリン (§2.5)。
  */
 function stepFaithAndNursery(w: WorldState, p: WorldParams): void {
   // 信仰: 生存頭数からシャーマン数を頭数比例で出す (KI-03)。
@@ -251,32 +252,47 @@ function stepFaithAndNursery(w: WorldState, p: WorldParams): void {
   w.cum += gain; // 累計は減らない (ランク用 §3)
   w.faith = Math.min(p.faithCap, w.faith + gain); // faithCap で頭打ち (§3)
 
-  // 苗床: 産み手は雌ゴブリン捕虜のみ。
-  const usable = Math.max(0, w.capFemaleGoblin);
-  if (usable > 0) {
-    w.nurseryTimer += 1;
-    if (w.nurseryTimer >= p.nurseryPeriodTicks) {
-      w.nurseryTimer = 0;
-      const born = usable * p.nurseryYieldPerCaptive;
-      // 確定生産: 子として追加 (成長ラグは付くが、自然増より確実 §2.5)。
-      const wholeBorn = Math.floor(born);
-      for (let k = 0; k < wholeBorn; k++) {
-        // 性別はtickとkから決定的に決め、maleBirthRatio に寄せる
-        // (stepFaithAndNursery は rng を持たないため。スナップショット不変)。
-        const hash = ((w.tick * 2654435761) ^ (k * 40503)) >>> 0;
-        const sex = (hash % 100) / 100 < p.maleBirthRatio ? Sex.Male : Sex.Female;
-        const pers = sexedPersonality(sex, () => 0); // 苗床産は個体差なし(簡略)
-        const child = makeGoblin(w.nextGoblinId++, pers, Role.None, sex, {
-          bornTick: w.tick, origin: GoblinOrigin.Nursery,
-        });
-        markChild(child, w.tick);
-        w.goblins.push(child);
-      }
-      // 苗床は産み手 (雌ゴブリン捕虜) を緩やかに消耗する (§2.5 即物性)。
-      w.capFemaleGoblin = Math.max(0, w.capFemaleGoblin - wholeBorn * p.nurseryCaptiveConsume);
-    }
-  } else {
+  // 苗床の母体: 雌ゴブリン捕虜 (基準) と、解禁時のみ雌人間捕虜 (多産)。
+  const goblinHosts = Math.max(0, w.capFemaleGoblin);
+  const humanHosts = p.humanNurseryAllowed ? Math.max(0, w.capFemaleHuman) : 0;
+  if (goblinHosts <= 0 && humanHosts <= 0) {
     w.nurseryTimer = 0;
+    return;
+  }
+
+  w.nurseryTimer += 1;
+  if (w.nurseryTimer < p.nurseryPeriodTicks) return;
+  w.nurseryTimer = 0;
+
+  // ゴブリン母体ぶん (基準レート)。確定生産で子を追加 (成長ラグ付き §2.5)。
+  const goblinBorn = Math.floor(goblinHosts * p.nurseryYieldPerCaptive);
+  birthNurseryChildren(w, p, goblinBorn, 0);
+  // 苗床は産み手を緩やかに消耗する (§2.5 即物性)。
+  w.capFemaleGoblin = Math.max(0, w.capFemaleGoblin - goblinBorn * p.nurseryCaptiveConsume);
+
+  // 人間母体ぶん (大柄ゆえ多産 = 倍率を乗せる)。多産のぶん消耗も速く、人間雌
+  // 捕虜は「速いが続かない」高価値な産み手になる (KI-17 の死蔵を解消)。
+  const humanBorn = Math.floor(humanHosts * p.nurseryYieldPerCaptive * p.humanNurseryYieldFactor);
+  birthNurseryChildren(w, p, humanBorn, goblinBorn); // k オフセットで性別パターンを分離
+  w.capFemaleHuman = Math.max(0, w.capFemaleHuman - humanBorn * p.nurseryCaptiveConsume);
+}
+
+/**
+ * 苗床の確定生産で子ゴブリンを count 体追加する (母体の種を問わず仔はゴブリン)。
+ * 性別は tick と (k+kOffset) から決定的に決め maleBirthRatio に寄せる
+ * (stepFaithAndNursery は rng を持たないため / スナップショット不変)。kOffset で
+ * ゴブリン母体ぶんと人間母体ぶんの性別パターンが衝突しないよう分離する。
+ */
+function birthNurseryChildren(w: WorldState, p: WorldParams, count: number, kOffset: number): void {
+  for (let k = 0; k < count; k++) {
+    const hash = ((w.tick * 2654435761) ^ ((k + kOffset) * 40503)) >>> 0;
+    const sex = (hash % 100) / 100 < p.maleBirthRatio ? Sex.Male : Sex.Female;
+    const pers = sexedPersonality(sex, () => 0); // 苗床産は個体差なし(簡略)
+    const child = makeGoblin(w.nextGoblinId++, pers, Role.None, sex, {
+      bornTick: w.tick, origin: GoblinOrigin.Nursery,
+    });
+    markChild(child, w.tick);
+    w.goblins.push(child);
   }
 }
 
