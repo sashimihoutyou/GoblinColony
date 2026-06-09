@@ -109,7 +109,7 @@
 
   /* ── コロニー俯瞰 ── */
   #colony { width: 100%; display: block; border-radius: 2px;
-    background: radial-gradient(ellipse at 50% 40%, #161009 0%, #0c0907 100%);
+    background: #0c0907;
     border: 1px solid #00000060; cursor: crosshair; }
 
   /* ── コントロール ── */
@@ -285,7 +285,7 @@
 
   <footer>
     検証済みコア (cycle/world/state_machine) を決定的に駆動。力学は机上検証と同一の出所。
-    1 日 = 実時間約 60 秒 (120 tick/日 × 2 tick/秒)。個体の移動は演出層のみで、力学には影響しない。
+    1 日 = 実時間約 60 秒 (120 tick/日 × 2 tick/秒)。個体の移動・光・粒子は演出層のみで、力学には影響しない。
   </footer>
 </div>
 
@@ -295,7 +295,7 @@
 <script>
 /* ════ 可視化ロジック ════
    検証済みコア (window.GoblinSim) を呼ぶだけ。力学はここに一切書かない。
-   個体の「位置」と移動はすべて演出層 (このファイル) のローカル状態で、
+   個体の「位置」と移動・背景・粒子・光はすべて演出層 (このファイル) のローカル状態で、
    シミュレーション状態・RNG・スナップショットには一切触れない (KI-09 セーフ)。 */
 (function(){
   const GS = window.GoblinSim;
@@ -335,7 +335,7 @@
   }
 
   // ── 状態 ──
-  let p, w, history, logs, selectedId, prevSnap;
+  let p, w, history, logs, selectedId, prevSnap, prevEnemies;
   const driver = new GS.TickDriver({ ticksPerSecondAt1x: TPS });
 
   function reset() {
@@ -346,7 +346,10 @@
     logs = [];
     selectedId = null;
     prevSnap = snapshotForDiff(w);
+    prevEnemies = 0;
     vmap.clear();
+    particles.length = 0;
+    buildBackground();
     driver.resync();
     pushLog("event", "巣が築かれた。10 体のゴブリンと 1 体の族長。");
   }
@@ -360,6 +363,9 @@
   /* ════ 演出層: 洞窟のゾーンと個体の移動 ════
      ステートを「行き先」に翻訳し、毎フレーム補間で滑らかに動かす。 */
 
+  // 論理キャンバスサイズ。RS 倍の内部解像度で描き、setTransform で論理座標を使う。
+  const W = 680, H = 380, RS = 2;
+
   // 洞窟内の名所 (相対座標)。
   const ZONES = {
     entrance: { x: 0.50, y: 0.13, r: 0.075, label: "巣口" },
@@ -369,9 +375,9 @@
     deep:     { x: 0.12, y: 0.30, r: 0.075, label: "奥" },
     totem:    { x: 0.46, y: 0.50, r: 0.050, label: "トーテム" },
   };
-  const BOUNDS = { x0: 0.07, y0: 0.10, x1: 0.93, y1: 0.90 };
+  const BOUNDS = { x0: 0.09, y0: 0.13, x1: 0.91, y1: 0.88 };
 
-  // 演出層の個体状態: id → { x,y, tx,ty, nextWanderAt, deadAt }
+  // 演出層の個体状態: id → { x,y, tx,ty, nextWanderAt, deadAt, face, moving }
   const vmap = new Map();
 
   // id から決定的にゾーン内の持ち場 (スロット) を散らす。
@@ -393,7 +399,7 @@
         : (o === GS.GoblinOrigin.Born || o === GS.GoblinOrigin.Nursery)
           ? slotIn(ZONES.den, g.id)
           : { x: randIn(BOUNDS.x0+0.1, BOUNDS.x1-0.1), y: randIn(BOUNDS.y0+0.1, BOUNDS.y1-0.1) };
-      v = { x: at.x, y: at.y, tx: at.x, ty: at.y, nextWanderAt: 0, deadAt: null };
+      v = { x: at.x, y: at.y, tx: at.x, ty: at.y, nextWanderAt: 0, deadAt: null, face: 1, moving: false };
       vmap.set(g.id, v);
     }
     return v;
@@ -450,6 +456,7 @@
       const v = vstateOf(g);
       if (GS.stateName(g.state) === "Dead") {
         if (v.deadAt === null) v.deadAt = nowSec;
+        v.moving = false;
         continue;
       }
       v.deadAt = null;
@@ -463,172 +470,573 @@
         const step = Math.min(dist, speed * dt);
         v.x += (dx / dist) * step;
         v.y += (dy / dist) * step;
+        v.moving = step > 0.00001;
+        if (Math.abs(dx) > 0.002) v.face = dx > 0 ? 1 : -1;
+      } else {
+        v.moving = false;
       }
     }
   }
 
-  /* ════ コロニー俯瞰の描画 ════ */
+  /* ════ パーティクル (演出層のみ) ════
+     kind: dot(破片/火の粉/塵) / text(Z・♥) / bone(死亡) */
+  const particles = [];
+  function spawnP(o) {
+    if (particles.length > 400) particles.splice(0, 40);
+    particles.push({
+      kind: o.kind || "dot", x: o.x, y: o.y,
+      vx: o.vx ?? 0, vy: o.vy ?? 0, g: o.g ?? 0,
+      life: o.life ?? 1, maxLife: o.life ?? 1,
+      size: o.size ?? 2, color: o.color || "#cbbfa6",
+      txt: o.txt || "", font: o.font || 9,
+    });
+  }
+  function burst(x, y, n, opts) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = (opts.speed ?? 24) * (0.4 + Math.random() * 0.9);
+      spawnP({ ...opts, x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - (opts.up ?? 0) });
+    }
+  }
+  function updateParticles(dt) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const pt = particles[i];
+      pt.life -= dt;
+      if (pt.life <= 0) { particles.splice(i, 1); continue; }
+      pt.x += pt.vx * dt;
+      pt.y += pt.vy * dt;
+      pt.vy += pt.g * dt;
+    }
+  }
+  function drawParticles(c) {
+    for (const pt of particles) {
+      const a = Math.max(0, Math.min(1, pt.life / pt.maxLife));
+      c.globalAlpha = a;
+      if (pt.kind === "text") {
+        c.fillStyle = pt.color;
+        c.font = pt.font + "px monospace";
+        c.fillText(pt.txt, pt.x, pt.y);
+      } else if (pt.kind === "bone") {
+        c.strokeStyle = pt.color;
+        c.lineWidth = 1.2;
+        c.beginPath();
+        c.moveTo(pt.x - pt.size, pt.y + pt.size);
+        c.lineTo(pt.x + pt.size, pt.y - pt.size);
+        c.stroke();
+        c.beginPath(); c.arc(pt.x - pt.size, pt.y + pt.size, 1, 0, Math.PI*2); c.fill();
+      } else {
+        c.fillStyle = pt.color;
+        c.beginPath();
+        c.arc(pt.x, pt.y, pt.size * (0.5 + a * 0.5), 0, Math.PI * 2);
+        c.fill();
+      }
+      c.globalAlpha = 1;
+    }
+  }
+
+  /* ════ 洞窟の背景 (オフスクリーンに一度だけ描く) ════ */
   const colony = document.getElementById("colony");
+  colony.width = W * RS;
+  colony.height = H * RS;
   const cctx = colony.getContext("2d");
+  let bgCanvas = null;
 
-  function drawColony(t) {
-    const cw = colony.width, ch = colony.height;
-    const nowSec = t / 1000;
-    cctx.clearRect(0,0,cw,ch);
+  // 背景専用の決定的乱数 (リセットごとに同じ洞窟が出るより、味として揺らぐ方を選ぶ)。
+  function buildBackground() {
+    bgCanvas = document.createElement("canvas");
+    bgCanvas.width = W * RS;
+    bgCanvas.height = H * RS;
+    const b = bgCanvas.getContext("2d");
+    b.setTransform(RS, 0, 0, RS, 0, 0);
 
-    // 洞窟の輪郭
-    cctx.strokeStyle = "#3a322830";
-    cctx.lineWidth = 1;
-    cctx.strokeRect(cw*0.05, ch*0.06, cw*0.9, ch*0.88);
-
-    // ゾーンの気配 (うっすら描いて場所として読めるように)
-    for (const key in ZONES) {
-      const z = ZONES[key];
-      cctx.beginPath();
-      cctx.arc(z.x*cw, z.y*ch, z.r*cw, 0, Math.PI*2);
-      cctx.setLineDash([2,5]);
-      cctx.strokeStyle = "#3a322855";
-      cctx.stroke();
-      cctx.setLineDash([]);
-      cctx.fillStyle = "#5a4f4088";
-      cctx.font = "9px monospace";
-      cctx.textAlign = "center";
-      cctx.fillText(z.label, z.x*cw, (z.y - z.r*0.72)*ch - 4);
+    // 1. 全面を岩壁で塗る
+    b.fillStyle = "#0b0805";
+    b.fillRect(0, 0, W, H);
+    for (let i = 0; i < 500; i++) { // 岩肌の粒
+      b.fillStyle = Math.random() < 0.5 ? "#13100b" : "#060403";
+      b.fillRect(Math.random() * W, Math.random() * H, 2, 2);
     }
-    cctx.textAlign = "left";
-    // トーテムの炎 (信仰の中心)
+
+    // 2. 洞窟の床: 不規則な輪郭の空間をくり抜く
+    const cx = W * 0.5, cy = H * 0.52;
+    const pts = [];
+    const N = 26;
+    for (let i = 0; i < N; i++) {
+      const a = (i / N) * Math.PI * 2;
+      const wob = 0.86 + Math.sin(i * 2.7) * 0.06 + Math.sin(i * 1.3 + 2) * 0.05;
+      pts.push({ x: cx + Math.cos(a) * W * 0.46 * wob, y: cy + Math.sin(a) * H * 0.46 * wob });
+    }
+    b.beginPath();
+    b.moveTo((pts[N-1].x + pts[0].x) / 2, (pts[N-1].y + pts[0].y) / 2);
+    for (let i = 0; i < N; i++) {
+      const q = pts[i], nx = pts[(i + 1) % N];
+      b.quadraticCurveTo(q.x, q.y, (q.x + nx.x) / 2, (q.y + nx.y) / 2);
+    }
+    b.closePath();
+    const floor = b.createRadialGradient(cx, cy, 30, cx, cy, W * 0.5);
+    floor.addColorStop(0, "#1d150c");
+    floor.addColorStop(0.7, "#150f09");
+    floor.addColorStop(1, "#0e0a06");
+    b.fillStyle = floor;
+    b.fill();
+    b.save();
+    b.clip(); // 以降の床の汚れ・小道具は洞窟内にだけ載せる
+
+    // 床の染み・ひび
+    for (let i = 0; i < 130; i++) {
+      b.fillStyle = `rgba(${20+Math.random()*25|0},${15+Math.random()*18|0},${10+Math.random()*12|0},0.5)`;
+      const rx = randIn(0.08, 0.92) * W, ry = randIn(0.12, 0.9) * H;
+      b.beginPath();
+      b.ellipse(rx, ry, randIn(2, 9), randIn(1, 4), Math.random() * 3, 0, Math.PI * 2);
+      b.fill();
+    }
+    for (let i = 0; i < 14; i++) { // ひび
+      b.strokeStyle = "rgba(0,0,0,0.35)";
+      b.lineWidth = 0.7;
+      let x = randIn(0.1, 0.9) * W, y = randIn(0.15, 0.85) * H;
+      b.beginPath(); b.moveTo(x, y);
+      for (let k = 0; k < 4; k++) { x += randIn(-14, 14); y += randIn(-9, 9); b.lineTo(x, y); }
+      b.stroke();
+    }
+
+    // 3. 巣口: 上端から差し込む外の冷たい光と通路
     {
-      const z = ZONES.totem;
-      const flick = 0.6 + 0.4*Math.sin(nowSec*5.1) * Math.sin(nowSec*3.3);
-      cctx.beginPath();
-      cctx.arc(z.x*cw, z.y*ch, 7 + flick*2, 0, Math.PI*2);
-      cctx.fillStyle = "rgba(232,148,58,0.10)";
-      cctx.fill();
-      cctx.beginPath();
-      cctx.arc(z.x*cw, z.y*ch, 2.4, 0, Math.PI*2);
-      cctx.fillStyle = "#ffb454";
-      cctx.fill();
+      const z = ZONES.entrance;
+      const ex = z.x * W;
+      b.fillStyle = "#0f0c08";
+      b.beginPath();
+      b.moveTo(ex - 34, 0); b.lineTo(ex + 34, 0);
+      b.lineTo(ex + 22, z.y * H + 14); b.lineTo(ex - 22, z.y * H + 14);
+      b.closePath(); b.fill();
+      const light = b.createLinearGradient(0, 0, 0, z.y * H + 60);
+      light.addColorStop(0, "rgba(150,170,200,0.20)");
+      light.addColorStop(1, "rgba(150,170,200,0)");
+      b.fillStyle = light;
+      b.beginPath();
+      b.moveTo(ex - 30, 0); b.lineTo(ex + 30, 0);
+      b.lineTo(ex + 52, z.y * H + 60); b.lineTo(ex - 52, z.y * H + 60);
+      b.closePath(); b.fill();
     }
 
-    // 交戦中: 巣口の外に残敵を描く
-    if (w.phase === "combat" && w.enemiesRemaining > 0) {
-      const n = Math.min(30, Math.ceil(w.enemiesRemaining));
-      const z = ZONES.entrance;
-      for (let i = 0; i < n; i++) {
-        const h = hashId(i + 7777);
-        const ex = (z.x + ((h % 200) - 100) / 1000) * cw;
-        const ey = (0.045 + ((h >>> 8) % 40) / 1000) * ch + Math.sin(nowSec*3 + i)*1.5;
-        cctx.beginPath();
-        cctx.moveTo(ex, ey - 3.5); cctx.lineTo(ex - 3, ey + 2.5); cctx.lineTo(ex + 3, ey + 2.5);
-        cctx.closePath();
-        cctx.fillStyle = w.raidIsHuman ? "#c0432e" : "#a05838";
-        cctx.fill();
+    // 4. 寝床: わらと苔の褥
+    {
+      const z = ZONES.den;
+      for (let i = 0; i < 5; i++) {
+        const s = slotIn(z, 100 + i * 37, 1.0);
+        const bx = s.x * W, by = s.y * H;
+        b.fillStyle = "#2c2010";
+        b.beginPath(); b.ellipse(bx, by, 11, 6, 0.2, 0, Math.PI * 2); b.fill();
+        b.strokeStyle = "#4a3a1c";
+        b.lineWidth = 0.8;
+        for (let k = 0; k < 5; k++) { // わらの筋
+          b.beginPath();
+          b.moveTo(bx - 8 + k * 4, by + 3);
+          b.lineTo(bx - 4 + k * 4, by - 4);
+          b.stroke();
+        }
       }
     }
 
-    // 個体
-    for (const g of w.goblins) {
+    // 5. 食料庫: キノコの群生と骨の山
+    {
+      const z = ZONES.food;
+      for (let i = 0; i < 7; i++) {
+        const s = slotIn(z, 200 + i * 53, 1.1);
+        const mx = s.x * W, my = s.y * H;
+        b.fillStyle = "#3a2d20";
+        b.fillRect(mx - 1, my - 3, 2, 4); // 柄
+        b.fillStyle = i % 3 === 0 ? "#9a5b3c" : "#7a6f4e";
+        b.beginPath(); b.arc(mx, my - 4, 3.2, Math.PI, 0); b.fill(); // 傘
+        b.fillStyle = "rgba(232,200,140,0.5)";
+        b.fillRect(mx - 1.5, my - 5, 1, 1); // 傘の斑点
+      }
+      // 骨の山
+      const bx = (z.x + 0.02) * W, by = (z.y + 0.05) * H;
+      b.strokeStyle = "#8a8070";
+      b.lineWidth = 1.4;
+      for (let k = 0; k < 4; k++) {
+        b.beginPath();
+        b.moveTo(bx - 6 + k * 3, by + 3);
+        b.lineTo(bx + 2 + k * 3, by - 4 + (k % 2) * 3);
+        b.stroke();
+      }
+    }
+
+    // 6. 採掘場: 岩塊と鉱脈のきらめき
+    {
+      const z = ZONES.work;
+      for (let i = 0; i < 5; i++) {
+        const s = slotIn(z, 300 + i * 41, 1.1);
+        const rx = s.x * W, ry = s.y * H;
+        b.fillStyle = "#241e16";
+        b.beginPath();
+        b.moveTo(rx - 7, ry + 4); b.lineTo(rx - 3, ry - 6); b.lineTo(rx + 5, ry - 4);
+        b.lineTo(rx + 8, ry + 4);
+        b.closePath(); b.fill();
+        b.strokeStyle = "#3c332a"; b.lineWidth = 0.8; b.stroke();
+        if (i % 2 === 0) { // 鉱脈
+          b.fillStyle = "#e8c060";
+          b.fillRect(rx - 1, ry - 2, 1.6, 1.6);
+          b.fillRect(rx + 3, ry, 1.2, 1.2);
+        }
+      }
+    }
+
+    // 7. 奥: より深い闇
+    {
+      const z = ZONES.deep;
+      const dark = b.createRadialGradient(z.x * W, z.y * H, 4, z.x * W, z.y * H, z.r * W * 1.8);
+      dark.addColorStop(0, "rgba(0,0,0,0.55)");
+      dark.addColorStop(1, "rgba(0,0,0,0)");
+      b.fillStyle = dark;
+      b.fillRect(0, 0, W, H);
+    }
+
+    // 8. トーテム像 (炎は動的に重ねる)
+    {
+      const z = ZONES.totem;
+      const tx = z.x * W, ty = z.y * H;
+      b.fillStyle = "rgba(0,0,0,0.4)";
+      b.beginPath(); b.ellipse(tx, ty + 9, 9, 3, 0, 0, Math.PI * 2); b.fill();
+      b.fillStyle = "#3a2a18";
+      b.fillRect(tx - 3.5, ty - 16, 7, 25); // 柱
+      b.fillStyle = "#241a0e";
+      b.fillRect(tx - 5.5, ty - 18, 11, 4); // 笠
+      b.fillStyle = "#e8943a"; // 彫られた目
+      b.fillRect(tx - 2.5, ty - 11, 2, 2);
+      b.fillRect(tx + 0.5, ty - 11, 2, 2);
+      b.fillStyle = "#1a1208";
+      b.fillRect(tx - 1.5, ty - 6, 3, 4); // 口
+    }
+
+    b.restore(); // clip 解除
+
+    // 9. 鍾乳石 (壁から生える)
+    b.fillStyle = "#0e0a06";
+    for (let i = 0; i < 9; i++) {
+      const sx = randIn(0.1, 0.9) * W;
+      if (Math.abs(sx - ZONES.entrance.x * W) < 50) continue; // 巣口は避ける
+      const len = randIn(8, 22);
+      b.beginPath();
+      b.moveTo(sx - 5, 0); b.lineTo(sx + 5, 0); b.lineTo(sx, len);
+      b.closePath(); b.fill();
+    }
+    for (let i = 0; i < 6; i++) {
+      const sx = randIn(0.08, 0.92) * W;
+      const len = randIn(6, 14);
+      b.beginPath();
+      b.moveTo(sx - 4, H); b.lineTo(sx + 4, H); b.lineTo(sx, H - len);
+      b.closePath(); b.fill();
+    }
+
+    // 10. ゾーンの名札 (小道具が主役なので控えめに)
+    b.font = "9px monospace";
+    b.textAlign = "center";
+    b.fillStyle = "rgba(90,79,64,0.75)";
+    for (const key in ZONES) {
+      const z = ZONES[key];
+      b.fillText(z.label, z.x * W, (z.y - z.r * 0.8) * H - 4);
+    }
+    b.textAlign = "left";
+  }
+
+  /* ════ ゴブリンのスプライト描画 ════
+     体色 = ステート色を維持 (分布パネルと同じ言語)。耳・目・影・歩行バウンドで生き物に。 */
+  function drawGoblin(c, g, v, nowSec) {
+    const x = v.x * W, y = v.y * H;
+    const name = GS.stateName(g.state);
+    const col = STATE_COLORS[name] || "#8a7d68";
+    const isChief = g.role === GS.Role.Chief;
+    const isChild = g.childBornTick !== null && g.childBornTick !== undefined;
+    const ph = (hashId(g.id) % 628) / 100;
+    const r = isChief ? 6 : (isChild ? 2.6 : 4);
+    const sleeping = name === "Sleep" || name === "Dying" || g.matingTicks >= 0;
+    const bob = sleeping ? 0 : Math.sin(nowSec * (v.moving ? 11 : 2.2) + ph) * r * (v.moving ? 0.18 : 0.07);
+    const by = y - bob;
+
+    // 影
+    c.fillStyle = "rgba(0,0,0,0.4)";
+    c.beginPath();
+    c.ellipse(x, y + r * 0.95, r * 0.95, r * 0.3, 0, 0, Math.PI * 2);
+    c.fill();
+
+    // 弱い光をまとう (闇の中の存在感)
+    const pulse = 0.7 + 0.3 * Math.sin(nowSec * 3 + ph);
+    c.fillStyle = col + "16";
+    c.beginPath();
+    c.arc(x, by, r * 2.3, 0, Math.PI * 2);
+    c.fill();
+
+    // 耳 (左右のとがり)
+    c.fillStyle = col;
+    c.globalAlpha = 0.85 + pulse * 0.15;
+    const earY = by - r * 0.5;
+    c.beginPath();
+    c.moveTo(x - r * 0.5, earY);
+    c.lineTo(x - r * 1.7, earY - r * 0.9);
+    c.lineTo(x - r * 0.25, earY - r * 0.55);
+    c.closePath(); c.fill();
+    c.beginPath();
+    c.moveTo(x + r * 0.5, earY);
+    c.lineTo(x + r * 1.7, earY - r * 0.9);
+    c.lineTo(x + r * 0.25, earY - r * 0.55);
+    c.closePath(); c.fill();
+
+    // 体 (縦長の豆) — 寝ている間は横たわる
+    c.beginPath();
+    if (sleeping && name !== "Hungry") {
+      c.ellipse(x, by + r * 0.25, r * 1.15, r * 0.75, 0, 0, Math.PI * 2);
+    } else {
+      c.ellipse(x, by, r * 0.95, r * 1.1, 0, 0, Math.PI * 2);
+    }
+    c.fill();
+    c.globalAlpha = 1;
+
+    // 腹の明るみ (雌はやや明るい = 見分けの手がかり)
+    c.fillStyle = "rgba(232,220,200," + (g.sex === GS.Sex.Female ? 0.22 : 0.10) + ")";
+    c.beginPath();
+    c.ellipse(x, by + r * 0.3, r * 0.5, r * 0.55, 0, 0, Math.PI * 2);
+    c.fill();
+
+    // 目 (向きに寄る)。寝ているときは閉じ線。
+    const eo = v.face * r * 0.28;
+    if (sleeping) {
+      c.strokeStyle = "#0a0908";
+      c.lineWidth = 1;
+      c.beginPath(); c.moveTo(x - r*0.42 + eo, by - r*0.25); c.lineTo(x - r*0.1 + eo, by - r*0.25); c.stroke();
+      c.beginPath(); c.moveTo(x + r*0.1 + eo, by - r*0.25); c.lineTo(x + r*0.42 + eo, by - r*0.25); c.stroke();
+    } else {
+      c.fillStyle = name === "Enraged" ? "#ffd0a0" : "#f5ecd8";
+      c.beginPath(); c.arc(x - r*0.3 + eo, by - r*0.25, r*0.22, 0, Math.PI*2); c.fill();
+      c.beginPath(); c.arc(x + r*0.3 + eo, by - r*0.25, r*0.22, 0, Math.PI*2); c.fill();
+      c.fillStyle = "#16100a";
+      c.beginPath(); c.arc(x - r*0.3 + eo*1.3, by - r*0.25, r*0.1, 0, Math.PI*2); c.fill();
+      c.beginPath(); c.arc(x + r*0.3 + eo*1.3, by - r*0.25, r*0.1, 0, Math.PI*2); c.fill();
+    }
+
+    // 道具・得物
+    if (name === "Combat" || name === "Enraged") {
+      // こん棒を振る
+      const swing = Math.sin(nowSec * 12 + ph) * 0.7;
+      c.strokeStyle = "#6a4a28";
+      c.lineWidth = 1.6;
+      c.beginPath();
+      c.moveTo(x + v.face * r * 0.8, by);
+      c.lineTo(x + v.face * r * (1.9 + swing * 0.3), by - r * (1.1 + swing));
+      c.stroke();
+    } else if (name === "Work" && !isChief) {
+      // つるはしを振る
+      const swing = Math.sin(nowSec * 9 + ph);
+      c.strokeStyle = "#7a6a50";
+      c.lineWidth = 1.3;
+      c.beginPath();
+      c.moveTo(x + v.face * r * 0.7, by + r * 0.2);
+      c.lineTo(x + v.face * r * 1.8, by - r * (0.8 + swing * 0.5));
+      c.stroke();
+      if (swing < -0.85 && Math.random() < 0.3) { // 打撃の瞬間に破片
+        burst(x + v.face * r * 2, y + r * 0.5, 2, { speed: 18, up: 14, g: 90, life: 0.5, size: 1.1, color: "#8a7a60" });
+      }
+    }
+
+    // 族長の骨冠 + 炎の輪
+    if (isChief) {
+      c.fillStyle = "#e8c060";
+      for (let k = -1; k <= 1; k++) {
+        c.beginPath();
+        c.moveTo(x + k * r * 0.5 - 1.4, by - r * 1.0);
+        c.lineTo(x + k * r * 0.5, by - r * 1.65);
+        c.lineTo(x + k * r * 0.5 + 1.4, by - r * 1.0);
+        c.closePath(); c.fill();
+      }
+      c.beginPath();
+      c.arc(x, by, r + 3.4, 0, Math.PI * 2);
+      c.strokeStyle = "rgba(255,180,84," + (0.35 + pulse * 0.3) + ")";
+      c.lineWidth = 1.2;
+      c.stroke();
+    }
+
+    // HP が低い個体は赤い縁 (残量の弧)
+    if (g.hp / g.maxHp < 0.4) {
+      c.beginPath();
+      c.arc(x, by, r + 1.8, -Math.PI * 0.5, -Math.PI * 0.5 + Math.PI * 2 * (g.hp / g.maxHp));
+      c.strokeStyle = "#c0432e";
+      c.lineWidth = 1.5;
+      c.stroke();
+    }
+
+    // ステートの吐息 (粒子。確率は dt に乗せず低頻度のゆらぎとして)
+    if (name === "Sleep" && Math.random() < 0.012) {
+      spawnP({ kind: "text", txt: "z", color: "#7a9ab8", x: x + r, y: by - r,
+        vx: 6, vy: -10, life: 1.6, font: 8 + Math.random() * 3 });
+    }
+    if (g.matingTicks >= 0 && Math.random() < 0.02) {
+      spawnP({ kind: "text", txt: "♥", color: "#e8a0b8", x: x + randIn(-r, r), y: by - r,
+        vx: randIn(-4, 4), vy: -12, life: 1.4, font: 8 });
+    }
+    if (name === "Fear" && Math.random() < 0.015) {
+      spawnP({ kind: "dot", color: "#9ab8d8", x: x + v.face * -r * 0.6, y: by - r * 0.6,
+        vx: v.face * -8, vy: -6, g: 60, life: 0.6, size: 1.2 });
+    }
+    if (name === "Hungry" && Math.random() < 0.02) {
+      spawnP({ kind: "dot", color: "#a8842a", x: x + randIn(-r, r), y: by + r * 0.4,
+        vx: randIn(-6, 6), vy: 8, g: 40, life: 0.5, size: 1 });
+    }
+  }
+
+  // 敵 (人間/敵対氏族) のミニスプライト
+  function drawEnemy(c, ex, ey, isHuman, nowSec, i) {
+    const bobE = Math.sin(nowSec * 6 + i) * 0.8;
+    const col = isHuman ? "#b85a40" : "#9a5838";
+    c.fillStyle = "rgba(0,0,0,0.35)";
+    c.beginPath(); c.ellipse(ex, ey + 4, 3, 1.1, 0, 0, Math.PI * 2); c.fill();
+    c.fillStyle = col;
+    c.beginPath(); c.ellipse(ex, ey + bobE, 2.6, 3.4, 0, 0, Math.PI * 2); c.fill();
+    c.fillStyle = isHuman ? "#d8b090" : col;
+    c.beginPath(); c.arc(ex, ey - 4 + bobE, 1.8, 0, Math.PI * 2); c.fill();
+    c.strokeStyle = "#cbbfa6"; // 槍
+    c.lineWidth = 0.9;
+    c.beginPath();
+    c.moveTo(ex + 3, ey + 3 + bobE);
+    c.lineTo(ex + 5.5, ey - 7 + bobE);
+    c.stroke();
+  }
+
+  /* ════ コロニー俯瞰の描画 ════ */
+  function drawColony(t) {
+    const nowSec = t / 1000;
+
+    // 背景 (オフスクリーン) を敷く
+    cctx.setTransform(1, 0, 0, 1, 0, 0);
+    cctx.clearRect(0, 0, W * RS, H * RS);
+    if (bgCanvas) cctx.drawImage(bgCanvas, 0, 0);
+    cctx.setTransform(RS, 0, 0, RS, 0, 0);
+
+    // トーテムの炎 (動的)
+    {
+      const z = ZONES.totem;
+      const tx = z.x * W, ty = z.y * H - 20;
+      const flick = 0.7 + 0.3 * Math.sin(nowSec * 9.7) * Math.sin(nowSec * 5.3);
+      const glow = cctx.createRadialGradient(tx, ty, 2, tx, ty, 46 * flick + 26);
+      glow.addColorStop(0, "rgba(255,170,70,0.30)");
+      glow.addColorStop(0.5, "rgba(232,148,58,0.10)");
+      glow.addColorStop(1, "rgba(232,148,58,0)");
+      cctx.fillStyle = glow;
+      cctx.fillRect(tx - 80, ty - 80, 160, 160);
+      // 炎の舌
+      cctx.fillStyle = "#ffb454";
+      cctx.beginPath();
+      cctx.moveTo(tx - 3, ty + 4);
+      cctx.quadraticCurveTo(tx - 4, ty - 4 * flick, tx + Math.sin(nowSec * 13) * 1.6, ty - 9 * flick);
+      cctx.quadraticCurveTo(tx + 4, ty - 4 * flick, tx + 3, ty + 4);
+      cctx.closePath(); cctx.fill();
+      cctx.fillStyle = "#ffe0a0";
+      cctx.beginPath();
+      cctx.ellipse(tx, ty + 1, 1.6, 3 * flick, 0, 0, Math.PI * 2);
+      cctx.fill();
+      if (Math.random() < 0.10) { // 火の粉
+        spawnP({ kind: "dot", color: Math.random() < 0.5 ? "#ffb454" : "#e8943a",
+          x: tx + randIn(-2, 2), y: ty, vx: randIn(-4, 4), vy: -randIn(10, 22), g: -6,
+          life: randIn(0.8, 1.8), size: 1 });
+      }
+    }
+    // 漂う塵 (洞窟の空気感)
+    if (Math.random() < 0.06) {
+      spawnP({ kind: "dot", color: "rgba(200,180,150,0.5)", x: randIn(0.1, 0.9) * W,
+        y: randIn(0.15, 0.8) * H, vx: randIn(-3, 3), vy: randIn(-2, 2), life: randIn(2, 5), size: 0.7 });
+    }
+
+    // 交戦中: 巣口の外に残敵スプライト
+    if (w.phase === "combat" && w.enemiesRemaining > 0) {
+      const n = Math.min(24, Math.ceil(w.enemiesRemaining));
+      const z = ZONES.entrance;
+      for (let i = 0; i < n; i++) {
+        const h = hashId(i + 7777);
+        const ex = (z.x + ((h % 200) - 100) / 1400) * W;
+        const ey = (0.035 + ((h >>> 8) % 50) / 900) * H;
+        drawEnemy(cctx, ex, ey, w.raidIsHuman, nowSec, i);
+      }
+      if (Math.random() < 0.25) { // 戦いの火花
+        burst((z.x + randIn(-0.05, 0.05)) * W, (z.y + randIn(-0.02, 0.04)) * H, 2,
+          { speed: 30, life: 0.35, size: 1.1, color: Math.random() < 0.5 ? "#ffd080" : "#c0432e" });
+      }
+    }
+
+    // 個体 (y でソートして手前が上に描かれる擬似奥行き)
+    const sorted = [...w.goblins].sort((a, b) => (vmap.get(a.id)?.y ?? 0) - (vmap.get(b.id)?.y ?? 0));
+    for (const g of sorted) {
       const v = vmap.get(g.id);
       if (!v) continue;
-      const name = GS.stateName(g.state);
-      if (name === "Dead") {
-        // 死亡: 2.5 秒かけて骨の色に沈み、消える。
+      if (GS.stateName(g.state) === "Dead") {
         if (v.deadAt === null) continue;
         const age = nowSec - v.deadAt;
         if (age > 2.5) continue;
         cctx.globalAlpha = Math.max(0, 1 - age / 2.5) * 0.7;
-        cctx.beginPath();
-        cctx.arc(v.x*cw, v.y*ch, 3, 0, Math.PI*2);
-        cctx.fillStyle = "#cbbfa6";
-        cctx.fill();
+        cctx.strokeStyle = "#cbbfa6";
+        cctx.lineWidth = 1.2;
+        const dx = v.x * W, dy = v.y * H;
+        cctx.beginPath(); cctx.moveTo(dx - 3, dy + 2); cctx.lineTo(dx + 3, dy - 2); cctx.stroke();
+        cctx.beginPath(); cctx.moveTo(dx - 3, dy - 2); cctx.lineTo(dx + 3, dy + 2); cctx.stroke();
         cctx.globalAlpha = 1;
         continue;
       }
-      const x = v.x*cw, y = v.y*ch;
-      const col = STATE_COLORS[name] || "#8a7d68";
-      const isChief = g.role === GS.Role.Chief;
-      const isChild = g.childBornTick !== null && g.childBornTick !== undefined;
-      const ph = (hashId(g.id) % 628) / 100;
-      const pulse = 0.7 + 0.3*Math.sin(nowSec*3 + ph);
-      const r = isChief ? 6 : (isChild ? 2.2 : 3.6);
-
-      // グロー
-      cctx.beginPath();
-      cctx.arc(x, y, r*2.4, 0, Math.PI*2);
-      cctx.fillStyle = col + "18";
-      cctx.fill();
-      // 本体
-      cctx.beginPath();
-      cctx.arc(x, y, r, 0, Math.PI*2);
-      cctx.fillStyle = col;
-      cctx.globalAlpha = pulse;
-      cctx.fill();
-      cctx.globalAlpha = 1;
-      // 族長は炎の輪
-      if (isChief) {
-        cctx.beginPath();
-        cctx.arc(x, y, r+3, 0, Math.PI*2);
-        cctx.strokeStyle = "#ffb454";
-        cctx.lineWidth = 1.2;
-        cctx.globalAlpha = pulse;
-        cctx.stroke();
-        cctx.globalAlpha = 1;
-      }
-      // 求愛中はハートの気配
-      if (g.matingTicks >= 0) {
-        cctx.fillStyle = "#e8a0b8";
-        cctx.font = "8px monospace";
-        cctx.fillText("♥", x + r + 1, y - r - 1 + Math.sin(nowSec*4 + ph));
-      }
-      // HP が低い個体は赤い縁
-      if (g.hp / g.maxHp < 0.4) {
-        cctx.beginPath();
-        cctx.arc(x, y, r+1.5, -Math.PI*0.5, -Math.PI*0.5 + Math.PI*2*(g.hp/g.maxHp));
-        cctx.strokeStyle = "#c0432e";
-        cctx.lineWidth = 1.5;
-        cctx.stroke();
-      }
+      drawGoblin(cctx, g, v, nowSec);
       // 選択中の個体
       if (g.id === selectedId) {
+        const x = v.x * W, y = v.y * H;
+        const r = g.role === GS.Role.Chief ? 6 : 4;
         cctx.beginPath();
-        cctx.arc(x, y, r + 6 + Math.sin(nowSec*5)*1.2, 0, Math.PI*2);
+        cctx.arc(x, y, r + 6 + Math.sin(nowSec * 5) * 1.2, 0, Math.PI * 2);
         cctx.strokeStyle = "#e8dcc8";
         cctx.lineWidth = 1;
-        cctx.setLineDash([3,3]);
+        cctx.setLineDash([3, 3]);
         cctx.stroke();
         cctx.setLineDash([]);
         cctx.fillStyle = "#e8dcc8";
         cctx.font = "10px monospace";
         cctx.textAlign = "center";
-        cctx.fillText(nameOf(g), x, y - r - 10);
+        cctx.fillText(nameOf(g), x, y - r - 12);
         cctx.textAlign = "left";
+      }
+    }
+
+    // パーティクル
+    drawParticles(cctx);
+
+    // 昼夜の光 (1 分 = 1 日に合わせた明暗。観賞用のトーンで力学とは無関係)
+    {
+      const dayFrac = (w.tick % w.ticksPerDay) / w.ticksPerDay;
+      const brightness = Math.sin(Math.PI * dayFrac); // 0=夜明け/日暮れ, 1=真昼
+      const night = (1 - brightness) * 0.22;
+      if (night > 0.01) {
+        cctx.fillStyle = `rgba(8,14,32,${night})`;
+        cctx.fillRect(0, 0, W, H);
       }
     }
 
     // 戦闘中は赤いヴィネット
     if (w.phase === "combat") {
-      const grad = cctx.createRadialGradient(cw/2,ch/2,ch*0.3, cw/2,ch/2,ch*0.7);
+      const grad = cctx.createRadialGradient(W/2, H/2, H*0.3, W/2, H/2, H*0.7);
       grad.addColorStop(0, "transparent");
-      grad.addColorStop(1, "rgba(192,67,46,0.18)");
+      grad.addColorStop(1, "rgba(192,67,46,0.20)");
       cctx.fillStyle = grad;
-      cctx.fillRect(0,0,cw,ch);
+      cctx.fillRect(0, 0, W, H);
       cctx.fillStyle = "#c0432e";
       cctx.font = "11px monospace";
-      cctx.fillText("⚔ 残敵 " + Math.ceil(w.enemiesRemaining) + (w.raidIsHuman ? " (人間の討伐隊)" : " (敵対氏族)"), cw*0.06, ch*0.05);
+      cctx.fillText("⚔ 残敵 " + Math.ceil(w.enemiesRemaining) + (w.raidIsHuman ? " (人間の討伐隊)" : " (敵対氏族)"), W*0.06, H*0.06);
     }
   }
 
   // タップで個体を選択 (一番近い生存個体)
   colony.addEventListener("click", (e) => {
     const rect = colony.getBoundingClientRect();
-    const mx = (e.clientX - rect.left) * (colony.width / rect.width);
-    const my = (e.clientY - rect.top) * (colony.height / rect.height);
-    let best = null, bestD = 20; // 20px 以内
+    const mx = (e.clientX - rect.left) * (W / rect.width);
+    const my = (e.clientY - rect.top) * (H / rect.height);
+    let best = null, bestD = 20; // 論理 20px 以内
     for (const g of w.goblins) {
       if (GS.stateName(g.state) === "Dead") continue;
       const v = vmap.get(g.id);
       if (!v) continue;
-      const d = Math.hypot(v.x*colony.width - mx, v.y*colony.height - my);
+      const d = Math.hypot(v.x * W - mx, v.y * H - my);
       if (d < bestD) { bestD = d; best = g.id; }
     }
     selectedId = best;
@@ -695,18 +1103,34 @@
 
   function diffEvents(prev, cur) {
     const find = (id) => cur.goblins.find((g) => g.id === id);
+    const posOf = (id) => {
+      const v = vmap.get(id);
+      return v ? { x: v.x * W, y: v.y * H } : null;
+    };
     // 死亡ログの新規分 (KI-20 の資産をそのまま物語に)
     for (let i = prev.deathLen; i < cur.deathLog.length; i++) {
       const d = cur.deathLog[i];
       const pseudo = { id: d.id, sex: d.sex, role: d.role };
       const txt = `${nameOf(pseudo)} (${d.ageDays} 日齢) が${CAUSE_JP[d.cause] || d.cause}。`;
       pushLog(d.cause === "fledge" ? "event" : "death", txt);
+      const at = posOf(d.id);
+      if (at) {
+        if (d.cause === "fledge") {
+          burst(at.x, at.y, 4, { speed: 14, life: 0.8, size: 1, color: "#8a7d68" });
+        } else {
+          burst(at.x, at.y, 5, { kind: "bone", speed: 20, up: 18, g: 70, life: 1.1, size: 2.2, color: "#cbbfa6" });
+        }
+      }
     }
     // 新規個体 = 出生・加入
     const bornByMother = new Map();
     for (const g of cur.goblins) {
       if (prev.ids.has(g.id)) continue;
+      const v = vstateOf(g); // 演出層に登場させる
       const o = GS.originName(g.origin);
+      if (o === "Born" || o === "Nursery") {
+        burst(v.x * W, v.y * H, 6, { speed: 16, up: 8, life: 0.9, size: 1.2, color: "#9adb6e" });
+      }
       if (o === "Born") {
         const key = g.motherId ?? -1;
         bornByMother.set(key, (bornByMother.get(key) || 0) + 1);
@@ -714,6 +1138,7 @@
         bornByMother.set("nursery", (bornByMother.get("nursery") || 0) + 1);
       } else if (o === "Summoned") {
         pushLog("event", `信仰が ${nameOf(g)} を呼び出した。`);
+        burst(v.x * W, v.y * H, 8, { speed: 20, life: 0.8, size: 1.2, color: "#ffb454" });
       } else if (o === "CaptiveJoined") {
         pushLog("event", `雄捕虜 ${nameOf(g)} が気まぐれに群れへ加わった。`);
       } else if (o === "Concubine") {
@@ -741,7 +1166,11 @@
         if (!pairLogged.has(key)) {
           pairLogged.add(key);
           const mate = find(g.mateId);
-          if (mate) pushLog("love", `${nameOf(g)} と ${nameOf(mate)} がつがいになった。`);
+          if (mate) {
+            pushLog("love", `${nameOf(g)} と ${nameOf(mate)} がつがいになった。`);
+            const at = posOf(g.id);
+            if (at) burst(at.x, at.y - 6, 5, { kind: "text", txt: "♥", font: 8, speed: 10, up: 14, life: 1.4, color: "#e8a0b8" });
+          }
         }
       }
       if (was.isChild && g.childBornTick === null) {
@@ -912,6 +1341,13 @@
         if (history.length > 150) history.shift();
       }
     }
+    // 敵が削れたら巣口に火花 (戦果のフィードバック)
+    if (w.phase === "combat" && w.enemiesRemaining < prevEnemies - 0.5) {
+      const z = ZONES.entrance;
+      burst((z.x + randIn(-0.04, 0.04)) * W, (z.y - 0.04) * H, 5,
+        { speed: 34, life: 0.45, size: 1.3, color: "#ffd080" });
+    }
+    prevEnemies = w.enemiesRemaining;
     // 差分からイベントを拾う (フレーム単位のバッチで十分細かい)
     diffEvents(prevSnap, w);
     prevSnap = snapshotForDiff(w);
@@ -925,6 +1361,7 @@
     const ticks = driver.pump();
     if (ticks > 0) advanceTicks(ticks);
     moveGoblins(dtSec, t/1000, driver.getSpeed());
+    updateParticles(dtSec);
     drawColony(t);
     drawChart();
     renderHUD();

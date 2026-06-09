@@ -47,8 +47,11 @@ function el(id) {
   return elements.get(id);
 }
 let rafCb = null;
+let anonId = 0;
 const documentStub = {
   getElementById: el,
+  // オフスクリーンキャンバス (背景描画) 用。毎回新しい要素を返す。
+  createElement: () => el(`__anon${anonId++}`),
   querySelectorAll: () => [],
   addEventListener: noop,
   hidden: false,
