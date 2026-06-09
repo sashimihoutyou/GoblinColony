@@ -4,6 +4,10 @@
 > 「作るもの」として蒸留した実装仕様書。設計経緯・検証ログは元文書を参照すること。
 > 未確定の数値は §NUMBERS に集約し、都度 §15 ルーティングで更新する。
 
+> **⚠ 重要**: 現時点の `src/sim/` には**空間情報が一切ない**（`Goblin` に座標なし・
+> `WorldState` にマップなし）。§3-0 のグリッドマップシステムは**すべてのゲームプレイの土台**
+> であり、P1（プロトタイプ）で最初に実装する。
+
 ---
 
 ## 目次
@@ -49,6 +53,7 @@ Unity / Godot 等のゲームエンジンには依存しない純 TypeScript + C
 
 | カテゴリ | 内容 |
 |---|---|
+| **グリッドマップ** | タイル整数座標・固定テンプレート・A\* 経路探索（**P1 で最初に実装**） |
 | **コアシミュレーション** | `src/sim/` 全体（テスト全 OK 済み） |
 | **描画** | Canvas 2D Renderer（状態を描くだけ・状態を持たない） |
 | **プレイヤー操作** | 速度コントロール、4 ダイヤル操作、任命、奇跡 6 種、派遣 |
@@ -72,6 +77,133 @@ Unity / Godot 等のゲームエンジンには依存しない純 TypeScript + C
 ---
 
 ## 3. 確定メカニクス一覧
+
+### 3-0. グリッドマップシステム（最優先基盤）
+
+> **現状**: `Goblin` に座標なし・`WorldState` にマップ構造なし。
+> ここを実装しないとゴブリンは移動も戦闘位置取りも部屋への移動もできない。
+> **フェーズ P1 の最初のタスク。**
+
+#### 座標系
+
+- **整数タイル座標**。全ての位置は `{ x: number, y: number }` （整数 tile 単位）
+- 描画時のみ `tileSize`（px）を掛けてピクセル変換。ロジックは常に tile 単位で動く
+- スナップショット保存は整数なのでバイト一致を保ちやすい（KI-09 整合）
+
+#### マップ構造
+
+**2 層のグリッド**:
+
+```
+TileMap {
+  width:  number       // tile 単位の横幅
+  height: number       // tile 単位の縦幅
+  terrain: TileType[]  // width×height の flat 配列（地形レイヤー）
+  rooms:   RoomRect[]  // 矩形で定義された部屋リスト
+  gates:   GatePos[]   // 巣口の tile 座標（デフォルト 3 箇所）
+}
+
+TileType = Floor | Wall | Gate | ExteriorGround | ResourceNode
+```
+
+**RoomRect（部屋の矩形定義）**:
+
+```
+RoomRect {
+  x: number, y: number    // 左上 tile 座標
+  w: number, h: number    // 幅・高さ（tile 単位）
+  roomType: RoomType      // NestRoom / Nursery / Smithy / ...
+  assignedGoblins: number[] // 任命されたゴブリンの id
+}
+```
+
+#### 固定テンプレートの初期レイアウト
+
+- **ゲーム開始時にテンプレートから `TileMap` を生成**。ランダムなし
+- プレイヤーは建築で壁タイルを追加・部屋を設置し、テンプレートを育てていく
+- テンプレートの要件（確定）:
+  - 巣口デフォルト 3 本（北・南東・南西）。3 本未満には設定不可（§9）
+  - トーテムは巣の最奥タイルに配置（立地誘導）
+  - 初期は狭め——建築による拡張を動機付けられる余白が必要
+
+**初期レイアウト案（要プレイテスト）**:
+
+```
+  外部エリア（ExteriorGround）
+  ┌─────────────────────────────────────────┐
+  │  N 巣口                                  │
+  │  ┌──────────────────────────────────┐   │
+  │  │  族長の間  │  トーテム（最奥）    │   │
+  │  │   （左）   ├────────────────      │   │
+  │  │            │   空きスペース        │   │
+  │  └──────────────────────────────────┘   │
+  │  SE 巣口              SW 巣口            │
+  └─────────────────────────────────────────┘
+```
+
+数値（タイル数・部屋サイズ）はプレイテストで調整（§NUMBERS）。
+
+#### Goblin への座標追加
+
+`Goblin` 型（`src/sim/goblin.ts`）に以下を追加:
+
+```typescript
+x: number   // 現在 tile X
+y: number   // 現在 tile Y
+targetX: number | null  // 移動目標 X（null = 停止中）
+targetY: number | null  // 移動目標 Y
+path: Array<{x: number, y: number}> | null  // A* 計算済みパス
+```
+
+#### WorldState への TileMap 追加
+
+`WorldState`（`src/sim/world_state.ts`）に:
+
+```typescript
+map: TileMap   // KI-09: スナップショット保存対象に含める
+```
+
+#### 移動・経路探索
+
+- **A\* アルゴリズム**（タイルグリッド上）
+- 移動目的ごとにパスを計算し `Goblin.path` に格納。tick ごとに 1 タイル進む
+- パス再計算コスト軽減: 移動先が変わったときだけ再計算（目標未変更なら既存パスを消費）
+- 壁タイルは通行不可。`Gate` タイルは巣口（通行可・ゴブリン/敵どちらも通れる）
+
+**ステートと移動の対応**:
+
+| ステート | 移動目標 |
+|---|---|
+| 戦闘 | 最近接の敵タイル |
+| 恐怖 | 敵から最も遠い通行可タイル（巣内に留まる） |
+| 瀕死 | 最近接の寝床タイル（部屋 Bed 内） |
+| 空腹 | 最近接の食料タイル or 食料部屋 |
+| 睡眠 | 最近接の寝床タイル |
+| 仕事 | ジョブキューから取得したタスクのタイル |
+| 放浪 | ランダムな通行可タイル（rng 使用） |
+| 求愛・交尾 | 相手の現在タイル → 最近接の寝床タイル |
+
+#### 敵ユニットの空間表現
+
+敵も同じ `TileMap` 上に配置する。`WorldState.enemies` 配列に座標を持つ:
+
+```typescript
+EnemyUnit {
+  id: number
+  x: number, y: number
+  hp: number, maxHp: number
+  targetGateIdx: number  // 向かっている巣口インデックス
+  path: Array<{x: number, y: number}> | null
+}
+```
+
+#### スナップショット整合（KI-09）
+
+- `TileMap`・`Goblin.x/y/path`・`EnemyUnit` すべてをスナップショット対象に含める
+- path は整数配列なのでシリアライズが単純
+- **既存 `snapshot_test.ts` を拡張して往復テストに map・座標を追加**（マップ導入と同時）
+
+---
 
 ### 3-1. 信仰経済（§3）
 
@@ -267,44 +399,73 @@ Unity / Godot 等のゲームエンジンには依存しない純 TypeScript + C
 
 ### フェーズ 1「プロトタイプ版」
 
-**目的**: ゲームループが動いている画面を見る。UI は最低限。数値調整の土台を作る。
+**目的**: グリッドマップ上でゴブリンが動き・戦い・増える画面を見る。
+操作なし・オートプレイで走らせ、空間ありの通しプレイが完走することを確認する。
 
 **完了条件（Go 基準）**:
-- Canvas に WorldState が描画される（個体位置・HP・ステート色）
+- タイルマップが Canvas に描画される（床・壁・巣口・部屋の色分け）
+- ゴブリンが tile 座標を持ち、ステートに応じた目標へ A\* で移動する
 - 速度コントロール（停止/1x/3x）が動く
-- ラストバトルを含む通しプレイが完走する
-- ブラウザで `goblin_colony_dashboard.html` を開いて動作確認できる
+- ラストバトルを含む 30 日通しプレイが完走する（オートプレイ）
+- スナップショット往復テストがマップ座標込みでパスする
 
 **タスクリスト**:
 
 ```
-P1-01  Canvas 2D Renderer の骨格（状態なし・純粋関数）
-         - WorldState を受け取り個体・巣口・壁を描く
-         - 個体: 座標・ステート色（緑/黄/赤）・HP バー
-         - ループ: requestAnimationFrame → tickDriver → render
+P1-01  TileMap / RoomRect / GatePos / EnemyUnit の型定義
+         - src/sim/tile_map.ts を新規作成
+         - TileType enum（Floor / Wall / Gate / ExteriorGround / ResourceNode）
+         - TileMap・RoomRect・GatePos・EnemyUnit の interface
 
-P1-02  速度コントロール UI
-         - 停止/1x/3x ボタン → tickDriver.setSpeed()
-         - 現在速度の表示
+P1-02  固定テンプレートの初期マップ生成
+         - src/sim/map_template.ts を新規作成
+         - makeInitialMap(): TileMap — 固定テンプレートを返す純粋関数
+         - 巣口 3 本・トーテム最奥・初期部屋（族長の間のみ）
 
-P1-03  ゲームループ終端の実装
-         - 全滅検知 → ゲームオーバー画面
-         - 規定日数達成 → 勝利画面（特大ラストバトル後）
-         - 日境界でのオートセーブ呼び出し
+P1-03  Goblin 型への座標追加（src/sim/goblin.ts 改修）
+         - x, y, targetX, targetY, path フィールドを追加
+         - makeGoblin() に初期座標引数を追加
 
-P1-04  ラストバトル（特大襲撃）のトリガ
-         - 最終日に FINAL_MULT 倍の襲撃を発火
-         - 撃退でクリア・壊滅で敗北
+P1-04  WorldState への map フィールド追加（src/sim/world_state.ts 改修）
+         - map: TileMap を追加
+         - enemies: EnemyUnit[] を追加（現在は WorldState 内に座標なし）
 
-P1-05  build_dashboard.mjs の動作確認
-         - esbuild インストール確認
-         - バンドル → HTML 出力 → 動作確認
+P1-05  A* 経路探索の実装（src/sim/pathfinding.ts 新規）
+         - findPath(map, from, to): Tile[] — 純粋関数
+         - 壁タイルを通行不可として扱う
+         - キャッシュなし（単純実装。最適化は P2 以降）
+
+P1-06  world.ts への移動ロジック組み込み
+         - stepMovement(w, params): WorldState — 各ゴブリンを 1 tick 進める
+         - ステートに応じた目標タイルを決定し A* でパスを更新
+         - 敵ユニットも巣口へ向けて移動
+
+P1-07  スナップショットテスト拡張（parity/snapshot_test.ts）
+         - map（タイル配列）・Goblin.x/y/path・EnemyUnit を往復対象に追加
+         - テストが SNAPSHOT_ROUNDTRIP_OK を維持することを確認
+
+P1-08  Canvas 2D Renderer の骨格（src/renderer/renderer.ts 新規）
+         - render(worldState, params, canvas): void — 状態を持たない純粋関数
+         - タイルマップを色分け描画（床=明/壁=暗/巣口=強調/部屋=色付き）
+         - ゴブリン: 座標に円 + ステート色（緑/黄/赤）+ HP バー
+         - 敵ユニット: 赤い記号
+
+P1-09  速度コントロール UI + メインループ
+         - requestAnimationFrame → tickDriver → world.tick → render
+         - 停止/1x/3x ボタン
+         - build_dashboard.mjs でバンドル → goblin_colony_dashboard.html 動作確認
+
+P1-10  ゲームループ終端
+         - 全滅 / トーテム破壊 → ゲームオーバー表示
+         - 規定日数 + ラストバトル撃退 → 勝利表示
+         - 最終日に FINAL_MULT 倍の特大襲撃をトリガ
 ```
 
 **プロトタイプ版の意図的な省略**:
-- 操作 UI（ダイヤル・任命・奇跡）は一切なし
+- プレイヤー操作 UI（ダイヤル・任命・奇跡）は一切なし
 - オートプレイヤー（AI が自動で補充・配分）で走らせる
 - ステータスバー・ミニカード列なし
+- A\* は最適化なし（個体 40 体 × 毎 tick 再計算でも P1 は許容。P2 で計測）
 
 ---
 
@@ -462,11 +623,14 @@ src/sim/          ← コア（純粋関数・副作用なし）
   rng.ts              決定的 PRNG（xorshift128）
   params.ts           力学定数の単一の真実源（KI-01）
   cycle.ts            マクロ集計層（日単位）
-  goblin.ts           個体型
+  goblin.ts           個体型  ※ P1 で x/y/path フィールドを追加
   state_machine.ts    個体 1 体・1 tick の遷移
-  world_state.ts      World 層の状態スキーマ
+  world_state.ts      World 層の状態スキーマ  ※ P1 で map/enemies を追加
   world_params.ts     日次 → tick 変換（レートを再定義しない）
   world.ts            全個体 1 tick 進める + 戦闘・出生・事故死
+  tile_map.ts         ← P1 新規: TileMap / RoomRect / GatePos / EnemyUnit 型
+  map_template.ts     ← P1 新規: makeInitialMap() 固定テンプレート生成
+  pathfinding.ts      ← P1 新規: findPath(map, from, to) A* 純粋関数
 
 src/renderer/     ← 描画層（P1 で新規追加）
   renderer.ts         render(worldState, params) → void
