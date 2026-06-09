@@ -197,6 +197,18 @@ EnemyUnit {
 }
 ```
 
+#### タイル占有ルール
+
+→ §3-13 参照。複数ユニットが同タイルに重なれる。A\* は壁タイルのみ回避。
+
+#### 敵の出現点
+
+→ §3-14 参照。マップ外周 3 タイル外にスポーン。
+
+#### 壁の耐久値
+
+→ §3-20 参照。`TileCell { type, hp? }` に変更。`hp = 0` で Floor 化。
+
 #### スナップショット整合（KI-09）
 
 - `TileMap`・`Goblin.x/y/path`・`EnemyUnit` すべてをスナップショット対象に含める
@@ -324,7 +336,223 @@ EnemyUnit {
 
 ---
 
-## 4. 画面・UI 設計
+### 3-10. 時間定義（確定）
+
+**1日 = 20 tick、昼 = 12 tick（tick 0〜11）、夜 = 8 tick（tick 12〜19）**
+
+| 速度 | 1 tick | 1 日 | 30 日プレイ |
+|---|---|---|---|
+| 停止 | ∞ | — | — |
+| 1x | 1 秒 | 20 秒 | 約 10 分 |
+| 3x | 0.33 秒 | 6.7 秒 | 約 3.3 分 |
+
+- `WorldState.ticksPerDay = 20`（§12 仮置き 10 を改訂）
+- 昼夜の境界は `tick % ticksPerDay` で判定。外征はdayTick < 12 の間のみ発動可
+- 外征の近場往復 = 4 tick（12 tick 昼に余裕）、遠方往復 = 8 tick（直ちに出ないと帰れない「賭け」）— KI-08 実証値と整合
+- cycle.ts の日次レートは `ticksPerDay` 変更で自動スケール（`params.ts` が真実源 / KI-01）
+
+---
+
+### 3-11. 資源システム（確定）
+
+**WorldState.resources にスカラー量で保持**
+
+```typescript
+resources: {
+  food:      number   // 食料
+  wood:      number   // 建材（木）
+  mud:       number   // 建材（泥）
+  herb:      number   // 薬草
+  equipment: number   // 装備（泥鍛冶屋が生産）
+  gems:      number   // 宝石・貴金属
+}
+```
+
+- 生産部屋が毎 tick スカラーに加算。消費もスカラーから減算
+- TileMap 上の `ResourceNode` タイルは採掘対象（採掘完了で枯渇し Exhausted タイプへ変化）
+- `StorageZone` タイルを初期テンプレートに 1 箇所配置。空腹ゴブリンはここへ移動して food を消費
+- 搬送ジョブ（採掘物を StorageZone へ運ぶ）は AI の演出として存在するが、**ロジックはスカラーで完結**（搬送中断でも資源は失われない）
+
+**食料生産ループ**:
+
+```
+ネズミ牧場（割当ゴブリン数 × 生産レート）→ resources.food += N / tick
+空腹ゴブリン → 最近接 StorageZone タイルへ移動 → resources.food -= 1 → 空腹解消
+resources.food = 0 → 空腹が解消されない → 放浪継続
+（食料不足→流産・事故死率上昇は P3 で接続 §2.5）
+```
+
+---
+
+### 3-12. ジョブキュー（確定）
+
+**`WorldState.jobs: Job[]`**
+
+```typescript
+interface Job {
+  id:               number
+  type:             JobType   // Mine | Build | Haul | Pray | Craft | Guard
+  targetX:          number
+  targetY:          number
+  priority:         number    // 低い値 = 高優先
+  assignedGoblinId: number | null
+  progress:         number    // 0〜1（中断後も進捗を保持）
+  requiredItems?:   { resource: ResourceKey; amount: number }[]
+}
+```
+
+**ジョブの取得と解放**:
+- ゴブリンが「仕事」ステートに入ると `jobs` から「未割当・最寄り・性格重みで最高スコア」の 1 件を取得し `assignedGoblinId` に自分の id を登録
+- 完了で jobs から除去。中断（後述）では `assignedGoblinId = null` に戻し進捗は保持——別のゴブリンが続きから再開できる
+
+**⚠ ジョブへの割り込みと中断（重要）**
+
+ジョブはプレイヤー以外の要因で**常時中断されうる**。ジョブシステムはこれを前提に設計すること。
+
+| 割り込み原因 | 挙動 |
+|---|---|
+| 戦闘（§5 優先度 4） | 敵が隣接タイルに出現 → 即時に仕事を中断し戦闘ステートへ遷移。ジョブの進捗は保持 |
+| 恐怖（§5 優先度 3） | HP 減少で恐怖発火 → 仕事を中断し離脱。安全確認後に仕事へ戻れる |
+| 空腹（§5 優先度 6） | 空腹閾値を超えると仕事を中断し食料を探す。食事後に同じジョブを再取得できる |
+| 睡眠（§5 優先度 7） | 睡眠欲求超過で仕事を中断。起床後に再取得 |
+| ケンカ（stepRivalry） | ステートマシン外の割り込み。争いが終わるまで仕事が止まる |
+| 死亡 | `assignedGoblinId = null` に戻しジョブを解放。ゴブリンはジョブを抱えて消えない |
+| 逃走（巣立ち） | 死亡と同様に即解放 |
+
+> **実装上の原則**: ジョブを「完走して当然」と設計しない。作業の切れ目ではなくステート遷移のたびにジョブとの整合を確認し、割り込みが起きた場合は常に正しく解放すること（KI-20「死亡の一元化」と同じ思想）。
+
+---
+
+### 3-13. タイル占有ルール（確定）
+
+**複数ユニットが同タイルに重なれる。A\* は壁タイルのみ回避**
+
+- ゴブリン同士・ゴブリンと敵の物理的衝突判定なし（最大 40 体 + 敵を 60×60 マップで動かすための現実的選択）
+- 戦闘の攻撃判定: 「8 方向隣接タイルに敵ユニットが存在すれば攻撃」
+- 混雑でパスが詰まる問題を構造的に排除し、A\* の計算を壁のみの単純なものに保つ
+
+---
+
+### 3-14. 敵の出現点（確定）
+
+**マップ外周から 3 タイル外にスポーン → 担当巣口タイルへ A\* 移動**
+
+- 大規模襲撃: 全巣口に部隊を分散（`EnemyUnit.targetGateIdx` で管理）
+- 小規模襲撃: 無作為に選んだ 1 巣口のみ
+- 巣口タイルに到達後: 巣内へ侵入し最近接ゴブリン or トーテムへ向かう
+- 外周スポーンにより「外から来る」視覚と予兆フェーズの時間的猶予が両立する
+
+---
+
+### 3-15. 部屋の建築フロー（確定）
+
+**部屋タイプごとに固定サイズテンプレートをゴースト配置**
+
+プレイヤーは「建築モード → 部屋タイプ選択 → ゴースト配置 → 2タップ確定」。建材コストを消費し、ゴブリンが建設ジョブを実行。完了で `TileMap.rooms[]` に `RoomRect` が追加される。
+
+| 部屋 | サイズ（tile） | 建材コスト |
+|---|---|---|
+| ネズミ牧場 | 4 × 3 | §NUMBERS |
+| キノコ農園 | 3 × 3 | §NUMBERS |
+| 泥鍛冶屋 | 3 × 3 | §NUMBERS |
+| 苗床部屋 | 4 × 3 | §NUMBERS |
+| まじない医の部屋 | 3 × 3 | §NUMBERS |
+
+---
+
+### 3-16. 装備取得ロジック（確定）
+
+**`Goblin.equipped: boolean` + `WorldState.resources.equipment` から消費**
+
+- 「警備」割り当て or「外征・戦闘系」に出る前に最近接の泥鍛冶屋タイルへ移動
+  → `resources.equipment -= 1` → `equipped = true`
+- `equipped` ゴブリンの戦闘ボーナス: 攻撃力 +30%（§NUMBERS）
+- 死亡時に装備は消滅（回収なし）
+- `resources.equipment = 0` の場合は素手で出発（`equipped = false`）
+
+---
+
+### 3-17. 防衛ラインの空間定義（確定）
+
+**各巣口タイルから内側 2 タイルの座標を `DefensePoint` として自動算出**
+
+```typescript
+interface DefensePoint {
+  gateIdx:         number
+  x:               number   // 巣口タイルから内側 2 タイル
+  y:               number
+  assignedGoblins: number[] // 割り当てゴブリン id 配列
+}
+// WorldState.defensePoints: DefensePoint[]
+```
+
+- 襲撃予兆フェーズで配分スライダーが表示。確定でゴブリンが対応 `DefensePoint` へ移動・待機
+- スライダー変更は即座に `assignedGoblins` を更新（A\* でリルートされる）
+- ウィッチドクターは各 DefensePoint から巣の中心方向へ 3 タイルの後衛座標に自動配置
+
+---
+
+### 3-18. 外征ゴブリンの空間表現（確定）
+
+**外征中ゴブリンはマップ上に存在しない（抽象的不在）**
+
+- `expeditionReturnTick != null` のゴブリンは Renderer に描画されない。AI ステートも進行しない
+- 帰還 tick になると担当巣口タイルの隣の床タイルに座標を設定してマップ上に復帰
+- ステータスバーに「外征中: N 体」を表示
+- 帰還中に襲撃が発生した場合: 帰還 tick をそのまま維持し、巣口から自然に防衛ラインへ合流（「遅れて来る増援」— §11.5 確定設計）
+
+---
+
+### 3-19. 捕虜の空間表現（確定）
+
+**スカラー管理を基本。関係性が発生したときのみ個体化**
+
+- `WorldState.captives`（既存の 4 スカラー）を維持
+- 苗床配置は `RoomRect.assignedCaptives: number` でカウント管理（個体 id 不要）
+- 奴隷妻/夫・自然つがい化が発生した時点で `Goblin` 配列に `Role.Concubine` として個体化（KI-21 の既存実装）
+- 空間上「捕虜タイル」は持たない。UI は数値パネルで表示
+
+---
+
+### 3-20. 壁の耐久値（確定）
+
+**壁タイルに `hp` を持たせる。`hp = 0` で `Floor` に変化**
+
+```typescript
+interface TileCell {
+  type: TileType
+  hp?:  number   // Wall のみ。undefined = 無敵壁（トーテム周囲等）
+}
+// TileMap.terrain: TileCell[]  ← TileType[] から変更
+```
+
+- 通常の壁は `hp = MAX_WALL_HP`（§NUMBERS）
+- ブリーチング敵は隣接壁に毎 tick ダメージ。`hp = 0` で `type: Floor` に書き換え
+- プレイヤーが壁修復ジョブを発行可能（建材消費）
+- 破壊予告: `WorldState.breachWarnings: { x, y, etaTicks: number }[]`。Renderer が警告色でハイライト
+
+---
+
+### 3-21. 搬送中ステートの型（確定）
+
+**`GoblinState.KnockedOut` を追加。`Goblin.carryingId` フィールドを追加**
+
+```typescript
+// GoblinState に追加
+KnockedOut = 10   // HP0 で倒れた状態（ユニーク個体のみ）
+
+// Goblin に追加
+carryingId:          number | null   // 搬送中のユニーク個体 id（搬送者側）
+knockedOutUntilTick: number | null   // この tick を超えると死亡（倒れた側）
+```
+
+- HP0 のユニーク個体（族長・アミナ）→ `KnockedOut` ステート。その場の座標に静止
+- 最近接の非戦闘ゴブリンが自動で `carryingId` をセットし最近接寝床へ搬送
+- 搬送者は搬送中に戦闘ステートへの遷移をブロック（守りに回れない小ドラマ）
+- 寝床タイルに到達 → 搬送者の `carryingId = null`、ユニークは寝床で HP 回復を開始
+- タイムアウト（`knockedOutUntilTick` 超過）で死亡（`killGoblin` に集約 / KI-20）
+
+---
 
 ### 4-1. 画面ゾーニング（横持ち 3 層）
 
@@ -412,10 +640,14 @@ EnemyUnit {
 **タスクリスト**:
 
 ```
-P1-01  TileMap / RoomRect / GatePos / EnemyUnit の型定義
+P1-01  TileMap / RoomRect / GatePos / EnemyUnit / Job の型定義
          - src/sim/tile_map.ts を新規作成
-         - TileType enum（Floor / Wall / Gate / ExteriorGround / ResourceNode）
-         - TileMap・RoomRect・GatePos・EnemyUnit の interface
+         - TileType enum（Floor / Wall / Gate / ExteriorGround / ResourceNode / StorageZone / Exhausted）
+         - TileCell interface（type + hp?）※ §3-20
+         - TileMap・RoomRect・GatePos・EnemyUnit・DefensePoint の interface
+         - Job interface（§3-12）・JobType enum
+         - WorldState.resources / WorldState.jobs / WorldState.defensePoints /
+           WorldState.breachWarnings を追加（§3-11〜20）
 
 P1-02  固定テンプレートの初期マップ生成
          - src/sim/map_template.ts を新規作成
@@ -599,6 +831,10 @@ P3-09  最終 QA・バランス確認
 | 求愛基礎確率 `courtBaseChance` | 要計測 | 繁殖強さと増殖ラグのバランス |
 | ラストバトル倍率 `FINAL_MULT` | 要計測 | 備えていれば勝てる・備えなければ負ける |
 | 大規模間隔（和平〜MAX） | 5 日〜1 日 | KI-05/08 検証済み範囲 |
+| 実時間換算 `msPerTick`（1x） | 1000 ms | 1日=20秒。プレイテスト後に調整 |
+| 壁耐久値 `MAX_WALL_HP` | 要計測 | ブリーチングの所要時間 = 奇跡介入の猶予を決める |
+| 装備ボーナス（攻撃力倍率） | +30% | 未装備との差が判断を生む最小値 |
+| 部屋建材コスト（各部屋） | 要計測 | 早期建築の誘引 vs リソース圧迫のバランス |
 
 ---
 
