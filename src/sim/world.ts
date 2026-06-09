@@ -85,6 +85,7 @@ export function initWorld(
     deathLog: [],
     phase: "peace",
     surge: 0,
+    foodBuff: 0,
     overCapTicks: 0,
     // 初回大規模襲撃は和平間隔 (敵対度 0) ぶん先に予約 (自動スケジューラ §11)。
     nextBigRaidTick: Math.max(1, Math.round(raidIntervalDays(0, p) * p.ticksPerDay)),
@@ -216,8 +217,9 @@ export function stepWorld(prev: WorldState, p: WorldParams): WorldState {
     stepCombat(w, p);
   }
 
-  // --- 5. 損耗バフ減衰 (日次率を tick 次へ) ---
+  // --- 5. 損耗バフ・食料バフ減衰 (日次率を tick 次へ) ---
   w.surge = Math.max(0, w.surge - p.surgeDecayPerDay / p.ticksPerDay);
+  w.foodBuff = Math.max(0, w.foodBuff - p.foodDecayPerDay / p.ticksPerDay);
 
   // --- 6. 日境界処理 ---
   if (w.tick % w.ticksPerDay === 0) {
@@ -232,6 +234,10 @@ export function stepWorld(prev: WorldState, p: WorldParams): WorldState {
         }
       } else {
         w.overCapTicks = 0;
+      }
+      // 小規模襲撃 = 二層襲撃の恵み側 (§11/KI-05)。平時に日次 0〜1 回、間接報酬。
+      if (p.autoRaidEnabled) {
+        stepSmallRaid(w, rng, p);
       }
     }
   }
@@ -459,9 +465,11 @@ function stepReproduction(w: WorldState, rng: Rng, p: WorldParams): void {
     const favBonus =
       female.favoriteId === target.id || target.favoriteId === female.id ? p.favoriteCourtBonus : 0;
     const isMated = female.mateId === target.id;
+    // 損耗バフ (surge) と食料バフ (foodBuff) が求愛成功率を底上げ (§2.5/KI-05)。
+    // マクロの breedMult = 1 + surge + foodBuff に対応 (World は重みを 0.5 に割る)。
     const chance =
       (p.courtBaseChance * (0.5 + compat) + favBonus + (isMated ? 0.3 : 0)) *
-      (1 + w.surge * 0.5);
+      (1 + w.surge * 0.5 + w.foodBuff * 0.5);
     if (rng.nextFloat() < chance) {
       // 成立: 両者を寝床での性行為へ (matingTicks=0, 相手 id をセット)。
       const ti = idx.get(target.id)!;
@@ -1067,6 +1075,49 @@ export function releaseHumanCaptive(prev: WorldState, p: WorldParams, sex: Sex):
 export function raidIntervalDays(hostility: number, p: WorldParams): number {
   const h = clamp01(hostility);
   return p.raidIntervalDaysAtPeace + (p.raidIntervalDaysAtMax - p.raidIntervalDaysAtPeace) * h;
+}
+
+/**
+ * 小規模襲撃 (二層襲撃の恵み側 / §11/KI-05)。平時に日次 0〜1 回。検証済みマクロ
+ * (cycle.ts) と同一ロジック: 微小損耗 (余裕で勝つ) の後、食料/捕虜の間接報酬を引く。
+ * 報酬は必ず間接経路 (食料バフ→増殖 / 捕虜→苗床) を通しインフレを避ける (KI-05)。
+ * 報酬は隣接ゴブリン勢力からの小競り合いとし、人間勢力の敵対度は動かさない。
+ * RNG 消費順は cycle.ts と揃える (発生判定 → 報酬分岐)。
+ */
+function stepSmallRaid(w: WorldState, rng: Rng, p: WorldParams): void {
+  if (rng.nextFloat() >= p.smallRaidProb) return;
+
+  // 微小損耗: 頭数比ぶんを離散化 (第一期スケールでは多くの日で 0 = 余裕で勝つ)。
+  const losses = Math.floor(livePop(w) * p.smallLossFrac);
+  for (let n = 0; n < losses; n++) {
+    const idx = w.goblins.findIndex(
+      (g) => g.state !== GoblinState.Dead && !g.isUnique && !isChild(g, p)
+    );
+    if (idx < 0) break;
+    killGoblin(w, idx, "combat");
+  }
+
+  // 報酬分岐 (食料のみ / 捕虜のみ / 両取り)。間接経路のみ (KI-05)。
+  const roll = rng.nextFloat();
+  const rs = p.smallRewardScale;
+  const gainFood = () => {
+    w.foodBuff = Math.min(p.foodBuffMax, w.foodBuff + p.foodGain * rs);
+  };
+  const gainCaptives = () => {
+    // 隣接ゴブリン勢力から。出生比どおり雄寄りで雌雄に振り分け (CAPTIVE_COMP.goblin)。
+    const total = p.captiveGainSmall * rs;
+    const males = total * CAPTIVE_COMP.goblin.maleFrac;
+    w.capMaleGoblin += males;
+    w.capFemaleGoblin += total - males;
+  };
+  if (roll < p.smallFoodOnly) {
+    gainFood();
+  } else if (roll < p.smallFoodOnly + p.smallCaptiveOnly) {
+    gainCaptives();
+  } else {
+    gainFood();
+    gainCaptives();
+  }
 }
 
 // --- 子フラグの管理 (Goblin 本体の childBornTick を使う / KI-14 で一元化) ---

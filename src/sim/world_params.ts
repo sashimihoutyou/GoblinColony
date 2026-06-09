@@ -96,6 +96,19 @@ export interface WorldParams {
   enemySlope: number;
   enemyPerRank: number;
   rankThresholds: number[]; // 累計信仰 → ランク (cycle.ts rankFromCumulative と共有)
+
+  // --- 小規模襲撃 = 二層襲撃の「恵み」側 (§11/KI-05。日次0〜1回・間接報酬) ---
+  // 検証済みマクロ (cycle.ts) と同一出所。報酬は必ず間接経路 (食料バフ→増殖 /
+  // 捕虜→苗床) を経由しインフレを避ける (KI-05)。autoRaidEnabled 配下で平時に発生。
+  smallRaidProb: number; // 1 日に小規模襲撃が起きる確率
+  smallLossFrac: number; // 微小損耗 (頭数比・余裕で勝つ)
+  smallFoodOnly: number; // 報酬が食料のみになる確率
+  smallCaptiveOnly: number; // 報酬が捕虜のみになる確率 (残りは両取り)
+  foodGain: number; // 1 回の食料報酬で増える食料バフ
+  foodBuffMax: number; // 食料バフの上限 (青天井防止 §3)
+  foodDecayPerDay: number; // 食料バフの 1 日あたり減衰
+  smallRewardScale: number; // 小規模報酬の倍率 (難度ダイヤルの調整代)
+  captiveGainSmall: number; // 小規模襲撃 1 回の捕虜獲得数
   // 召喚: 信仰を消費して即時頭数補充 (§4 下僕召喚)。
   summonCost: number; // 召喚 1 回の信仰コスト
   summonPop: number; // 召喚 1 回で増える頭数
@@ -228,6 +241,16 @@ export function makeWorldParams(ticksPerDay = 10): WorldParams {
     enemySlope: b.ENEMY_SLOPE,
     enemyPerRank: b.ENEMY_PER_RANK,
     rankThresholds: b.RANK_THRESHOLDS,
+    // 小規模襲撃 (二層襲撃の恵み側 / KI-05)。すべて cycle.ts と同一出所。
+    smallRaidProb: b.SMALL_PROB,
+    smallLossFrac: b.SMALL_LOSS_FRAC,
+    smallFoodOnly: b.SMALL_FOOD_ONLY,
+    smallCaptiveOnly: b.SMALL_CAPTIVE_ONLY,
+    foodGain: b.FOOD_GAIN,
+    foodBuffMax: b.FOOD_BUFF_MAX,
+    foodDecayPerDay: b.FOOD_DECAY,
+    smallRewardScale: b.SMALL_REWARD_SCALE,
+    captiveGainSmall: b.CAPTIVE_GAIN,
     summonCost: b.SUMMON_COST,
     summonPop: b.SUMMON_POP,
     sacrificeFaith: b.SACRIFICE_FAITH,

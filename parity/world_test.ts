@@ -347,6 +347,31 @@ const p = makeWorldParams(10);
   check("既定では自動襲撃は起きない (opt-in)", off, "");
 }
 
+// --- 9f. 小規模襲撃: 二層襲撃の恵み側が間接報酬を降らせる (§11/KI-05) ---
+// 平時に日次0〜1回、食料バフ/捕虜の間接報酬。インフレせず増殖を底上げする。
+{
+  const pp = { ...makeWorldParams(10), autoRaidEnabled: true,
+    // 大規模襲撃を遠ざけて小規模の恵みだけを観測する。
+    raidIntervalDaysAtPeace: 9999, raidIntervalDaysAtMax: 9999 };
+  let w = initWorld(pp, { startGoblins: 12, capPop: 40, seed: 1, withChief: true });
+  const capBefore = w.capMaleGoblin + w.capFemaleGoblin;
+  let sawFood = false;
+  for (let d = 0; d < 30; d++) {
+    for (let i = 0; i < pp.ticksPerDay; i++) w = stepWorld(w, pp);
+    if (w.foodBuff > 0) sawFood = true;
+  }
+  const capAfter = w.capMaleGoblin + w.capFemaleGoblin;
+  check("小規模襲撃で捕虜の恵みが積もる (§11/KI-05)", capAfter > capBefore,
+    `捕虜 ${capBefore.toFixed(1)} → ${capAfter.toFixed(1)}`);
+  check("小規模襲撃で食料バフが発生する (増殖を底上げ)", sawFood, "");
+
+  // 既定 (autoRaidEnabled=false) では小規模襲撃も起きない (opt-in)。
+  let wq = initWorld(p, { startGoblins: 12, capPop: 40, seed: 1, withChief: true });
+  for (let d = 0; d < 30; d++) for (let i = 0; i < p.ticksPerDay; i++) wq = stepWorld(wq, p);
+  check("既定では小規模襲撃も起きない (食料バフ0/捕虜不変)",
+    wq.foodBuff === 0 && wq.capMaleGoblin + wq.capFemaleGoblin === 0, "");
+}
+
 // --- 10. 性別: 出産は雄に偏る (世界観: 雄が多産) ---
 // 注: 個体群の最終比率は雌の生存率が高い (事故死 1/3・非戦闘) ため雄偏りが
 // 薄まる = 「雄は多く産まれ多く死に、雌は希少だが生き延びる」という均衡が

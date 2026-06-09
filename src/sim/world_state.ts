@@ -95,6 +95,7 @@ export interface WorldState {
   // --- ③ 進行中イベント ---
   phase: RaidPhase;
   surge: number; // 損耗時バフ残量 (§2.5 必須骨格 / KI-04)
+  foodBuff: number; // 小規模襲撃の食料バフ残量 (§11/KI-05。増殖を底上げ・減衰)
   overCapTicks: number; // 上限超過が続いた平時 tick (巣立ち猶予 §2.5)
   nextBigRaidTick: number; // 次の大規模襲撃を発火する tick (自動スケジューラ §11)
   enemiesRemaining: number; // 交戦中の残敵数 (0 なら非交戦)
