@@ -252,7 +252,10 @@ func _step_goblins() -> void:
 		ctx.assigned_to_combat = (g.sex == Goblin.Sex.MALE or g.is_unique)
 		ctx.food_available = food > 0.0 and _at_storage(g.pos())
 		ctx.food_in_stock = food > 0.0
+		var hunger_before: float = g.hunger
 		StateMachine.step(g, ctx, params)
+		if ctx.food_available and g.state == Goblin.State.HUNGRY and g.hunger < hunger_before:
+			food = max(0.0, food - params.food_eat_amount)
 
 		if g.state == Goblin.State.DEAD or g.state == Goblin.State.KNOCKED_OUT:
 			continue
@@ -541,10 +544,6 @@ func _step_food() -> void:
 		if r.room_type == TileMapData.RoomType.RAT_RANCH:
 			ranchers += (r.assigned as Array).size()
 	food += ranchers * params.food_per_rancher_tick
-	# 消費は state_machine が food_available 経由で行うが、集積所での実消費を反映。
-	for g in goblins:
-		if g.state == Goblin.State.HUNGRY and _at_storage(g.pos()) and food > 0.0:
-			food = max(0.0, food - params.food_eat_amount)
 
 func _step_faith() -> void:
 	var shamans := 0

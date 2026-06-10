@@ -8,6 +8,7 @@ extends SceneTree
 func _init() -> void:
 	var ok := true
 	ok = _test_map_integrity() and ok
+	ok = _test_hungry_arrival_does_not_spend_food() and ok
 	ok = _test_run_to_end() and ok
 	ok = _test_snapshot_roundtrip() and ok
 	if ok:
@@ -74,6 +75,42 @@ func _test_map_integrity() -> bool:
 	if ok:
 		print("  map-integrity: OK (floors=%d gates=%d)" % [floors, m.gates.size()])
 	return ok
+
+func _test_hungry_arrival_does_not_spend_food() -> bool:
+	var p := SimParams.new()
+	p.start_goblins = 1
+	p.food_per_rancher_tick = 0.0
+	p.food_eat_amount = 1.0
+	p.hunger_rate = 0.0
+	p.sleep_rate = 0.0
+	p.move_per_tick = 100.0
+	var w := World.new()
+	w.setup(p)
+	w.food = 1.0
+	var g := w.goblins[0] as Goblin
+	g.role = Goblin.Role.NONE
+	g.hunger = 0.8
+	g.hunger_latched = true
+	g.sleepiness = 0.0
+	g.sleep_latched = false
+	w._place(g, w.map.totem)
+	w.tick_once()
+	if not w._at_storage(g.pos()):
+		print("  FAIL: hungry goblin did not reach storage")
+		return false
+	if w.food < 1.0:
+		print("  FAIL: food was spent on arrival before hunger relief")
+		return false
+	var hunger_after_arrival: float = g.hunger
+	w.tick_once()
+	if g.hunger >= hunger_after_arrival:
+		print("  FAIL: hunger did not recover at storage")
+		return false
+	if w.food >= 1.0:
+		print("  FAIL: food was not spent while eating")
+		return false
+	print("  hungry-food-order: OK")
+	return true
 
 func _test_run_to_end() -> bool:
 	var p := SimParams.new()
