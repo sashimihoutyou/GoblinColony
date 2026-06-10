@@ -83,13 +83,19 @@ var cap_pop: int = 40                  # 頭数上限 (CAP_POP_MAX)
 var fledge_grace_ticks: int            # 上限超過 2 日で巣立ち (安全弁)
 
 # --- 食料 (§3-11) ---
-var food_per_rancher_tick: float       # ネズミ牧場 (日次 6.0 を変換)
+var food_per_rancher_tick: float       # ネズミ牧場 (日次 8.0 を変換)
 # 食事 1 回の在庫消費 (イベント単位なので tick 解像度非依存 = KI-02 変換不要)。
-# 需要 ≈ hunger_rate/hunger_on × food_per_meal ≈ 2.6 food/体/日
-# (旧レート消費と等価 = food_economy_spec の収支を維持)。
-var food_per_meal: float = 2.2
-var food_passive_per_tick: float       # 在庫不足時の受動的な食料湧き (日次 4.0 を変換)
+# 一食 = 1.0 単位 (食料カウンタ = 残り食事回数)。
+# 需要 ≈ hunger_rate/hunger_on ≈ 1.19 食/体/日。
+var food_per_meal: float = 1.0
 var ranch_assign_frac: float = 0.34    # 無役成体のうち牧場へ寄せる目標割合
+
+# --- パン虫 (§3-11 救済床の実体化。攻撃してこない食用ザコ) ---
+var mite_spawn_per_tick: float     # 自然湧き確率 (日次 1.2 を変換。上限と合わせ 1 日 0〜2 匹ほど)
+var mite_max: int = 2              # 同時存在の上限
+var mite_move_per_tick: float      # 移動速度 (30 タイル/日 を変換。ゴブリン 150 よりずっと遅い)
+var mite_retarget_per_tick: float  # うろつきの行き先再抽選確率 (日次 24 を変換)
+var mite_sight: int = 6            # 空腹ゴブリンがパン虫に気づく距離 (タイル)
 var starve_threshold: float = 0.95     # 在庫0で飢餓ダメージが始まる空腹度
 var starve_hp_per_tick: float          # 飢餓 HP ドレイン (日次 6.0 を変換)
 
@@ -119,8 +125,14 @@ func _init() -> void:
 	child_grow_ticks = ticks_per_day
 	accident_prob = 0.04 / tpd
 	fledge_grace_ticks = ticks_per_day * 2
-	food_per_rancher_tick = 10.0 / tpd
-	food_passive_per_tick = 4.0 / tpd
+	# 牧場 8.0 食/日: 割当 alive×0.34 のうち食事・睡眠で稼働率 ~55% に落ちるため、
+	# 実効 ≈ 0.34×0.55×8.0 ≈ 1.5 食/体/日 で需要 1.19 食/体/日 をわずかに上回る。
+	# (旧 4.5 相当は、廃止した抽象救済 + 一括消費クランプ (在庫が僅かでも一食に
+	# なる) の隠れ補助に依存した見かけの均衡で、キャップ人口で飢餓スパイラル化)
+	food_per_rancher_tick = 8.0 / tpd
+	mite_spawn_per_tick = 1.2 / tpd
+	mite_move_per_tick = 30.0 / tpd
+	mite_retarget_per_tick = 24.0 / tpd
 	starve_hp_per_tick = 6.0 / tpd
 	faith_per_shaman_tick = 2.0 / tpd
 	totem_repair_per_tick = 20.0 / tpd

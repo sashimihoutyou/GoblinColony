@@ -48,6 +48,7 @@ const STATE_COLORS := {
 # on_tick で prev←cur, cur←最新位置 を確定し、render で α (tick 端数) 補間する。
 var _gmap: Dictionary = {}
 var _emap: Dictionary = {}
+var _mmap: Dictionary = {}   # パン虫 (§3-11)。ゴブリン・敵と同じ補間管理
 
 # --- パーティクル: {kind,x,y,vx,vy,g,life,max_life,size,color,txt} ---
 var _particles: Array = []
@@ -85,6 +86,14 @@ func on_tick(world: World) -> void:
 			var v3: Dictionary = _emap[id]
 			_burst(v3.pos, 4, {"speed": 26.0, "life": 0.5, "size": 1.2, "color": Color("c0432e")})
 			_emap.erase(id)
+	# パン虫 (消滅時は静かに消える。捕食バーストは on_event 側で出す)。
+	var mseen := {}
+	for m in world.mites:
+		mseen[m.id] = true
+		_advance_entry(_mmap, m.id, _unit_pixel(m))
+	for mid in _mmap.keys():
+		if not mseen.has(mid):
+			_mmap.erase(mid)
 
 ## エントリの prev/cur を進める。新規 (出生・襲撃出現) は prev=cur=now で登録。
 func _advance_entry(m: Dictionary, id: int, now: Vector2) -> void:
@@ -139,6 +148,11 @@ func on_event(e: Dictionary) -> void:
 		"surge":
 			var c := _tile_center(_world.map.totem)
 			_burst(c, 10, {"speed": 30.0, "life": 0.9, "size": 1.4, "color": Color("c0432e")})
+		"mite_eaten":
+			# パン虫を捕食: 小さな緑系バースト (捕食したゴブリンの補間位置から)。
+			var atm := _last_pos_of(int(e.get("id", -1)))
+			if atm != Vector2.ZERO:
+				_burst(atm, 4, {"speed": 16.0, "life": 0.6, "size": 1.1, "color": Color("9adb6e")})
 
 ## クリック位置 (ワールド座標) から最寄りの生存ゴブリン id を返す (-1 = なし)。
 func pick(world: World, pos: Vector2) -> int:
@@ -341,6 +355,13 @@ func _draw() -> void:
 	# --- トーテム像 + 炎 ---
 	_draw_totem(m)
 
+	# --- パン虫 (補間位置。床の上をうろつく食用ザコ) ---
+	for mu in _world.mites:
+		var vm: Dictionary = _mmap.get(mu.id, {})
+		if vm.is_empty():
+			continue
+		_draw_mite(vm.pos as Vector2, mu.id)
+
 	# --- 敵 (補間位置) ---
 	for e in _world.enemies:
 		var v: Dictionary = _emap.get(e.id, {})
@@ -534,6 +555,15 @@ func _draw_goblin(pos: Vector2, g: Goblin, face: float) -> void:
 		elif g.state == Goblin.State.HUNGRY and randf() < 0.02:
 			_spawn_p({"color": Color("a8842a"), "x": x + randf_range(-r, r), "y": by + r * 0.4,
 				"vx": randf_range(-6, 6), "vy": 8.0, "g": 40.0, "life": 0.5, "size": 1.0})
+
+# ── パン虫スプライト (青白い小さな幼虫。体長 3px ほど、わずかに蠢く) ──
+func _draw_mite(pos: Vector2, id: int) -> void:
+	var wig := sin(_t * 8.0 + float(id)) * 0.6   # 蠢き
+	var col := Color("a8c0d0")
+	_ellipse(pos + Vector2(0, 1.6), 2.0, 0.7, Color(0, 0, 0, 0.25))  # 影
+	# 体節 = 楕円 2 つ (頭側 + 尾側)。
+	_ellipse(pos + Vector2(-1.0, wig * 0.3), 1.4, 1.0, col)
+	_ellipse(pos + Vector2(1.0, -wig * 0.3), 1.2, 0.9, col.darkened(0.1))
 
 # ── 敵スプライト (槍持ちのミニ人型) ──
 func _draw_enemy(pos: Vector2, e: EnemyUnit, face: float) -> void:
