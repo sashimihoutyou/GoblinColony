@@ -20,6 +20,7 @@ var next_enemy_id: int = 0
 var tick: int = 0
 var day: int = 0
 var phase: int = Phase.PEACE
+var totem_hp: float = 60.0     # トーテム耐久 (§3-20。0 で破壊 = 敗北。平時に修繕)
 var faith: float = 0.0
 var cum_faith: float = 0.0
 var food: float = 20.0
@@ -37,6 +38,14 @@ var births_total: int = 0
 # 例: {"t":"raid","count":5,"human":false,"final":false} / {"t":"death","id":3,"sex":0,"cause":"combat"}
 var last_events: Array = []
 
+# 床タイルの派生キャッシュ (スナップショット対象外。map から決定的に再構築できる)。
+# 放浪先・避難/作業/食事スロットの選択に使う。
+var _nest_floors: Array = []       # 巣内の全 FLOOR タイル
+var _hall_floors: Array = []       # トーテム周辺の床 (儀式・休憩スロット)
+var _totem_ring: Array = []        # トーテムの周囲 2 重の輪 (防衛陣形スロット)
+var _totem_core: Array = []        # トーテム隣接 8 タイル (非戦闘員の避難所)
+var _room_floors: Dictionary = {}  # rooms の index → その部屋の床タイル配列
+
 # --- 初期化 ---
 func setup(p: SimParams) -> void:
 	params = p
@@ -48,19 +57,19 @@ func setup(p: SimParams) -> void:
 	tick = 0
 	day = 0
 	phase = Phase.PEACE
+	totem_hp = p.totem_hp_max
 	faith = 0.0
 	food = 20.0
 	outcome = Outcome.ONGOING
+	_rebuild_floor_caches()
 	_schedule_next_raid()
 
 	# 初期ゴブリンを巣内に配置。雌雄比は 7:3 (世界観バイブル)。
-	var nest_center := map.totem + Vector2i(0, -4)
+	var nest_center := map.totem + Vector2i(0, -3)
 	for i in range(p.start_goblins):
 		var sex := Goblin.Sex.FEMALE if rng.next_float() < 0.3 else Goblin.Sex.MALE
 		var g := _make_goblin(sex, Goblin.Role.NONE, Goblin.Origin.FOUNDER)
-		var spot := _find_floor_near(nest_center, 6)
-		g.x = spot.x
-		g.y = spot.y
+		_place(g, _find_floor_near(nest_center, 5))
 		goblins.append(g)
 	# 族長を任命 (恐怖なしの盾 §8)。最初の雄を族長に。
 	for g in goblins:
@@ -91,9 +100,15 @@ func _make_goblin(sex: int, role: int, origin: int) -> Goblin:
 	else:
 		g.fear_hp_bias = -0.2 + rng.next_float() * 0.15
 		g.work_bias = 0.15 + rng.next_float() * 0.25
-	g.x = map.totem.x
-	g.y = map.totem.y - 4
+	_place(g, map.totem + Vector2i(0, -3))
 	return g
+
+## 整数タイルへスナップして配置する (fx/fy も同期)。
+func _place(unit, p: Vector2i) -> void:
+	unit.x = p.x
+	unit.y = p.y
+	unit.fx = float(p.x)
+	unit.fy = float(p.y)
 
 # --- メイン: 1 tick 進める ---
 func tick_once() -> void:
@@ -187,22 +202,43 @@ func _spawn_enemy_at_gate(gate_idx: int, human: bool) -> void:
 		spawn.x = (map.width - 1) if dir.x > 0 else 0
 	else:
 		spawn.y = (map.height - 1) if dir.y > 0 else 0
-	e.x = clampi(spawn.x, 0, map.width - 1)
-	e.y = clampi(spawn.y, 0, map.height - 1)
+	_place(e, Vector2i(clampi(spawn.x, 0, map.width - 1), clampi(spawn.y, 0, map.height - 1)))
 	enemies.append(e)
 
 # --- 敵の移動・侵入 (§3-14) ---
 func _step_enemies() -> void:
+	# 衝突 (敵同士): 同じタイルへ重ならない。重なりを許すと巣内で 1 つの
+	# 「死の弾塊」になり、坑道の隘路も防衛陣形も素通しになる。先頭が止まれば
+	# 後続は坑道に隊列で詰まる (隘路防衛が成立する)。
+	var occ := {}
 	for e in enemies:
-		# 目標: 巣口未到達なら巣口、到達後は最近接ゴブリン or トーテム。
+		occ[e.pos()] = (occ.get(e.pos(), 0) as int) + 1
+	for e in enemies:
+		# 白兵は足を止めて殴り合う (隣接中は移動しない)。追いかけ合いのまま
+		# 殴ると隣接が明滅し、互いの DPS が出ず戦闘が間延びする。
+		if _adjacent_goblin(e.pos()) != null:
+			continue
+		# 目標: 巣口未到達なら巣口。侵入後はトーテム (襲撃の目的 §3-20) へ進軍し、
+		# 視界内 (6 タイル) のゴブリンにだけ襲いかかる。逃げる個体を地の果てまで
+		# 追わせると、戦えない恐怖個体の処刑行進になり群れが必ず壊滅する。
 		var target: Vector2i
 		var gate: Vector2i = map.gates[e.target_gate_idx]
 		if not _inside_nest(e.pos()):
 			target = gate
 		else:
 			var tg := _nearest_goblin_pos(e.pos())
-			target = tg if tg != Vector2i(-1, -1) else map.totem
-		_advance_along_path(e, target)
+			if tg != Vector2i(-1, -1) and _manhattan(e.pos(), tg) <= 6:
+				target = tg
+			else:
+				# トーテムの周囲 8 タイルへ id ハッシュで散開して包囲する。
+				target = map.totem + OFFS8[_slot_hash(e.id) % 8]
+				if not map.is_walkable(target.x, target.y):
+					target = map.totem
+		var before: Vector2i = e.pos()
+		_advance_along_path(e, target, params.enemy_move_per_tick, occ)
+		if e.pos() != before:
+			occ[before] = (occ.get(before, 0) as int) - 1
+			occ[e.pos()] = (occ.get(e.pos(), 0) as int) + 1
 
 # --- ゴブリンの移動 (§3-0 ステート対応) ---
 func _step_goblins() -> void:
@@ -215,31 +251,71 @@ func _step_goblins() -> void:
 		ctx.enemy_nearby = _enemy_near(g.pos(), 4)
 		ctx.assigned_to_combat = (g.sex == Goblin.Sex.MALE or g.is_unique)
 		ctx.food_available = food > 0.0 and _at_storage(g.pos())
+		ctx.food_in_stock = food > 0.0
 		StateMachine.step(g, ctx, params)
 
 		if g.state == Goblin.State.DEAD or g.state == Goblin.State.KNOCKED_OUT:
 			continue
-		var target := _movement_target(g)
+		var target := _movement_target(g, in_raid)
 		if target != Vector2i(-1, -1):
-			_advance_along_path(g, target)
+			_advance_along_path(g, target, _move_speed(g))
+
+## ステートに応じた移動速度 (タイル/tick)。子は遅く、戦闘・恐怖は駆け、瀕死は這う。
+func _move_speed(g: Goblin) -> float:
+	var spd := params.move_per_tick
+	if g.is_child():
+		spd *= params.child_move_factor
+	match g.state:
+		Goblin.State.COMBAT, Goblin.State.FEAR, Goblin.State.ENRAGED:
+			spd *= params.urgent_move_factor
+		Goblin.State.DYING:
+			spd *= 0.5
+	return spd
 
 # ステートに応じた移動目標 (§3-0 対応表)。
-func _movement_target(g: Goblin) -> Vector2i:
+# 同じ部屋へ向かう個体が 1 タイルに積み重ならないよう、id ハッシュで
+# 部屋内の床スロットへ決定的に散らす (rng 不使用 = 消費順序を乱さない)。
+func _movement_target(g: Goblin, in_raid: bool) -> Vector2i:
+	# 防衛召集: 交戦中、戦線割り当ての個体は大広間 (トーテム) に集結して迎え撃ち、
+	# 視界内 (8 タイル) に踏み込んだ敵にだけ向かっていく。敵まで個別に駆けつけると
+	# 広い洞窟では各個撃破される (細い坑道へ 1 体ずつ吸い込まれて数の利を失う)。
+	# COMBAT ステートは敵 4 タイル以内で初めて入る (§5)。空腹も召集対象
+	# (襲撃警報は食事に優先。離脱→単独で食料庫へ→各個撃破、を防ぐ)。
+	# 睡眠・瀕死・恐怖には割り込まない。
+	if in_raid and (g.state == Goblin.State.WANDER or g.state == Goblin.State.WORK \
+			or g.state == Goblin.State.HUNGRY):
+		if (g.sex == Goblin.Sex.MALE or g.is_unique) and not g.is_child():
+			# 戦線: トーテムの周囲 2 重の輪に肉の壁を作り、陣形を崩さず迎え撃つ。
+			# 敵へ駆け出すと輪に穴が開き、別方向の敵がトーテムを素通しで殴れて
+			# しまう (敵はトーテムへ進軍してくるので、待てば白兵になる)。
+			if not _totem_ring.is_empty():
+				return _totem_ring[_slot_hash(g.id) % _totem_ring.size()]
+			return _hall_slot(g.id)
+		# 非戦闘員 (雌・子): 肉の壁の内側 = トーテムの足元へ避難する。
+		# 巣のあちこちに散ったままだと、敵の視界 (6 タイル) に入った端から
+		# 狩られる (雌の絶滅 = 増殖の停止)。
+		return _sanctuary_slot(g.id)
 	match g.state:
 		Goblin.State.COMBAT:
-			var ep := _nearest_enemy_pos(g.pos())
-			return ep
+			# 隣接中は足を止めて殴り合う (敵側と同じ白兵の規律)。
+			if _adjacent_enemy(g.pos()) != null:
+				return Vector2i(-1, -1)
+			return _nearest_enemy_pos(g.pos())
 		Goblin.State.FEAR:
-			return _flee_target(g.pos())
+			# 戦えないので肉の壁の内側へ。外の部屋へ逃げると敵を引き込んだ上で
+			# 処刑される (恐怖は隣接攻撃に反撃できない)。
+			return _sanctuary_slot(g.id)
 		Goblin.State.DYING, Goblin.State.SLEEP:
-			return _nearest_room_tile(g.pos(), TileMapData.RoomType.NEST)
+			return _room_slot(TileMapData.RoomType.NEST, g.id)
 		Goblin.State.HUNGRY:
-			return map.storage
+			return _eat_slot(g.id)
 		Goblin.State.WORK:
 			return _work_target(g)
 		Goblin.State.WANDER:
-			# ランダムな通行可タイル (巣内)。たまにだけ更新。
-			if g.path.is_empty() and rng.next_float() < 0.2:
+			# 移動中は続行、着いたらたまに次の行き先を引く (うろつき)。
+			if not g.path.is_empty():
+				return Vector2i(g.target_x, g.target_y)
+			if rng.next_float() < params.wander_retarget_per_tick:
 				return _random_nest_floor()
 			return Vector2i(-1, -1)
 		_:
@@ -248,24 +324,58 @@ func _movement_target(g: Goblin) -> Vector2i:
 func _work_target(g: Goblin) -> Vector2i:
 	# 役職に応じた作業場所。族長/シャーマンはトーテム付近、牧場係は牧場へ。
 	if g.role == Goblin.Role.CHIEF or g.role == Goblin.Role.SHAMAN:
-		return map.totem + Vector2i(0, -2)
-	for r in map.rooms:
+		return _hall_slot(g.id)
+	for i in range(map.rooms.size()):
+		var r: Dictionary = map.rooms[i]
 		if (g.id in r.assigned):
+			var tiles: Array = _room_floors.get(i, [])
+			if not tiles.is_empty():
+				return tiles[_slot_hash(g.id) % tiles.size()]
 			return Vector2i(r.x + r.w / 2, r.y + r.h / 2)
 	return Vector2i(-1, -1)
 
-# 1 tick で path に沿って 1 タイル進む。target 変更時のみ再計算 (§3-0)。
-func _advance_along_path(unit, target: Vector2i) -> void:
+# 連続移動 (§3-0): 1 tick に speed タイルぶん waypoint へ前進する。
+# パス再計算は「目標が 3 タイル超動いた」か「パスが尽きてまだ目標に居ない」とき
+# だけに制限する (動く目標を毎 tick A* し直すと頭数×敵数で発散する)。
+# occ を渡すと、他ユニットが占有する waypoint の手前で停止する (隊列)。
+func _advance_along_path(unit, target: Vector2i, speed: float, occ: Dictionary = {}) -> void:
 	if target == Vector2i(-1, -1):
 		return
-	if unit.target_x != target.x or unit.target_y != target.y or unit.path.is_empty():
+	var need_repath := false
+	if unit.target_x != target.x or unit.target_y != target.y:
+		if unit.target_x < 0 or unit.path.is_empty() \
+				or absi(unit.target_x - target.x) + absi(unit.target_y - target.y) > 3:
+			need_repath = true
+	elif unit.path.is_empty() and unit.pos() != target:
+		need_repath = true
+	if need_repath:
 		unit.target_x = target.x
 		unit.target_y = target.y
 		unit.path = Pathfinding.find_path(map, unit.pos(), target)
-	if not unit.path.is_empty():
-		var step: Vector2i = unit.path.pop_front()
-		unit.x = step.x
-		unit.y = step.y
+	var budget := speed
+	while budget > 0.0 and not unit.path.is_empty():
+		var wp: Vector2i = unit.path[0]
+		if not occ.is_empty():
+			# 定員に達したタイルへは進めず、手前で詰まって待つ (隊列)。
+			var others: int = occ.get(wp, 0)
+			if wp == unit.pos():
+				others -= 1
+			if others >= params.enemy_tile_capacity:
+				break
+		var dx: float = float(wp.x) - unit.fx
+		var dy: float = float(wp.y) - unit.fy
+		var d := sqrt(dx * dx + dy * dy)
+		if d <= budget:
+			unit.fx = float(wp.x)
+			unit.fy = float(wp.y)
+			budget -= d
+			unit.path.pop_front()
+		else:
+			unit.fx += dx / d * budget
+			unit.fy += dy / d * budget
+			budget = 0.0
+	unit.x = int(roundf(unit.fx))
+	unit.y = int(roundf(unit.fy))
 
 # --- 戦闘解決 (§3-13: 8 隣接で攻撃) ---
 func _resolve_combat() -> void:
@@ -285,11 +395,15 @@ func _resolve_combat() -> void:
 			if g.is_unique:
 				atk *= 1.5
 			e.hp -= atk
-	# 敵 → ゴブリン。
+	# 敵 → ゴブリン。隣にゴブリンが居なければトーテムを壊しにかかる (§3-20)。
 	for e in enemies:
 		var g := _adjacent_goblin(e.pos())
 		if g != null:
 			g.hp -= params.enemy_attack
+		elif max(abs(e.x - map.totem.x), abs(e.y - map.totem.y)) <= 1:
+			totem_hp -= params.enemy_attack
+			if totem_hp <= 0.0:
+				map.set_tile(map.totem.x, map.totem.y, TileMapData.TileType.FLOOR)
 	# 死んだ敵を除去。
 	var alive: Array = []
 	for e in enemies:
@@ -387,6 +501,8 @@ func _give_birth(mother: Goblin) -> void:
 		baby.father_id = mother.mate_id
 		baby.x = mother.x
 		baby.y = mother.y
+		baby.fx = mother.fx
+		baby.fy = mother.fy
 		baby.max_hp *= 0.5  # 子は脆い
 		baby.hp = baby.max_hp
 		goblins.append(baby)
@@ -438,6 +554,9 @@ func _step_faith() -> void:
 	var gain := shamans * params.faith_per_shaman_tick
 	faith += gain
 	cum_faith += gain
+	# トーテムの修繕 (§3-20): 平時に削れたぶんを直す。
+	if phase == Phase.PEACE and totem_hp < params.totem_hp_max:
+		totem_hp = min(params.totem_hp_max, totem_hp + params.totem_repair_per_tick)
 
 # --- 死亡の一元化 (KI-20) ---
 func _cleanup_dead() -> void:
@@ -550,15 +669,73 @@ func _nearest_goblin_pos(p: Vector2i) -> Vector2i:
 			best = g.pos()
 	return best
 
-func _flee_target(p: Vector2i) -> Vector2i:
-	# 敵から最も遠い巣内タイル (簡易: トーテム方向へ退避)。
-	return map.totem + Vector2i(0, -2)
+# --- 床スロット (タイル選択。rng 不使用 = 消費順序を乱さない) ---
 
-func _nearest_room_tile(p: Vector2i, room_type: int) -> Vector2i:
-	for r in map.rooms:
-		if r.room_type == room_type:
-			return Vector2i(r.x + r.w / 2, r.y + r.h / 2)
-	return map.totem + Vector2i(0, -3)
+## map から床タイルのキャッシュを再構築する (setup / restore 時)。
+func _rebuild_floor_caches() -> void:
+	_nest_floors = []
+	_hall_floors = []
+	_totem_ring = []
+	_totem_core = []
+	_room_floors = {}
+	for y in range(map.height):
+		for x in range(map.width):
+			if map.get_tile(x, y) != TileMapData.TileType.FLOOR:
+				continue
+			var p := Vector2i(x, y)
+			_nest_floors.append(p)
+			if _manhattan(p, map.totem) <= 5:
+				_hall_floors.append(p)
+			if max(abs(x - map.totem.x), abs(y - map.totem.y)) <= 2:
+				_totem_ring.append(p)
+			if max(abs(x - map.totem.x), abs(y - map.totem.y)) <= 1:
+				_totem_core.append(p)
+	for i in range(map.rooms.size()):
+		var r: Dictionary = map.rooms[i]
+		var tiles: Array = []
+		for y in range(r.y, r.y + r.h):
+			for x in range(r.x, r.x + r.w):
+				if map.get_tile(x, y) == TileMapData.TileType.FLOOR:
+					tiles.append(Vector2i(x, y))
+		_room_floors[i] = tiles
+
+## id から決定的に散らすハッシュ (goblin.compatibility と同系の整数ミックス)。
+static func _slot_hash(id: int) -> int:
+	return (id * 2654435761) & 0x7FFFFFFF
+
+## 大広間 (トーテム周辺) の床スロット。族長/シャーマンの儀式位置。
+func _hall_slot(id: int) -> Vector2i:
+	if _hall_floors.is_empty():
+		return map.totem + Vector2i(0, -2)
+	return _hall_floors[_slot_hash(id) % _hall_floors.size()]
+
+## トーテム足元 (隣接 8 タイル) の避難スロット。防衛陣形の内側。
+func _sanctuary_slot(id: int) -> Vector2i:
+	if _totem_core.is_empty():
+		return _hall_slot(id)
+	return _totem_core[_slot_hash(id) % _totem_core.size()]
+
+## 指定タイプの部屋の床スロット (なければ大広間)。
+func _room_slot(room_type: int, id: int) -> Vector2i:
+	for i in range(map.rooms.size()):
+		if map.rooms[i].room_type == room_type:
+			var tiles: Array = _room_floors.get(i, [])
+			if not tiles.is_empty():
+				return tiles[_slot_hash(id) % tiles.size()]
+	return _hall_slot(id)
+
+## 集積所の周囲 8 タイルから空腹個体ごとの食事位置を選ぶ (積み重なり防止)。
+const OFFS8 := [
+	Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1),
+	Vector2i(1, 1), Vector2i(1, -1), Vector2i(-1, 1), Vector2i(-1, -1),
+]
+func _eat_slot(id: int) -> Vector2i:
+	for k in range(8):
+		var p: Vector2i = map.storage + OFFS8[(_slot_hash(id) + k) % 8]
+		if map.is_walkable(p.x, p.y) \
+				and map.get_tile(p.x, p.y) != TileMapData.TileType.EXTERIOR:
+			return p
+	return map.storage
 
 func _at_storage(p: Vector2i) -> bool:
 	return max(abs(p.x - map.storage.x), abs(p.y - map.storage.y)) <= 1
@@ -573,7 +750,9 @@ func _find_floor_near(center: Vector2i, radius: int) -> Vector2i:
 	return center
 
 func _random_nest_floor() -> Vector2i:
-	return _find_floor_near(map.totem + Vector2i(0, -4), 8)
+	if _nest_floors.is_empty():
+		return map.totem + Vector2i(0, -2)
+	return _nest_floors[rng.next_int(_nest_floors.size())]
 
 func _assign_to_room(room_type: int, count: int) -> void:
 	var assigned := 0
@@ -593,7 +772,7 @@ func _event(e: Dictionary) -> void:
 # --- スナップショット (KI-09) ---
 func snapshot() -> Dictionary:
 	return {
-		"tick": tick, "day": day, "phase": phase,
+		"tick": tick, "day": day, "phase": phase, "totem_hp": totem_hp,
 		"faith": faith, "cum_faith": cum_faith, "food": food,
 		"surge": surge, "over_cap_ticks": over_cap_ticks,
 		"next_big_raid_tick": next_big_raid_tick,
@@ -608,7 +787,7 @@ func snapshot() -> Dictionary:
 	}
 
 func restore(d: Dictionary) -> void:
-	tick = d.tick; day = d.day; phase = d.phase
+	tick = d.tick; day = d.day; phase = d.phase; totem_hp = d.totem_hp
 	faith = d.faith; cum_faith = d.cum_faith; food = d.food
 	surge = d.surge; over_cap_ticks = d.over_cap_ticks
 	next_big_raid_tick = d.next_big_raid_tick
@@ -620,3 +799,4 @@ func restore(d: Dictionary) -> void:
 	map.restore(d.map)
 	goblins = (d.goblins as Array).map(func(x): return Goblin.from_snapshot(x))
 	enemies = (d.enemies as Array).map(func(x): return EnemyUnit.from_snapshot(x))
+	_rebuild_floor_caches()

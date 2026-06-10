@@ -60,8 +60,12 @@ var father_id: int = -1
 var origin: int = Origin.FOUNDER
 
 # --- 空間 (§3-0) ---
+# fx/fy が真の位置 (タイル単位の連続座標。fx=3.0 = タイル 3 の中心)。
+# x/y は丸めた派生値で、隣接判定・部屋判定などタイルベースの力学が使う。
 var x: int = 0
 var y: int = 0
+var fx: float = 0.0
+var fy: float = 0.0
 var target_x: int = -1         # -1 = 移動目標なし
 var target_y: int = -1
 var path: Array = []           # Array[Vector2i] A* 計算済みパス
@@ -97,7 +101,7 @@ func snapshot() -> Dictionary:
 		"is_unique": is_unique, "downed_ticks": downed_ticks,
 		"fear_safe_ticks": fear_safe_ticks, "child_born_tick": child_born_tick,
 		"born_tick": born_tick, "mother_id": mother_id, "father_id": father_id,
-		"origin": origin, "x": x, "y": y,
+		"origin": origin, "x": x, "y": y, "fx": fx, "fy": fy,
 		"target_x": target_x, "target_y": target_y,
 		"path": path.map(func(p): return [p.x, p.y]),
 		"equipped": equipped,

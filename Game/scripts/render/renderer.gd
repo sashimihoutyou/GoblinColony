@@ -114,18 +114,19 @@ func pick(world: World, pos: Vector2) -> int:
 func _update_units(dt: float) -> void:
 	if _world == null:
 		return
-	# ゴブリン。
+	# ゴブリン。シムが連続座標 (fx/fy) を持つので、補間は tick 間のわずかな
+	# 段差をならす程度の強い追従でよい (k 大 = ほぼ直接追従)。
 	var seen := {}
 	for g in _world.goblins:
 		seen[g.id] = true
-		var target := _tile_center(g.pos())
+		var target := _unit_pixel(g)
 		if not _gmap.has(g.id):
 			_gmap[g.id] = {"pos": target, "face": 1.0}
 			continue
 		var v: Dictionary = _gmap[g.id]
 		var cur: Vector2 = v.pos
 		if dt > 0.0:
-			var k := 1.0 - exp(-7.0 * dt * maxf(_sim_speed, 1.0))
+			var k := 1.0 - exp(-12.0 * dt * maxf(_sim_speed, 1.0))
 			var next := cur.lerp(target, k)
 			if absf(target.x - cur.x) > 0.5:
 				v.face = 1.0 if target.x > cur.x else -1.0
@@ -138,14 +139,14 @@ func _update_units(dt: float) -> void:
 	var eseen := {}
 	for e in _world.enemies:
 		eseen[e.id] = true
-		var target := _tile_center(e.pos())
+		var target := _unit_pixel(e)
 		if not _emap.has(e.id):
 			_emap[e.id] = {"pos": target, "face": 1.0}
 			continue
 		var v2: Dictionary = _emap[e.id]
 		var cur2: Vector2 = v2.pos
 		if dt > 0.0:
-			var k2 := 1.0 - exp(-7.0 * dt * maxf(_sim_speed, 1.0))
+			var k2 := 1.0 - exp(-12.0 * dt * maxf(_sim_speed, 1.0))
 			v2.pos = cur2.lerp(target, k2)
 			if absf(target.x - cur2.x) > 0.5:
 				v2.face = 1.0 if target.x > cur2.x else -1.0
@@ -164,6 +165,10 @@ func _last_pos_of(id: int) -> Vector2:
 
 func _tile_center(t: Vector2i) -> Vector2:
 	return Vector2((t.x + 0.5) * tile_size, (t.y + 0.5) * tile_size)
+
+## 個体の連続座標 (fx/fy) → ピクセル位置。fx=3.0 はタイル 3 の中心。
+func _unit_pixel(unit) -> Vector2:
+	return Vector2((unit.fx + 0.5) * tile_size, (unit.fy + 0.5) * tile_size)
 
 # ════ 内部: パーティクル ════
 func _spawn_p(o: Dictionary) -> void:
@@ -296,7 +301,9 @@ func _draw() -> void:
 			var rect := Rect2(x * ts, y * ts, ts, ts)
 			match t:
 				TileMapData.TileType.WALL:
-					draw_rect(rect, COL_WALL, true)
+					# 岩肌: ハッシュでわずかな明暗 (一枚岩に見せない)。
+					var wh := GobNames.hash_id(x * 73856093 + y * 19349663)
+					draw_rect(rect, COL_WALL.lerp(COL_ROCK, float(wh % 100) / 480.0), true)
 					# 立体感: 下が歩行可なら南面に明るい縁 (壁の高さ)。
 					if m.is_walkable(x, y + 1):
 						draw_rect(Rect2(x * ts, y * ts + ts - 3.0, ts, 3.0), COL_WALL_EDGE, true)
@@ -309,6 +316,12 @@ func _draw() -> void:
 					var hh := GobNames.hash_id(x * 73856093 + y * 19349663)
 					var base := COL_FLOOR.lerp(COL_FLOOR_DARK, float(hh % 100) / 250.0)
 					draw_rect(rect, base, true)
+			# 洞窟の奥行き: 壁の根本 (北側が壁) の歩行可タイルに影を落とす。
+			if t != TileMapData.TileType.WALL:
+				if m.get_tile(x, y - 1) == TileMapData.TileType.WALL:
+					draw_rect(Rect2(x * ts, y * ts, ts, 3.5), Color(0, 0, 0, 0.32), true)
+				if m.get_tile(x - 1, y) == TileMapData.TileType.WALL:
+					draw_rect(Rect2(x * ts, y * ts, 2.5, ts), Color(0, 0, 0, 0.18), true)
 
 	# --- 静的装飾 ---
 	for d in _decor:
