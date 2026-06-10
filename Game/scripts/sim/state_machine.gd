@@ -17,7 +17,8 @@ class Context:
 	var enemy_nearby: bool = false
 	var in_raid: bool = false
 	var assigned_to_combat: bool = false
-	var food_available: bool = false
+	var food_available: bool = false   # この個体がいま食べられるか (集積所 + 在庫)
+	var food_in_stock: bool = true     # 巣に在庫があるか (空腹と睡眠の優先判定)
 
 static func step(g: Goblin, ctx: Context, p: SimParams) -> void:
 	if g.state == Goblin.State.DEAD:
@@ -92,8 +93,10 @@ static func step(g: Goblin, ctx: Context, p: SimParams) -> void:
 		g.hp = min(g.max_hp, g.hp + p.hp_regen_per_tick)
 		return
 
-	# 空腹。
-	if g.hunger_latched:
+	# 空腹。ただし巣に食料が無く眠気も限界なら睡眠 (回復) を優先する。
+	# 食えない空腹が睡眠を永久に塞ぐと、回復経路を失い襲撃のたびに消耗だけが
+	# 積み上がる (不眠の飢餓ループ)。
+	if g.hunger_latched and (ctx.food_in_stock or not g.sleep_latched):
 		g.state = Goblin.State.HUNGRY
 		if ctx.food_available:
 			g.hunger = max(0.0, g.hunger - p.hunger_relieve_per_tick)

@@ -4,8 +4,11 @@ class_name EnemyUnit
 ## マップ外周 3 タイル外にスポーン → 担当巣口へ A* 移動 → 巣内へ侵入。
 
 var id: int = 0
+# fx/fy が真の位置 (連続座標)、x/y は丸めた派生値 (goblin.gd と同じ規約)。
 var x: int = 0
 var y: int = 0
+var fx: float = 0.0
+var fy: float = 0.0
 var hp: float = 6.0
 var max_hp: float = 6.0
 var target_gate_idx: int = 0   # 向かっている巣口インデックス
@@ -19,7 +22,7 @@ func pos() -> Vector2i:
 
 func snapshot() -> Dictionary:
 	return {
-		"id": id, "x": x, "y": y, "hp": hp, "max_hp": max_hp,
+		"id": id, "x": x, "y": y, "fx": fx, "fy": fy, "hp": hp, "max_hp": max_hp,
 		"target_gate_idx": target_gate_idx,
 		"target_x": target_x, "target_y": target_y,
 		"path": path.map(func(p): return [p.x, p.y]),

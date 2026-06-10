@@ -2,10 +2,11 @@ extends Node2D
 ## メインループ (P1-09 / P1-10)。実時間 → tick 変換 → controller → world.tick → render。
 ##
 ## 実時間に触れるのはここだけ (KI-09 tick_driver 相当)。速度倍率と端数持ち越し。
-## タイムスケール: 1 tick = 1 実秒 × ticks_per_day=60 → 1 日 = 実 60 秒 (3x で 20 秒)。
+## タイムスケール: 1 tick = 0.25 実秒 × ticks_per_day=240 → 1 日 = 実 60 秒 (3x で 20 秒)。
+## tick が細かいのは連続移動 (RimWorld 風) のサンプリングのため (params.gd 参照)。
 ## UI はコードで構築する (Web 版ダッシュボードと同じ配色言語: 闇の岩・琥珀・苔)。
 
-const MS_PER_TICK := 1000.0
+const MS_PER_TICK := 250.0
 
 # --- Web 版と同じ配色 ---
 const C_BG_PANEL := Color(0.078, 0.067, 0.055, 0.92)
@@ -69,7 +70,7 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	if world.outcome == World.Outcome.ONGOING and speed > 0.0:
 		_accum_ms += delta * 1000.0 * speed
-		var max_ticks_per_frame := 6  # 暴走防止 (KI-09)
+		var max_ticks_per_frame := 16  # 暴走防止 (KI-09)。3x (12 tick/秒) でも余裕を持つ
 		var done := 0
 		while _accum_ms >= MS_PER_TICK and done < max_ticks_per_frame:
 			_accum_ms -= MS_PER_TICK
@@ -162,10 +163,13 @@ func _update_status() -> void:
 	var time_txt := "昼" if world.is_day() else "夜"
 	var day_frac := float(world.tick % params.ticks_per_day) / float(params.ticks_per_day)
 	var bar := _text_bar(day_frac, 10)
-	_status_label.text = "第 %d 日 %s %s · %s   頭数 %d/%d (子%d)  食料 %.0f  信仰 %.0f  surge %.1f" % [
+	var totem_txt := ""
+	if world.totem_hp < params.totem_hp_max:
+		totem_txt = "  ⚠トーテム %.0f/%.0f" % [world.totem_hp, params.totem_hp_max]
+	_status_label.text = "第 %d 日 %s %s · %s   頭数 %d/%d (子%d)  食料 %.0f  信仰 %.0f  surge %.1f%s" % [
 		world.day, bar, time_txt, phase_txt,
 		world._alive_count(), params.cap_pop, _child_count(),
-		world.food, world.faith, world.surge,
+		world.food, world.faith, world.surge, totem_txt,
 	]
 	if world.outcome == World.Outcome.ONGOING and world.phase == World.Phase.PEACE:
 		var days_left := float(world.next_big_raid_tick - world.tick) / float(params.ticks_per_day)
