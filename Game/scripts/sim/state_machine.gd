@@ -17,6 +17,7 @@ class Context:
 	var enemy_nearby: bool = false
 	var in_raid: bool = false
 	var assigned_to_combat: bool = false
+	var assigned_to_room: bool = false
 	var food_available: bool = false   # この個体がいま食べられるか (集積所 + 在庫)
 	var food_in_stock: bool = true     # 巣に在庫があるか (空腹と睡眠の優先判定)
 
@@ -54,6 +55,7 @@ static func step(g: Goblin, ctx: Context, p: SimParams) -> void:
 		g.sleep_latched = false
 
 	var hp_frac := g.hp / g.max_hp
+	var starving: bool = g.hunger >= p.starve_threshold and not ctx.food_in_stock
 
 	# === 緊急系の即時割り込み ===
 
@@ -90,7 +92,8 @@ static func step(g: Goblin, ctx: Context, p: SimParams) -> void:
 	# 瀕死: 寝床へ + 回復。
 	if hp_frac < p.dying_hp_frac:
 		g.state = Goblin.State.DYING
-		g.hp = min(g.max_hp, g.hp + p.hp_regen_per_tick)
+		if not starving:
+			g.hp = min(g.max_hp, g.hp + p.hp_regen_per_tick)
 		return
 
 	# 空腹。ただし巣に食料が無く眠気も限界なら睡眠 (回復) を優先する。
@@ -106,11 +109,12 @@ static func step(g: Goblin, ctx: Context, p: SimParams) -> void:
 	if g.sleep_latched:
 		g.state = Goblin.State.SLEEP
 		g.sleepiness = max(0.0, g.sleepiness - p.sleep_relieve_per_tick)
-		g.hp = min(g.max_hp, g.hp + p.hp_regen_per_tick)
+		if not starving:
+			g.hp = min(g.max_hp, g.hp + p.hp_regen_per_tick)
 		return
 
 	# 仕事 (役職持ち優先)。
-	if g.role != Goblin.Role.NONE:
+	if g.role != Goblin.Role.NONE or ctx.assigned_to_room:
 		g.state = Goblin.State.WORK
 		return
 

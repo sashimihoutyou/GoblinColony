@@ -128,6 +128,7 @@ func tick_once() -> void:
 	_step_breeding()
 	_step_accidents()
 	_step_food()
+	_step_starvation()
 	_step_faith()
 	_cleanup_dead()
 	_step_fledge()
@@ -140,6 +141,7 @@ func is_day() -> bool:
 func _on_day_boundary() -> void:
 	if surge > 0.0:
 		surge = max(0.0, surge - params.surge_decay)
+	_rebalance_ranch()
 	# ラストバトルは最終日に一度だけ (>= だと日境界ごとに多重スポーンしていた)。
 	if day == params.final_day:
 		_spawn_raid(true, true)  # ラストバトル
@@ -250,6 +252,7 @@ func _step_goblins() -> void:
 		ctx.in_raid = in_raid
 		ctx.enemy_nearby = _enemy_near(g.pos(), 4)
 		ctx.assigned_to_combat = (g.sex == Goblin.Sex.MALE or g.is_unique)
+		ctx.assigned_to_room = _has_room_assignment(g.id)
 		ctx.food_available = food > 0.0 and _at_storage(g.pos())
 		ctx.food_in_stock = food > 0.0
 		var hunger_before: float = g.hunger
@@ -538,12 +541,37 @@ func _step_accidents() -> void:
 
 # --- 食料 (§3-11) ---
 func _step_food() -> void:
-	# 生産: ネズミ牧場の割当数 × レート。
-	var ranchers := 0
+	var active_ranchers := 0
 	for r in map.rooms:
-		if r.room_type == TileMapData.RoomType.RAT_RANCH:
-			ranchers += (r.assigned as Array).size()
-	food += ranchers * params.food_per_rancher_tick
+		if r.room_type != TileMapData.RoomType.RAT_RANCH:
+			continue
+		for gid in (r.assigned as Array):
+			var g: Goblin = _goblin_by_id(int(gid))
+			if g == null or g.state == Goblin.State.DEAD:
+				continue
+			if g.state == Goblin.State.WORK and _in_room(r, g.pos()):
+				active_ranchers += 1
+	food += active_ranchers * params.food_per_rancher_tick
+	if food < float(_alive_count()):
+		food += params.food_passive_per_tick
+
+func _step_starvation() -> void:
+	if food > 0.0:
+		return
+	for g in goblins:
+		if g.state == Goblin.State.DEAD or g.state == Goblin.State.KNOCKED_OUT:
+			continue
+		if g.hunger < params.starve_threshold:
+			continue
+		g.hp -= params.starve_hp_per_tick
+		if g.hp <= 0.0:
+			if g.is_unique:
+				g.hp = 0.0
+				continue
+			g.hp = 0.0
+			g.state = Goblin.State.DEAD
+			g.death_logged = true
+			_event({"t": "death", "id": g.id, "sex": g.sex, "cause": "starvation"})
 
 func _step_faith() -> void:
 	var shamans := 0
@@ -612,6 +640,21 @@ func _alive_count() -> int:
 		if g.state != Goblin.State.DEAD:
 			n += 1
 	return n
+
+func _goblin_by_id(id: int) -> Goblin:
+	for g in goblins:
+		if g.id == id:
+			return g
+	return null
+
+func _in_room(r: Dictionary, p: Vector2i) -> bool:
+	return p.x >= r.x and p.x < r.x + r.w and p.y >= r.y and p.y < r.y + r.h
+
+func _has_room_assignment(id: int) -> bool:
+	for r in map.rooms:
+		if id in (r.assigned as Array):
+			return true
+	return false
 
 func _total_hp() -> float:
 	var s := 0.0
@@ -764,6 +807,33 @@ func _assign_to_room(room_type: int, count: int) -> void:
 			if g.role == Goblin.Role.NONE and not g.is_unique and not (g.id in r.assigned):
 				r.assigned.append(g.id)
 				assigned += 1
+
+func _rebalance_ranch() -> void:
+	var target := int(round(_alive_count() * params.ranch_assign_frac))
+	for r in map.rooms:
+		if r.room_type != TileMapData.RoomType.RAT_RANCH:
+			continue
+		var assigned: Array = r.assigned
+		var cleaned: Array = []
+		for gid in assigned:
+			var g: Goblin = _goblin_by_id(int(gid))
+			if g != null and g.state != Goblin.State.DEAD:
+				cleaned.append(gid)
+		assigned = cleaned
+		if assigned.size() < target:
+			var pool: Array = []
+			for g in goblins:
+				if g.role == Goblin.Role.NONE and not g.is_unique and not g.is_child() \
+						and not (g.id in assigned):
+					pool.append(g.id)
+			pool.sort()
+			for gid in pool:
+				if assigned.size() >= target:
+					break
+				assigned.append(gid)
+		while assigned.size() > target:
+			assigned.pop_back()
+		r.assigned = assigned
 
 func _event(e: Dictionary) -> void:
 	last_events.append(e)
