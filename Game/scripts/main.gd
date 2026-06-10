@@ -44,6 +44,16 @@ var speed: float = 1.0        # 0 / 1 / 3
 var _accum_ms: float = 0.0
 var selected_id: int = -1
 
+# --- カメラ操作 (演出層ローカル状態。シムには触れない) ---
+const ZOOM_MIN := 1.0         # フィット倍率 (全体表示)
+const ZOOM_MAX := 8.0         # 最大拡大
+const ZOOM_STEP := 1.15       # ホイール 1 段ぶんの倍率
+const RIGHT_PANEL_W := 290.0  # 右パネルぶんの横オフセット
+var _zoom_factor: float = 1.0 # フィット倍率に対するユーザー倍率 (1.0=全体フィット)
+var _fit_zoom: float = 1.0    # viewport から算出したフィット倍率 (キャッシュ)
+var _fit_pos: Vector2 = Vector2.ZERO  # factor=1.0 のときのカメラ位置 (キャッシュ)
+var _panning: bool = false    # 中ボタンドラッグ中か
+
 # UI ノード (コード構築)
 var _status_label: Label
 var _eta_label: Label
@@ -79,8 +89,9 @@ func _process(delta: float) -> void:
 			if world.outcome != World.Outcome.ONGOING:
 				break
 	# 描画は毎フレーム (tick 間も補間・粒子・炎が動く)。
+	# α = 次 tick までの端数 (固定タイムステップ補間。停止中は固定され静止)。
 	renderer.selected_id = selected_id
-	renderer.render(world, delta, speed)
+	renderer.render(world, delta, speed, clampf(_accum_ms / MS_PER_TICK, 0.0, 1.0))
 	_update_status()
 	_update_inspector()
 
@@ -89,14 +100,80 @@ func _step_one_tick() -> void:
 	controller.apply(world)
 	world.tick_once()
 	# シムの構造化イベントをフィードと演出へ翻訳する。
+	# on_tick より先に処理する: 死亡/巣立ちバーストは演出層に残る直前の
+	# 補間位置 (_last_pos_of) を使うため、その個体が on_tick で除去される前に拾う。
 	for e in world.last_events:
 		_push_feed_event(e)
 		renderer.on_event(e)
+	# tick 確定後に演出層の補間ターゲット (prev→cur) を更新する。
+	# (1 フレームに複数 tick 回る場合も毎回。O(個体数) の座標コピーのみ)
+	renderer.on_tick(world)
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventMouseButton and event.pressed \
-			and event.button_index == MOUSE_BUTTON_LEFT:
-		selected_id = renderer.pick(world, get_global_mouse_position())
+	if event is InputEventMouseButton:
+		match event.button_index:
+			MOUSE_BUTTON_LEFT:
+				# 左クリック: 個体選択 (ワールド座標なのでカメラ変換に自動追従)。
+				if event.pressed:
+					selected_id = renderer.pick(world, get_global_mouse_position())
+			MOUSE_BUTTON_WHEEL_UP:
+				if event.pressed:
+					_apply_zoom(_zoom_factor * ZOOM_STEP)
+			MOUSE_BUTTON_WHEEL_DOWN:
+				if event.pressed:
+					_apply_zoom(_zoom_factor / ZOOM_STEP)
+			MOUSE_BUTTON_MIDDLE:
+				# 中ボタンドラッグでパン開始/終了。
+				_panning = event.pressed
+	elif event is InputEventMouseMotion and _panning:
+		var cam := $Camera2D as Camera2D
+		if cam != null:
+			# 画面上のドラッグ量ぶん、カメラを逆方向へ動かす (ズーム補正)。
+			cam.position -= event.relative / cam.zoom
+			_clamp_camera(cam)
+
+## ホイールズーム: カーソル位置をアンカーに倍率を変える (factor は 1.0〜8.0)。
+func _apply_zoom(new_factor: float) -> void:
+	var cam := $Camera2D as Camera2D
+	if cam == null:
+		return
+	new_factor = clampf(new_factor, ZOOM_MIN, ZOOM_MAX)
+	var old_factor := _zoom_factor
+	if absf(new_factor - old_factor) < 0.0001:
+		return
+	_zoom_factor = new_factor
+	if _zoom_factor <= ZOOM_MIN + 0.0001:
+		# 全体フィットへ正確に復帰 (右パネルぶんのオフセット込み)。
+		_zoom_factor = ZOOM_MIN
+		cam.zoom = Vector2(_fit_zoom, _fit_zoom)
+		cam.position = _fit_pos
+		return
+	# カーソル下のワールド点が画面上で動かないよう位置補正。
+	var mouse_world := get_global_mouse_position()
+	var old_zoom := cam.zoom.x
+	var new_zoom := _fit_zoom * _zoom_factor
+	cam.zoom = Vector2(new_zoom, new_zoom)
+	# Camera2D.zoom は大きいほど拡大 → スケール比は old_zoom / new_zoom。
+	cam.position = mouse_world + (cam.position - mouse_world) * (old_zoom / new_zoom)
+	_clamp_camera(cam)
+
+## カメラ位置をマップ矩形から大きく外れないようクランプ (ズームイン時のみ可動)。
+func _clamp_camera(cam: Camera2D) -> void:
+	if _zoom_factor <= ZOOM_MIN + 0.0001:
+		cam.position = _fit_pos
+		return
+	var m := world.map
+	var map_w := m.width * renderer.tile_size
+	var map_h := m.height * renderer.tile_size
+	# 表示半分ぶんの余白を残してマップ中心からの可動域を制限する。
+	var view := get_viewport_rect().size / cam.zoom
+	var half := view * 0.5
+	var min_x := minf(half.x, map_w * 0.5)
+	var max_x := maxf(map_w - half.x, map_w * 0.5)
+	var min_y := minf(half.y, map_h * 0.5)
+	var max_y := maxf(map_h - half.y, map_h * 0.5)
+	cam.position.x = clampf(cam.position.x, min_x, max_x)
+	cam.position.y = clampf(cam.position.y, min_y, max_y)
 
 # ════ イベント → 物語の文 ════
 func _push_feed_event(e: Dictionary) -> void:
@@ -126,6 +203,8 @@ func _push_feed_event(e: Dictionary) -> void:
 			_push_feed("birth", "%s が %d 匹の子を産んだ。" % [mname, e.get("count", 0)])
 		"grow":
 			_push_feed("birth", "%s が一人前に育った。" % GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))))
+		"mite_eaten":
+			_push_feed("event", "%s がパン虫を捕まえて食べた。" % GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))))
 		"pregnant":
 			var f := _find_goblin(int(e.get("id", -1)))
 			if f != null:
@@ -341,15 +420,22 @@ func _style_button(b: Button, active: bool) -> void:
 
 func _update_camera() -> void:
 	# マップ全体が見えるよう中央に寄せる (右パネルぶん左へ寄せる)。
+	# フィット倍率・位置を再計算してキャッシュし、現在の _zoom_factor を保ったまま再適用する。
 	var m := world.map
 	var cam := $Camera2D as Camera2D
 	if cam == null:
 		return
 	var vp := get_viewport_rect().size
-	var usable_w := vp.x - 290.0
+	var usable_w := vp.x - RIGHT_PANEL_W
 	var zoom_x := usable_w / (m.width * renderer.tile_size + 24.0)
 	var zoom_y := (vp.y - 90.0) / (m.height * renderer.tile_size + 24.0)
-	var z: float = minf(zoom_x, zoom_y)
+	_fit_zoom = minf(zoom_x, zoom_y)
+	_fit_pos = Vector2(m.width * renderer.tile_size / 2.0, m.height * renderer.tile_size / 2.0) \
+		+ Vector2(RIGHT_PANEL_W / 2.0 / _fit_zoom, -20.0 / _fit_zoom)
+	# 現在のユーザー倍率を保って再適用 (factor=1.0 ならフィット位置へ正確に復帰)。
+	var z := _fit_zoom * _zoom_factor
 	cam.zoom = Vector2(z, z)
-	cam.position = Vector2(m.width * renderer.tile_size / 2.0, m.height * renderer.tile_size / 2.0) \
-		+ Vector2(290.0 / 2.0 / z, -20.0 / z)
+	if _zoom_factor <= ZOOM_MIN + 0.0001:
+		cam.position = _fit_pos
+	else:
+		_clamp_camera(cam)

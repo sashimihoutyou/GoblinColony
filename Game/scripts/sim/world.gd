@@ -14,8 +14,10 @@ var rng: Rng
 var map: TileMapData
 var goblins: Array = []        # Array[Goblin]
 var enemies: Array = []        # Array[EnemyUnit]
+var mites: Array = []          # Array[MiteUnit] (パン虫 §3-11)
 var next_goblin_id: int = 0
 var next_enemy_id: int = 0
+var next_mite_id: int = 0
 
 var tick: int = 0
 var day: int = 0
@@ -23,7 +25,7 @@ var phase: int = Phase.PEACE
 var totem_hp: float = 60.0     # トーテム耐久 (§3-20。0 で破壊 = 敗北。平時に修繕)
 var faith: float = 0.0
 var cum_faith: float = 0.0
-var food: float = 20.0
+var food: float = 15.0
 var surge: float = 0.0         # 損耗時バフ残量 (§2.5 / KI-04)
 var over_cap_ticks: int = 0
 var next_big_raid_tick: int = 0
@@ -53,13 +55,16 @@ func setup(p: SimParams) -> void:
 	map = MapTemplate.make_initial_map()
 	goblins = []
 	enemies = []
+	mites = []
 	next_goblin_id = 0
+	next_enemy_id = 0
+	next_mite_id = 0
 	tick = 0
 	day = 0
 	phase = Phase.PEACE
 	totem_hp = p.totem_hp_max
 	faith = 0.0
-	food = 20.0
+	food = 15.0
 	outcome = Outcome.ONGOING
 	_rebuild_floor_caches()
 	_schedule_next_raid()
@@ -123,6 +128,7 @@ func tick_once() -> void:
 
 	_update_raid_schedule()
 	_step_enemies()
+	_step_mites()
 	_step_goblins()
 	_resolve_combat()
 	_step_breeding()
@@ -242,6 +248,27 @@ func _step_enemies() -> void:
 			occ[before] = (occ.get(before, 0) as int) - 1
 			occ[e.pos()] = (occ.get(e.pos(), 0) as int) + 1
 
+# --- パン虫 (§3-11 救済床の実体化) ---
+# 巣内の床に自然湧きし、ランダムにうろつくだけの食用ザコ。攻撃しない。
+# 空腹ゴブリンが視界内に見つけると狩りに向かい、隣接で捕食される (即時満腹)。
+# 狩り = 食事の解決は世界側 (_step_goblins) が隣接判定で行う (ここは湧き・移動のみ)。
+func _step_mites() -> void:
+	# RNG 消費は固定順: 湧き判定 (上限未満のときのみ) → 各 mite の行き先再抽選。
+	# enemies/goblins より先に確定し、同 tick 内でゴブリンが現在位置を狙えるようにする。
+	if mites.size() < params.mite_max and rng.next_float() < params.mite_spawn_per_tick:
+		var m := MiteUnit.new()
+		m.id = next_mite_id
+		next_mite_id += 1
+		_place(m, _random_nest_floor())
+		mites.append(m)
+	for m in mites:
+		# うろつき: パスが尽きたらたまに次の行き先を引く (ゴブリンの WANDER と同じ規約)。
+		if m.path.is_empty():
+			if rng.next_float() < params.mite_retarget_per_tick:
+				_advance_along_path(m, _random_nest_floor(), params.mite_move_per_tick)
+		else:
+			_advance_along_path(m, Vector2i(m.target_x, m.target_y), params.mite_move_per_tick)
+
 # --- ゴブリンの移動 (§3-0 ステート対応) ---
 func _step_goblins() -> void:
 	var in_raid := phase == Phase.COMBAT and not enemies.is_empty()
@@ -253,12 +280,21 @@ func _step_goblins() -> void:
 		ctx.enemy_nearby = _enemy_near(g.pos(), 4)
 		ctx.assigned_to_combat = (g.sex == Goblin.Sex.MALE or g.is_unique)
 		ctx.assigned_to_room = _has_room_assignment(g.id)
-		ctx.food_available = food > 0.0 and _at_storage(g.pos())
+		# 隣接 (8 近傍) のパン虫を狩れる。mite は各個体のループ内で都度取得するため、
+		# 同 tick に 2 体が同じ 1 匹を食べる二重計上は起きない (食べた時点で erase)。
+		var mite := _nearest_mite(g.pos(), 1)
+		ctx.food_available = (food > 0.0 and _at_storage(g.pos())) or mite != null
 		ctx.food_in_stock = food > 0.0
 		var hunger_before: float = g.hunger
 		StateMachine.step(g, ctx, params)
 		if ctx.food_available and g.state == Goblin.State.HUNGRY and g.hunger < hunger_before:
-			food = max(0.0, food - params.food_eat_amount)
+			if mite != null:
+				# パン虫を捕食 (在庫は減らない)。
+				mites.erase(mite)
+				_event({"t": "mite_eaten", "id": g.id, "sex": g.sex})
+			else:
+				# 集積所での食事 1 回ぶん一括消費 (即時満腹に対応)。
+				food = max(0.0, food - params.food_per_meal)
 
 		if g.state == Goblin.State.DEAD or g.state == Goblin.State.KNOCKED_OUT:
 			continue
@@ -314,6 +350,13 @@ func _movement_target(g: Goblin, in_raid: bool) -> Vector2i:
 		Goblin.State.DYING, Goblin.State.SLEEP:
 			return _room_slot(TileMapData.RoomType.NEST, g.id)
 		Goblin.State.HUNGRY:
+			# 視界内にパン虫が居れば集積所より優先して狩りに向かう。
+			# 隣接済みなら足を止める (狩り = 食事は _step_goblins が隣接判定で解決)。
+			var mite := _nearest_mite(g.pos(), params.mite_sight)
+			if mite != null:
+				if max(abs(g.x - mite.x), abs(g.y - mite.y)) <= 1:
+					return Vector2i(-1, -1)
+				return mite.pos()
 			return _eat_slot(g.id)
 		Goblin.State.WORK:
 			return _work_target(g)
@@ -552,8 +595,7 @@ func _step_food() -> void:
 			if g.state == Goblin.State.WORK and _in_room(r, g.pos()):
 				active_ranchers += 1
 	food += active_ranchers * params.food_per_rancher_tick
-	if food < float(_alive_count()):
-		food += params.food_passive_per_tick
+	# 救済はパン虫の実体湧き (_step_mites) が担う (旧 food_passive_per_tick の抽象救済を置換)。
 
 func _step_starvation() -> void:
 	if food > 0.0:
@@ -697,6 +739,18 @@ func _nearest_enemy_pos(p: Vector2i) -> Vector2i:
 		if d < bd:
 			bd = d
 			best = e.pos()
+	return best
+
+# チェビシェフ距離で最寄りのパン虫 (range 内)。なければ null
+# (_adjacent_enemy / _enemy_near と同じ max(abs dx, abs dy) の距離規約)。
+func _nearest_mite(p: Vector2i, radius: int) -> MiteUnit:
+	var best: MiteUnit = null
+	var bd := radius + 1
+	for m in mites:
+		var d := maxi(abs(p.x - m.x), abs(p.y - m.y))
+		if d <= radius and d < bd:
+			bd = d
+			best = m
 	return best
 
 func _nearest_goblin_pos(p: Vector2i) -> Vector2i:
@@ -847,12 +901,13 @@ func snapshot() -> Dictionary:
 		"next_big_raid_tick": next_big_raid_tick,
 		"raid_is_human": raid_is_human, "raid_start_hp": raid_start_hp,
 		"outcome": outcome, "next_goblin_id": next_goblin_id,
-		"next_enemy_id": next_enemy_id,
+		"next_enemy_id": next_enemy_id, "next_mite_id": next_mite_id,
 		"deaths_total": deaths_total, "births_total": births_total,
 		"rng": rng.snapshot(),
 		"map": map.snapshot(),
 		"goblins": goblins.map(func(g): return g.snapshot()),
 		"enemies": enemies.map(func(e): return e.snapshot()),
+		"mites": mites.map(func(m): return m.snapshot()),
 	}
 
 func restore(d: Dictionary) -> void:
@@ -862,10 +917,11 @@ func restore(d: Dictionary) -> void:
 	next_big_raid_tick = d.next_big_raid_tick
 	raid_is_human = d.raid_is_human; raid_start_hp = d.raid_start_hp
 	outcome = d.outcome; next_goblin_id = d.next_goblin_id
-	next_enemy_id = d.next_enemy_id
+	next_enemy_id = d.next_enemy_id; next_mite_id = d.next_mite_id
 	deaths_total = d.deaths_total; births_total = d.births_total
 	rng.restore(d.rng)
 	map.restore(d.map)
 	goblins = (d.goblins as Array).map(func(x): return Goblin.from_snapshot(x))
 	enemies = (d.enemies as Array).map(func(x): return EnemyUnit.from_snapshot(x))
+	mites = (d.mites as Array).map(func(x): return MiteUnit.from_snapshot(x))
 	_rebuild_floor_caches()

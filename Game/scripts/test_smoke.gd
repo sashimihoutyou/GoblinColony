@@ -80,7 +80,7 @@ func _test_hungry_arrival_does_not_spend_food() -> bool:
 	var p := SimParams.new()
 	p.start_goblins = 1
 	p.food_per_rancher_tick = 0.0
-	p.food_eat_amount = 1.0
+	p.food_per_meal = 1.0
 	p.hunger_rate = 0.0
 	p.sleep_rate = 0.0
 	p.move_per_tick = 100.0
@@ -104,10 +104,10 @@ func _test_hungry_arrival_does_not_spend_food() -> bool:
 	var hunger_after_arrival: float = g.hunger
 	w.tick_once()
 	if g.hunger >= hunger_after_arrival:
-		print("  FAIL: hunger did not recover at storage")
+		print("  FAIL: hunger did not become 0 (instant meal) at storage")
 		return false
 	if w.food >= 1.0:
-		print("  FAIL: food was not spent while eating")
+		print("  FAIL: food was not spent on the instant meal")
 		return false
 	print("  hungry-food-order: OK")
 	return true

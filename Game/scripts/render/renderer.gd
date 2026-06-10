@@ -14,7 +14,8 @@ var _world: World = null
 var _font: Font
 var _t: float = 0.0            # 演出時計 (実時間)
 var _night: float = 0.0        # 昼夜トーン (0=昼, 1=夜。滑らかに追従)
-var _sim_speed: float = 1.0    # 停止中は補間も止める
+var _sim_speed: float = 1.0    # 停止中は吐息など演出を止めるフラグ
+var _ticked: bool = false      # on_tick を一度でも経たか (初回フレームのフォールバック判定)
 
 # --- Web 版と同じ色言語 ---
 const COL_FLOOR := Color("1d150c")
@@ -40,9 +41,14 @@ const STATE_COLORS := {
 	Goblin.State.KNOCKED_OUT: Color("6a4838"),
 }
 
-# --- 演出層の個体状態: id → {pos: Vector2, face: float} ---
+# --- 演出層の個体状態: id → {prev: Vector2, cur: Vector2, pos: Vector2, face: float} ---
+# tick 間は prev→cur を線形補間する (固定タイムステップ補間)。シムの fx/fy へ
+# 毎フレーム直接追従すると、座標が 4Hz (1x 時) でステップ更新されるため
+# 「tick 直後に加速→次 tick まで減速」のラバーバンド脈動 = カクつきが出る。
+# on_tick で prev←cur, cur←最新位置 を確定し、render で α (tick 端数) 補間する。
 var _gmap: Dictionary = {}
 var _emap: Dictionary = {}
+var _mmap: Dictionary = {}   # パン虫 (§3-11)。ゴブリン・敵と同じ補間管理
 
 # --- パーティクル: {kind,x,y,vx,vy,g,life,max_life,size,color,txt} ---
 var _particles: Array = []
@@ -54,15 +60,64 @@ var _terrain_hash: int = 0
 func _ready() -> void:
 	_font = ThemeDB.fallback_font
 
-# ── メイン入口: 毎フレーム呼ぶ (tick が無いフレームも補間は進む) ──
-func render(world: World, delta: float, sim_speed: float) -> void:
+# ── tick 確定時: 各ユニットの prev←cur を確定し cur を最新位置へ進める ──
+# main が tick ごとに呼ぶ (1 フレームに複数 tick 回れば毎回)。O(個体数) の座標コピーのみ。
+func on_tick(world: World) -> void:
+	_world = world
+	_ticked = true
+	var seen := {}
+	for g in world.goblins:
+		if g.state == Goblin.State.DEAD:
+			continue
+		seen[g.id] = true
+		_advance_entry(_gmap, g.id, _unit_pixel(g))
+	# 巣から消えた個体 (死亡/巣立ち。イベント側で fx 済み) を演出層からも除く。
+	for id in _gmap.keys():
+		if not seen.has(id):
+			_gmap.erase(id)
+	# 敵。
+	var eseen := {}
+	for e in world.enemies:
+		eseen[e.id] = true
+		_advance_entry(_emap, e.id, _unit_pixel(e))
+	for id in _emap.keys():
+		if not eseen.has(id):
+			# 撃破された敵: 血色の破片 (補間位置から)。
+			var v3: Dictionary = _emap[id]
+			_burst(v3.pos, 4, {"speed": 26.0, "life": 0.5, "size": 1.2, "color": Color("c0432e")})
+			_emap.erase(id)
+	# パン虫 (消滅時は静かに消える。捕食バーストは on_event 側で出す)。
+	var mseen := {}
+	for m in world.mites:
+		mseen[m.id] = true
+		_advance_entry(_mmap, m.id, _unit_pixel(m))
+	for mid in _mmap.keys():
+		if not mseen.has(mid):
+			_mmap.erase(mid)
+
+## エントリの prev/cur を進める。新規 (出生・襲撃出現) は prev=cur=now で登録。
+func _advance_entry(m: Dictionary, id: int, now: Vector2) -> void:
+	if not m.has(id):
+		m[id] = {"prev": now, "cur": now, "pos": now, "face": 1.0}
+		return
+	var v: Dictionary = m[id]
+	v.prev = v.cur
+	v.cur = now
+	# face は十分な水平移動があるときだけ更新 (既存の 0.5px 閾値を踏襲)。
+	if absf(now.x - (v.prev as Vector2).x) > 0.5:
+		v.face = 1.0 if now.x > (v.prev as Vector2).x else -1.0
+
+# ── メイン入口: 毎フレーム呼ぶ。alpha = tick 端数 (0..1, 呼び出し側で clamp 済み) ──
+func render(world: World, delta: float, sim_speed: float, alpha: float) -> void:
 	_world = world
 	_sim_speed = sim_speed
 	_t += delta
-	var move_dt := delta if sim_speed > 0.0 else 0.0
+	# まだ on_tick を一度も経ていない初回フレームはエントリを初期化 (フォールバック)。
+	if not _ticked:
+		on_tick(world)
 	_update_decor()
-	_update_units(move_dt)
-	_update_particles(move_dt * maxf(sim_speed, 1.0))
+	_update_units(alpha)
+	_update_particles((delta if sim_speed > 0.0 else 0.0) * maxf(sim_speed, 1.0))
 	# 昼夜トーンは常に滑らかに追従 (停止中も見た目は保持)。
 	var target := 0.0 if world.is_day() else 1.0
 	_night = lerpf(_night, target, minf(1.0, delta * 1.5))
@@ -93,6 +148,11 @@ func on_event(e: Dictionary) -> void:
 		"surge":
 			var c := _tile_center(_world.map.totem)
 			_burst(c, 10, {"speed": 30.0, "life": 0.9, "size": 1.4, "color": Color("c0432e")})
+		"mite_eaten":
+			# パン虫を捕食: 小さな緑系バースト (捕食したゴブリンの補間位置から)。
+			var atm := _last_pos_of(int(e.get("id", -1)))
+			if atm != Vector2.ZERO:
+				_burst(atm, 4, {"speed": 16.0, "life": 0.6, "size": 1.1, "color": Color("9adb6e")})
 
 ## クリック位置 (ワールド座標) から最寄りの生存ゴブリン id を返す (-1 = なし)。
 func pick(world: World, pos: Vector2) -> int:
@@ -111,51 +171,16 @@ func pick(world: World, pos: Vector2) -> int:
 	return best
 
 # ════ 内部: 補間移動 ════
-func _update_units(dt: float) -> void:
-	if _world == null:
-		return
-	# ゴブリン。シムが連続座標 (fx/fy) を持つので、補間は tick 間のわずかな
-	# 段差をならす程度の強い追従でよい (k 大 = ほぼ直接追従)。
-	var seen := {}
-	for g in _world.goblins:
-		seen[g.id] = true
-		var target := _unit_pixel(g)
-		if not _gmap.has(g.id):
-			_gmap[g.id] = {"pos": target, "face": 1.0}
-			continue
-		var v: Dictionary = _gmap[g.id]
-		var cur: Vector2 = v.pos
-		if dt > 0.0:
-			var k := 1.0 - exp(-12.0 * dt * maxf(_sim_speed, 1.0))
-			var next := cur.lerp(target, k)
-			if absf(target.x - cur.x) > 0.5:
-				v.face = 1.0 if target.x > cur.x else -1.0
-			v.pos = next
-	# 巣から消えた個体 (死亡/巣立ち。イベント側で fx 済み) を演出層からも除く。
-	for id in _gmap.keys():
-		if not seen.has(id):
-			_gmap.erase(id)
-	# 敵。
-	var eseen := {}
-	for e in _world.enemies:
-		eseen[e.id] = true
-		var target := _unit_pixel(e)
-		if not _emap.has(e.id):
-			_emap[e.id] = {"pos": target, "face": 1.0}
-			continue
-		var v2: Dictionary = _emap[e.id]
-		var cur2: Vector2 = v2.pos
-		if dt > 0.0:
-			var k2 := 1.0 - exp(-12.0 * dt * maxf(_sim_speed, 1.0))
-			v2.pos = cur2.lerp(target, k2)
-			if absf(target.x - cur2.x) > 0.5:
-				v2.face = 1.0 if target.x > cur2.x else -1.0
-	for id in _emap.keys():
-		if not eseen.has(id):
-			# 撃破された敵: 血色の破片。
-			var v3: Dictionary = _emap[id]
-			_burst(v3.pos, 4, {"speed": 26.0, "life": 0.5, "size": 1.2, "color": Color("c0432e")})
-			_emap.erase(id)
+# 各エントリの pos を prev→cur の線形補間で求める (固定タイムステップ補間)。
+# 出現/消滅の管理は on_tick 側で済んでいるので、ここは毎フレームの位置算出だけ。
+# alpha は tick 端数 (0..1)。停止中は alpha が固定され自然に静止する。
+func _update_units(alpha: float) -> void:
+	for id in _gmap:
+		var v: Dictionary = _gmap[id]
+		v.pos = (v.prev as Vector2).lerp(v.cur as Vector2, alpha)
+	for id in _emap:
+		var v2: Dictionary = _emap[id]
+		v2.pos = (v2.prev as Vector2).lerp(v2.cur as Vector2, alpha)
 
 func _last_pos_of(id: int) -> Vector2:
 	var v: Dictionary = _gmap.get(id, {})
@@ -329,6 +354,13 @@ func _draw() -> void:
 
 	# --- トーテム像 + 炎 ---
 	_draw_totem(m)
+
+	# --- パン虫 (補間位置。床の上をうろつく食用ザコ) ---
+	for mu in _world.mites:
+		var vm: Dictionary = _mmap.get(mu.id, {})
+		if vm.is_empty():
+			continue
+		_draw_mite(vm.pos as Vector2, mu.id)
 
 	# --- 敵 (補間位置) ---
 	for e in _world.enemies:
@@ -523,6 +555,15 @@ func _draw_goblin(pos: Vector2, g: Goblin, face: float) -> void:
 		elif g.state == Goblin.State.HUNGRY and randf() < 0.02:
 			_spawn_p({"color": Color("a8842a"), "x": x + randf_range(-r, r), "y": by + r * 0.4,
 				"vx": randf_range(-6, 6), "vy": 8.0, "g": 40.0, "life": 0.5, "size": 1.0})
+
+# ── パン虫スプライト (青白い小さな幼虫。体長 3px ほど、わずかに蠢く) ──
+func _draw_mite(pos: Vector2, id: int) -> void:
+	var wig := sin(_t * 8.0 + float(id)) * 0.6   # 蠢き
+	var col := Color("a8c0d0")
+	_ellipse(pos + Vector2(0, 1.6), 2.0, 0.7, Color(0, 0, 0, 0.25))  # 影
+	# 体節 = 楕円 2 つ (頭側 + 尾側)。
+	_ellipse(pos + Vector2(-1.0, wig * 0.3), 1.4, 1.0, col)
+	_ellipse(pos + Vector2(1.0, -wig * 0.3), 1.2, 0.9, col.darkened(0.1))
 
 # ── 敵スプライト (槍持ちのミニ人型) ──
 func _draw_enemy(pos: Vector2, e: EnemyUnit, face: float) -> void:

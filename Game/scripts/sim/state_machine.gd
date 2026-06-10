@@ -102,7 +102,9 @@ static func step(g: Goblin, ctx: Context, p: SimParams) -> void:
 	if g.hunger_latched and (ctx.food_in_stock or not g.sleep_latched):
 		g.state = Goblin.State.HUNGRY
 		if ctx.food_available:
-			g.hunger = max(0.0, g.hunger - p.hunger_relieve_per_tick)
+			# 食事は即時: 集積所に到着した tick で満腹になる
+			# (在庫消費は world 側が一食ぶん引く)。
+			g.hunger = 0.0
 		return
 
 	# 睡眠。
