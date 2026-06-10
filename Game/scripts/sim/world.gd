@@ -33,7 +33,9 @@ var outcome: int = Outcome.ONGOING
 # ログ (UI / デバッグ用)。
 var deaths_total: int = 0
 var births_total: int = 0
-var last_events: Array = []    # Array[String] 直近イベント
+# 直近イベント (Array[Dictionary])。1 tick ごとにクリア。UI 側が名前等へ整形する。
+# 例: {"t":"raid","count":5,"human":false,"final":false} / {"t":"death","id":3,"sex":0,"cause":"combat"}
+var last_events: Array = []
 
 # --- 初期化 ---
 func setup(p: SimParams) -> void:
@@ -123,8 +125,8 @@ func is_day() -> bool:
 func _on_day_boundary() -> void:
 	if surge > 0.0:
 		surge = max(0.0, surge - params.surge_decay)
-	if day >= params.final_day:
-		_log("最終日: ラストバトル!")
+	# ラストバトルは最終日に一度だけ (>= だと日境界ごとに多重スポーンしていた)。
+	if day == params.final_day:
 		_spawn_raid(true, true)  # ラストバトル
 
 # --- 襲撃スケジュール (§3-5 / §3-7) ---
@@ -150,7 +152,7 @@ func _spawn_raid(final_battle: bool, human: bool) -> void:
 	var count := int(params.base_enemies + params.enemy_per_day * day)
 	if final_battle:
 		count = int(count * params.final_mult)
-	_log("大規模襲撃: 敵 %d 体" % count)
+	_event({"t": "raid", "count": count, "human": human, "final": final_battle})
 	# 全巣口に部隊を分散 (§3-14)。
 	for i in range(count):
 		var gate_idx := i % map.gates.size()
@@ -163,7 +165,7 @@ func _spawn_raid_small() -> void:
 	phase = Phase.COMBAT
 	raid_is_human = false
 	raid_start_hp = _total_hp()
-	_log("小規模襲撃: 敵 %d 体 (恵み)" % count)
+	_event({"t": "raid_small", "count": count})
 	for i in range(count):
 		_spawn_enemy_at_gate(gate_idx, false)
 
@@ -175,16 +177,18 @@ func _spawn_enemy_at_gate(gate_idx: int, human: bool) -> void:
 	e.hp = e.max_hp
 	e.target_gate_idx = gate_idx
 	e.is_human = human
-	# マップ外周 3 タイル外にスポーン (§3-14)。巣口の方向に応じて外側へ。
+	# マップ縁 (範囲内の外部地面) にスポーンし、巣口へ向かって歩いてくる (§3-14)。
+	# 範囲外に置くと A* が開始点を歩行不可とみなし一歩も動けない (旧バグ:
+	# 襲撃が永遠に決着せず phase=COMBAT のまま増殖も勝敗も止まっていた)。
 	var gate: Vector2i = map.gates[gate_idx]
 	var dir := (gate - Vector2i(map.width / 2, map.height / 2))
 	var spawn := gate
 	if abs(dir.x) > abs(dir.y):
-		spawn.x = (map.width + 2) if dir.x > 0 else -3
+		spawn.x = (map.width - 1) if dir.x > 0 else 0
 	else:
-		spawn.y = (map.height + 2) if dir.y > 0 else -3
-	e.x = clampi(spawn.x, -3, map.width + 2)
-	e.y = clampi(spawn.y, -3, map.height + 2)
+		spawn.y = (map.height - 1) if dir.y > 0 else 0
+	e.x = clampi(spawn.x, 0, map.width - 1)
+	e.y = clampi(spawn.y, 0, map.height - 1)
 	enemies.append(e)
 
 # --- 敵の移動・侵入 (§3-14) ---
@@ -310,13 +314,14 @@ func _can_fight(g: Goblin) -> bool:
 
 func _end_raid() -> void:
 	phase = Phase.PEACE
+	_event({"t": "raid_end", "alive": _alive_count()})
 	# 損耗時バフ (§2.5 / KI-04): この戦闘の HP 損失割合が閾値超なら surge 発火。
 	var lost_frac := 0.0
 	if raid_start_hp > 0.0:
 		lost_frac = (raid_start_hp - _total_hp()) / raid_start_hp
 	if lost_frac > params.surge_trigger:
 		surge = min(params.surge_max, surge + params.surge_gain * lost_frac)
-		_log("損耗バフ発火 (損耗 %.0f%%)" % (lost_frac * 100.0))
+		_event({"t": "surge", "lost_frac": lost_frac})
 
 # --- 増殖 (§3-6) ---
 func _step_breeding() -> void:
@@ -329,6 +334,7 @@ func _step_breeding() -> void:
 		# 子の成体化。
 		if g.is_child() and (tick - g.child_born_tick) >= params.child_grow_ticks:
 			g.child_born_tick = -1
+			_event({"t": "grow", "id": g.id, "sex": g.sex})
 
 	# 求愛: 雌が起点 (雌律速)。平時かつ昼のみ。
 	if phase != Phase.PEACE or not is_day():
@@ -347,6 +353,7 @@ func _step_breeding() -> void:
 				f.pregnant = true
 				f.pregnant_ticks = 0
 				f.mate_id = mate.id
+				_event({"t": "pregnant", "id": f.id, "mate": mate.id})
 
 func _find_mate(f: Goblin) -> Goblin:
 	var best: Goblin = null
@@ -369,6 +376,7 @@ func _give_birth(mother: Goblin) -> void:
 	if _alive_count() >= params.cap_pop:
 		return
 	var litter := _roll_litter()
+	var born := 0
 	for i in range(litter):
 		if _alive_count() >= params.cap_pop:
 			break
@@ -383,6 +391,9 @@ func _give_birth(mother: Goblin) -> void:
 		baby.hp = baby.max_hp
 		goblins.append(baby)
 		births_total += 1
+		born += 1
+	if born > 0:
+		_event({"t": "birth", "mother": mother.id, "count": born})
 
 func _roll_litter() -> int:
 	var r := rng.next_float()
@@ -403,7 +414,8 @@ func _step_accidents() -> void:
 		if rng.next_float() < params.accident_prob:
 			g.hp = 0.0
 			g.state = Goblin.State.DEAD
-			_log("事故死: #%d" % g.id)
+			g.death_logged = true
+			_event({"t": "death", "id": g.id, "sex": g.sex, "cause": "accident"})
 
 # --- 食料 (§3-11) ---
 func _step_food() -> void:
@@ -433,6 +445,10 @@ func _cleanup_dead() -> void:
 	for g in goblins:
 		if g.state == Goblin.State.DEAD:
 			deaths_total += 1
+			# 事故死/巣立ちは各所で記録済み。それ以外はここで戦死として記録する
+			# (ダメージは戦闘解決のみが与えるため)。
+			if not g.death_logged:
+				_event({"t": "death", "id": g.id, "sex": g.sex, "cause": "combat"})
 		else:
 			alive.append(g)
 	goblins = alive
@@ -449,7 +465,8 @@ func _step_fledge() -> void:
 			for g in goblins:
 				if g.role == Goblin.Role.NONE and not g.is_child() and not g.is_unique:
 					g.state = Goblin.State.DEAD  # 巣から除外 (cleanup で消える)
-					_log("巣立ち: #%d" % g.id)
+					g.death_logged = true
+					_event({"t": "fledge", "id": g.id, "sex": g.sex})
 					break
 			over_cap_ticks = 0
 	else:
@@ -459,16 +476,16 @@ func _step_fledge() -> void:
 func _check_outcome() -> void:
 	if _alive_count() == 0:
 		outcome = Outcome.DEFEAT
-		_log("全滅 — 敗北")
+		_event({"t": "defeat", "reason": "annihilation"})
 		return
 	if map.get_tile(map.totem.x, map.totem.y) != TileMapData.TileType.TOTEM:
 		outcome = Outcome.DEFEAT
-		_log("トーテム破壊 — 敗北")
+		_event({"t": "defeat", "reason": "totem"})
 		return
 	# ラストバトル撃退でクリア。
 	if day >= params.final_day and phase == Phase.PEACE and enemies.is_empty():
 		outcome = Outcome.VICTORY
-		_log("ラストバトル撃退 — 勝利!")
+		_event({"t": "victory"})
 
 # === ヘルパ ===
 func _alive_count() -> int:
@@ -570,8 +587,8 @@ func _assign_to_room(room_type: int, count: int) -> void:
 				r.assigned.append(g.id)
 				assigned += 1
 
-func _log(msg: String) -> void:
-	last_events.append(msg)
+func _event(e: Dictionary) -> void:
+	last_events.append(e)
 
 # --- スナップショット (KI-09) ---
 func snapshot() -> Dictionary:

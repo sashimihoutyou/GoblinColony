@@ -1,122 +1,540 @@
 extends Node2D
 class_name Renderer
-## 状態を持たない描画層 (§4-3)。render(world) で渡された worldState を描くだけ。
+## 描画層 (§4-3)。render(world, delta) で渡された状態を描くだけで、シム状態には
+## 一切書き込まない。個体の「見た目の位置」(タイル間の補間)・パーティクル・
+## 昼夜トーンはすべてこの層のローカル状態 (KI-09 セーフ)。
 ##
-## エンジニアアート: 単色タイル + 文字ラベルが既定。ただし tile_textures /
-## sprite_textures に画像パスが指定されていればそちらを優先で使う (ユーザ方針)。
-## 画像が無い/読込失敗なら自動的に単色フォールバックへ。
+## ビジュアルは Web 版ダッシュボード (viz/dashboard_template.html) の移植:
+## 闇に沈んだ洞窟・琥珀の信仰の炎・耳と目を持つゴブリンスプライト・粒子演出。
 
 var tile_size: int = 16
+var selected_id: int = -1
+
 var _world: World = null
-
-# 画像パス指定 (任意)。空なら単色フォールバック。
-# 例: tile_textures[TileMapData.TileType.FLOOR] = "res://art/floor.png"
-var tile_textures: Dictionary = {}
-var goblin_texture_path: String = ""
-var enemy_texture_path: String = ""
-
-var _tex_cache: Dictionary = {}   # path -> Texture2D (失敗は null をキャッシュ)
 var _font: Font
+var _t: float = 0.0            # 演出時計 (実時間)
+var _night: float = 0.0        # 昼夜トーン (0=昼, 1=夜。滑らかに追従)
+var _sim_speed: float = 1.0    # 停止中は補間も止める
 
-# 単色フォールバックのタイル色。
-const TILE_COLORS := {
-	TileMapData.TileType.FLOOR: Color(0.55, 0.45, 0.35),
-	TileMapData.TileType.WALL: Color(0.20, 0.18, 0.16),
-	TileMapData.TileType.GATE: Color(0.85, 0.65, 0.20),
-	TileMapData.TileType.EXTERIOR: Color(0.30, 0.40, 0.25),
-	TileMapData.TileType.RESOURCE_NODE: Color(0.45, 0.55, 0.70),
-	TileMapData.TileType.STORAGE: Color(0.70, 0.60, 0.30),
-	TileMapData.TileType.TOTEM: Color(0.85, 0.20, 0.75),
-	TileMapData.TileType.EXHAUSTED: Color(0.35, 0.35, 0.35),
+# --- Web 版と同じ色言語 ---
+const COL_FLOOR := Color("1d150c")
+const COL_FLOOR_DARK := Color("150f09")
+const COL_WALL := Color("0b0805")
+const COL_WALL_EDGE := Color("3a3228")
+const COL_EXTERIOR := Color("11140d")
+const COL_ROCK := Color("241e16")
+const COL_BONE := Color("cbbfa6")
+const COL_EMBER := Color("e8943a")
+const COL_EMBER_BRIGHT := Color("ffb454")
+const COL_INK_FAINT := Color(0.353, 0.310, 0.251, 0.75)
+
+const STATE_COLORS := {
+	Goblin.State.COMBAT: Color("c0432e"),
+	Goblin.State.FEAR: Color("9a6bb0"),
+	Goblin.State.DYING: Color("7a4030"),
+	Goblin.State.HUNGRY: Color("c08a3a"),
+	Goblin.State.SLEEP: Color("4a6b8a"),
+	Goblin.State.WORK: Color("7a9a4e"),
+	Goblin.State.WANDER: Color("8a7d68"),
+	Goblin.State.ENRAGED: Color("ff5530"),
+	Goblin.State.KNOCKED_OUT: Color("6a4838"),
 }
+
+# --- 演出層の個体状態: id → {pos: Vector2, face: float} ---
+var _gmap: Dictionary = {}
+var _emap: Dictionary = {}
+
+# --- パーティクル: {kind,x,y,vx,vy,g,life,max_life,size,color,txt} ---
+var _particles: Array = []
+
+# --- 静的装飾 (terrain から一度だけ計算。terrain 変化で再計算) ---
+var _decor: Array = []
+var _terrain_hash: int = 0
 
 func _ready() -> void:
 	_font = ThemeDB.fallback_font
 
-func render(world: World) -> void:
+# ── メイン入口: 毎フレーム呼ぶ (tick が無いフレームも補間は進む) ──
+func render(world: World, delta: float, sim_speed: float) -> void:
 	_world = world
+	_sim_speed = sim_speed
+	_t += delta
+	var move_dt := delta if sim_speed > 0.0 else 0.0
+	_update_decor()
+	_update_units(move_dt)
+	_update_particles(move_dt * maxf(sim_speed, 1.0))
+	# 昼夜トーンは常に滑らかに追従 (停止中も見た目は保持)。
+	var target := 0.0 if world.is_day() else 1.0
+	_night = lerpf(_night, target, minf(1.0, delta * 1.5))
 	queue_redraw()
 
-func _get_texture(path: String) -> Texture2D:
-	if path == "":
-		return null
-	if _tex_cache.has(path):
-		return _tex_cache[path]
-	var tex: Texture2D = null
-	if ResourceLoader.exists(path):
-		tex = load(path) as Texture2D
-	_tex_cache[path] = tex
-	return tex
+## シムイベントを演出へ翻訳する (main が tick ごとに転送)。
+func on_event(e: Dictionary) -> void:
+	var t: String = e.get("t", "")
+	match t:
+		"death":
+			var at := _last_pos_of(int(e.get("id", -1)))
+			if at != Vector2.ZERO:
+				_burst(at, 5, {"kind": "bone", "speed": 22.0, "up": 16.0, "g": 70.0,
+					"life": 1.1, "size": 2.2, "color": COL_BONE})
+		"fledge":
+			var at2 := _last_pos_of(int(e.get("id", -1)))
+			if at2 != Vector2.ZERO:
+				_burst(at2, 4, {"speed": 14.0, "life": 0.8, "size": 1.0, "color": Color("8a7d68")})
+		"birth":
+			var at3 := _last_pos_of(int(e.get("mother", -1)))
+			if at3 != Vector2.ZERO:
+				_burst(at3, 6, {"speed": 16.0, "up": 8.0, "life": 0.9, "size": 1.2, "color": Color("9adb6e")})
+		"pregnant":
+			var at4 := _last_pos_of(int(e.get("id", -1)))
+			if at4 != Vector2.ZERO:
+				_spawn_p({"kind": "text", "txt": "♥", "color": Color("e8a0b8"),
+					"x": at4.x, "y": at4.y - 8.0, "vy": -12.0, "life": 1.4, "size": 8.0})
+		"surge":
+			var c := _tile_center(_world.map.totem)
+			_burst(c, 10, {"speed": 30.0, "life": 0.9, "size": 1.4, "color": Color("c0432e")})
 
+## クリック位置 (ワールド座標) から最寄りの生存ゴブリン id を返す (-1 = なし)。
+func pick(world: World, pos: Vector2) -> int:
+	var best := -1
+	var best_d := tile_size * 1.3
+	for g in world.goblins:
+		if g.state == Goblin.State.DEAD:
+			continue
+		var v: Dictionary = _gmap.get(g.id, {})
+		if v.is_empty():
+			continue
+		var d: float = (v.pos as Vector2).distance_to(pos)
+		if d < best_d:
+			best_d = d
+			best = g.id
+	return best
+
+# ════ 内部: 補間移動 ════
+func _update_units(dt: float) -> void:
+	if _world == null:
+		return
+	# ゴブリン。
+	var seen := {}
+	for g in _world.goblins:
+		seen[g.id] = true
+		var target := _tile_center(g.pos())
+		if not _gmap.has(g.id):
+			_gmap[g.id] = {"pos": target, "face": 1.0}
+			continue
+		var v: Dictionary = _gmap[g.id]
+		var cur: Vector2 = v.pos
+		if dt > 0.0:
+			var k := 1.0 - exp(-7.0 * dt * maxf(_sim_speed, 1.0))
+			var next := cur.lerp(target, k)
+			if absf(target.x - cur.x) > 0.5:
+				v.face = 1.0 if target.x > cur.x else -1.0
+			v.pos = next
+	# 巣から消えた個体 (死亡/巣立ち。イベント側で fx 済み) を演出層からも除く。
+	for id in _gmap.keys():
+		if not seen.has(id):
+			_gmap.erase(id)
+	# 敵。
+	var eseen := {}
+	for e in _world.enemies:
+		eseen[e.id] = true
+		var target := _tile_center(e.pos())
+		if not _emap.has(e.id):
+			_emap[e.id] = {"pos": target, "face": 1.0}
+			continue
+		var v2: Dictionary = _emap[e.id]
+		var cur2: Vector2 = v2.pos
+		if dt > 0.0:
+			var k2 := 1.0 - exp(-7.0 * dt * maxf(_sim_speed, 1.0))
+			v2.pos = cur2.lerp(target, k2)
+			if absf(target.x - cur2.x) > 0.5:
+				v2.face = 1.0 if target.x > cur2.x else -1.0
+	for id in _emap.keys():
+		if not eseen.has(id):
+			# 撃破された敵: 血色の破片。
+			var v3: Dictionary = _emap[id]
+			_burst(v3.pos, 4, {"speed": 26.0, "life": 0.5, "size": 1.2, "color": Color("c0432e")})
+			_emap.erase(id)
+
+func _last_pos_of(id: int) -> Vector2:
+	var v: Dictionary = _gmap.get(id, {})
+	if v.is_empty():
+		return Vector2.ZERO
+	return v.pos
+
+func _tile_center(t: Vector2i) -> Vector2:
+	return Vector2((t.x + 0.5) * tile_size, (t.y + 0.5) * tile_size)
+
+# ════ 内部: パーティクル ════
+func _spawn_p(o: Dictionary) -> void:
+	if _particles.size() > 300:
+		_particles = _particles.slice(40)
+	_particles.append({
+		"kind": o.get("kind", "dot"), "x": o.get("x", 0.0), "y": o.get("y", 0.0),
+		"vx": o.get("vx", 0.0), "vy": o.get("vy", 0.0), "g": o.get("g", 0.0),
+		"life": o.get("life", 1.0), "max_life": o.get("life", 1.0),
+		"size": o.get("size", 2.0), "color": o.get("color", COL_BONE),
+		"txt": o.get("txt", ""),
+	})
+
+func _burst(at: Vector2, n: int, opts: Dictionary) -> void:
+	for i in range(n):
+		var a := randf() * TAU
+		var sp: float = float(opts.get("speed", 24.0)) * (0.4 + randf() * 0.9)
+		var d := opts.duplicate()
+		d.x = at.x
+		d.y = at.y
+		d.vx = cos(a) * sp
+		d.vy = sin(a) * sp - float(opts.get("up", 0.0))
+		_spawn_p(d)
+
+func _update_particles(dt: float) -> void:
+	if dt <= 0.0:
+		return
+	for i in range(_particles.size() - 1, -1, -1):
+		var pt: Dictionary = _particles[i]
+		pt.life -= dt
+		if pt.life <= 0.0:
+			_particles.remove_at(i)
+			continue
+		pt.x += pt.vx * dt
+		pt.y += pt.vy * dt
+		pt.vy += pt.g * dt
+
+# ════ 内部: 静的装飾の事前計算 ════
+func _update_decor() -> void:
+	if _world == null:
+		return
+	var h := 0
+	for v in _world.map.terrain:
+		h = ((h * 31) + int(v)) & 0x7FFFFFFF
+	if h == _terrain_hash and not _decor.is_empty():
+		return
+	_terrain_hash = h
+	_decor.clear()
+	var m := _world.map
+	var ts := float(tile_size)
+	for y in range(m.height):
+		for x in range(m.width):
+			var t := m.get_tile(x, y)
+			var hh := GobNames.hash_id(x * 73856093 + y * 19349663)
+			var px := (x + 0.5) * ts
+			var py := (y + 0.5) * ts
+			match t:
+				TileMapData.TileType.FLOOR:
+					if hh % 100 < 24:  # 床の染み
+						_decor.append({"kind": "rect", "x": px - 2 + (hh % 5), "y": py - 2 + ((hh >> 4) % 5),
+							"w": 2.0, "h": 2.0, "color": Color(0.06, 0.04, 0.025, 0.8)})
+					elif hh % 100 < 30:  # 小石
+						_decor.append({"kind": "circle", "x": px + (hh % 7) - 3, "y": py + ((hh >> 5) % 7) - 3,
+							"r": 1.2, "color": Color(0.16, 0.13, 0.09)})
+				TileMapData.TileType.EXTERIOR:
+					if hh % 100 < 18:  # 外の草
+						_decor.append({"kind": "line", "x1": px, "y1": py + 3.0, "x2": px + float(hh % 5) - 2.0,
+							"y2": py - 3.0, "w": 1.0, "color": Color(0.13, 0.18, 0.10)})
+					elif hh % 100 < 23:
+						_decor.append({"kind": "circle", "x": px, "y": py, "r": 1.4, "color": Color(0.10, 0.10, 0.08)})
+				TileMapData.TileType.RESOURCE_NODE:
+					# 岩塊 + 金鉱脈のきらめき。
+					_decor.append({"kind": "circle", "x": px, "y": py, "r": ts * 0.34, "color": COL_ROCK})
+					_decor.append({"kind": "rect", "x": px - 2, "y": py - 2, "w": 2.0, "h": 2.0, "color": Color("e8c060")})
+					_decor.append({"kind": "rect", "x": px + 2, "y": py + 1, "w": 1.5, "h": 1.5, "color": Color("e8c060")})
+				TileMapData.TileType.STORAGE:
+					# キノコと骨の備蓄。
+					for k in range(3):
+						var mx := px + float(((hh >> (k * 3)) % 9)) - 4.0
+						var my := py + float(((hh >> (k * 3 + 2)) % 7)) - 3.0
+						_decor.append({"kind": "rect", "x": mx - 0.7, "y": my - 2.0, "w": 1.4, "h": 3.0, "color": Color("3a2d20")})
+						_decor.append({"kind": "circle", "x": mx, "y": my - 2.5, "r": 2.0,
+							"color": Color("9a5b3c") if k % 2 == 0 else Color("7a6f4e")})
+					_decor.append({"kind": "line", "x1": px - 4.0, "y1": py + 5.0, "x2": px + 3.0, "y2": py + 2.0,
+						"w": 1.2, "color": Color("8a8070")})
+				TileMapData.TileType.GATE:
+					# 巣口の骨の門柱。
+					_decor.append({"kind": "rect", "x": px - ts * 0.42, "y": py - ts * 0.45, "w": 2.2, "h": ts * 0.9, "color": COL_BONE * Color(1, 1, 1, 0.5)})
+					_decor.append({"kind": "rect", "x": px + ts * 0.28, "y": py - ts * 0.45, "w": 2.2, "h": ts * 0.9, "color": COL_BONE * Color(1, 1, 1, 0.5)})
+	# 部屋の装飾 + 名札。
+	for r in m.rooms:
+		var rx0: float = float(r.x)
+		var ry0: float = float(r.y)
+		var rw: float = float(r.w)
+		var rh0: float = float(r.h)
+		var cx: float = (rx0 + rw / 2.0) * ts
+		if r.room_type == TileMapData.RoomType.NEST:
+			for k in range(3):
+				var bh := GobNames.hash_id(700 + k * 37)
+				var bx: float = (rx0 + 0.7 + float(bh % (maxi(int(rw) - 1, 1) * 10)) / 10.0) * ts
+				var by: float = (ry0 + 0.7 + float((bh >> 6) % (maxi(int(rh0) - 1, 1) * 10)) / 10.0) * ts
+				_decor.append({"kind": "ellipse", "x": bx, "y": by, "rx": 6.5, "ry": 3.5, "color": Color("2c2010")})
+				for s in range(3):
+					_decor.append({"kind": "line", "x1": bx - 4.0 + s * 3.0, "y1": by + 2.0,
+						"x2": bx - 2.0 + s * 3.0, "y2": by - 2.5, "w": 0.8, "color": Color("4a3a1c")})
+			_decor.append({"kind": "text", "x": cx, "y": ry0 * ts - 2.0, "txt": "寝床", "color": COL_INK_FAINT})
+		elif r.room_type == TileMapData.RoomType.RAT_RANCH:
+			for k in range(2):
+				var rh := GobNames.hash_id(900 + k * 53)
+				var ratx: float = (rx0 + 0.8 + float(rh % (maxi(int(rw) - 1, 1) * 10)) / 10.0) * ts
+				var raty: float = (ry0 + 0.8 + float((rh >> 5) % (maxi(int(rh0) - 1, 1) * 10)) / 10.0) * ts
+				_decor.append({"kind": "ellipse", "x": ratx, "y": raty, "rx": 2.6, "ry": 1.6, "color": Color("4a3b2a")})
+				_decor.append({"kind": "line", "x1": ratx + 2.4, "y1": raty, "x2": ratx + 5.0, "y2": raty - 1.0, "w": 0.7, "color": Color("4a3b2a")})
+			_decor.append({"kind": "text", "x": cx, "y": ry0 * ts - 2.0, "txt": "ネズミ牧場", "color": COL_INK_FAINT})
+	# 名札: 集積所・トーテム。
+	_decor.append({"kind": "text", "x": (m.storage.x + 0.5) * ts, "y": (m.storage.y as float) * ts - 2.0, "txt": "食料庫", "color": COL_INK_FAINT})
+	_decor.append({"kind": "text", "x": (m.totem.x + 0.5) * ts, "y": (m.totem.y - 1.2) * ts, "txt": "トーテム", "color": COL_INK_FAINT})
+
+# ════ 描画 ════
 func _draw() -> void:
 	if _world == null:
 		return
 	var m := _world.map
+	var ts := float(tile_size)
+
 	# --- タイル ---
 	for y in range(m.height):
 		for x in range(m.width):
 			var t := m.terrain[m.idx(x, y)]
-			var rect := Rect2(x * tile_size, y * tile_size, tile_size, tile_size)
-			var tex := _get_texture(tile_textures.get(t, ""))
-			if tex != null:
-				draw_texture_rect(tex, rect, false)
-			else:
-				draw_rect(rect, TILE_COLORS.get(t, Color.MAGENTA), true)
-				# 壁の耐久を暗さで表現。
-				if t == TileMapData.TileType.WALL:
-					pass
-			# グリッド線 (薄く)。
-			draw_rect(rect, Color(0, 0, 0, 0.08), false, 1.0)
+			var rect := Rect2(x * ts, y * ts, ts, ts)
+			match t:
+				TileMapData.TileType.WALL:
+					draw_rect(rect, COL_WALL, true)
+					# 立体感: 下が歩行可なら南面に明るい縁 (壁の高さ)。
+					if m.is_walkable(x, y + 1):
+						draw_rect(Rect2(x * ts, y * ts + ts - 3.0, ts, 3.0), COL_WALL_EDGE, true)
+				TileMapData.TileType.EXTERIOR:
+					draw_rect(rect, COL_EXTERIOR, true)
+				TileMapData.TileType.TOTEM:
+					draw_rect(rect, COL_FLOOR_DARK, true)
+				_:
+					# 床系: ハッシュでわずかに明暗を散らし岩肌に。
+					var hh := GobNames.hash_id(x * 73856093 + y * 19349663)
+					var base := COL_FLOOR.lerp(COL_FLOOR_DARK, float(hh % 100) / 250.0)
+					draw_rect(rect, base, true)
 
-	# トーテム強調 + ラベル。
-	_label(m.totem, "核", Color.WHITE)
+	# --- 静的装飾 ---
+	for d in _decor:
+		_draw_decor(d)
 
-	# --- 敵 ---
-	var etex := _get_texture(enemy_texture_path)
+	# --- トーテム像 + 炎 ---
+	_draw_totem(m)
+
+	# --- 敵 (補間位置) ---
 	for e in _world.enemies:
-		var c := Vector2(e.x * tile_size + tile_size / 2.0, e.y * tile_size + tile_size / 2.0)
-		if etex != null:
-			draw_texture(etex, c - etex.get_size() / 2.0)
-		else:
-			draw_circle(c, tile_size * 0.4, Color(0.85, 0.15, 0.15))
-			_label_at(c, "X", Color.WHITE)
+		var v: Dictionary = _emap.get(e.id, {})
+		if v.is_empty():
+			continue
+		_draw_enemy(v.pos as Vector2, e, float(v.face))
 
-	# --- ゴブリン ---
-	var gtex := _get_texture(goblin_texture_path)
+	# --- ゴブリン (y ソートで擬似奥行き) ---
+	var order: Array = []
 	for g in _world.goblins:
 		if g.state == Goblin.State.DEAD:
 			continue
-		var c := Vector2(g.x * tile_size + tile_size / 2.0, g.y * tile_size + tile_size / 2.0)
-		if gtex != null:
-			draw_texture(gtex, c - gtex.get_size() / 2.0)
-		else:
-			var col := _state_color(g)
-			var r := tile_size * (0.45 if g.is_unique else 0.32)
-			draw_circle(c, r, col)
-			# 雌は縁取りで区別。
-			if g.sex == Goblin.Sex.FEMALE:
-				draw_arc(c, r, 0, TAU, 12, Color.WHITE, 1.5)
-		# HP バー。
-		var frac: float = clampf(g.hp / g.max_hp, 0.0, 1.0)
-		var bar := Rect2(c.x - tile_size * 0.4, c.y - tile_size * 0.6, tile_size * 0.8 * frac, 2.0)
-		draw_rect(bar, Color.GREEN if frac > 0.4 else Color.RED, true)
+		if _gmap.has(g.id):
+			order.append(g)
+	order.sort_custom(func(a, b): return (_gmap[a.id].pos as Vector2).y < (_gmap[b.id].pos as Vector2).y)
+	for g in order:
+		var v2: Dictionary = _gmap[g.id]
+		_draw_goblin(v2.pos as Vector2, g, float(v2.face))
 
-func _state_color(g: Goblin) -> Color:
-	# 緊急度: 戦闘/恐怖/瀕死=赤、空腹/睡眠=黄、平常=緑 (§4-1 ミニカードと整合)。
-	match g.state:
-		Goblin.State.COMBAT, Goblin.State.FEAR, Goblin.State.DYING, Goblin.State.KNOCKED_OUT:
-			return Color(0.90, 0.25, 0.20)
-		Goblin.State.HUNGRY, Goblin.State.SLEEP:
-			return Color(0.90, 0.80, 0.20)
-		_:
-			return Color(0.30, 0.75, 0.35)
+	# --- パーティクル ---
+	for pt in _particles:
+		_draw_particle(pt)
 
-func _label(tile: Vector2i, text: String, col: Color) -> void:
-	var c := Vector2(tile.x * tile_size + tile_size / 2.0, tile.y * tile_size + tile_size / 2.0)
-	_label_at(c, text, col)
+	# --- 昼夜トーン (夜は青く沈む) ---
+	if _night > 0.02:
+		draw_rect(Rect2(0, 0, m.width * ts, m.height * ts), Color(0.03, 0.055, 0.125, _night * 0.38), true)
 
-func _label_at(c: Vector2, text: String, col: Color) -> void:
-	if _font == null:
+	# --- 交戦ヴィネット ---
+	if _world.phase == World.Phase.COMBAT:
+		var wpx := m.width * ts
+		var hpx := m.height * ts
+		var a := 0.07 + 0.03 * sin(_t * 4.0)
+		var red := Color(0.75, 0.26, 0.18, a)
+		draw_rect(Rect2(0, 0, wpx, 6), red, true)
+		draw_rect(Rect2(0, hpx - 6, wpx, 6), red, true)
+		draw_rect(Rect2(0, 0, 6, hpx), red, true)
+		draw_rect(Rect2(wpx - 6, 0, 6, hpx), red, true)
+
+	# --- 選択中の個体 ---
+	if selected_id >= 0 and _gmap.has(selected_id):
+		var g3 := _find_goblin(selected_id)
+		if g3 != null:
+			var pos: Vector2 = _gmap[selected_id].pos
+			draw_arc(pos, ts * 0.55 + sin(_t * 5.0) * 1.2, 0, TAU, 24, Color("e8dcc8"), 1.0)
+			if _font != null:
+				var nm := GobNames.of(g3)
+				draw_string(_font, pos + Vector2(-30, -ts * 0.8), nm,
+					HORIZONTAL_ALIGNMENT_CENTER, 60, 9, Color("e8dcc8"))
+
+func _find_goblin(id: int) -> Goblin:
+	for g in _world.goblins:
+		if g.id == id:
+			return g
+	return null
+
+func _draw_decor(d: Dictionary) -> void:
+	match d.kind:
+		"rect":
+			draw_rect(Rect2(d.x, d.y, d.w, d.h), d.color, true)
+		"circle":
+			draw_circle(Vector2(d.x, d.y), d.r, d.color)
+		"ellipse":
+			# 楕円: スケールした円弧で代用 (draw_set_transform)。
+			draw_set_transform(Vector2(d.x, d.y), 0.0, Vector2(1.0, float(d.ry) / float(d.rx)))
+			draw_circle(Vector2.ZERO, d.rx, d.color)
+			draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+		"line":
+			draw_line(Vector2(d.x1, d.y1), Vector2(d.x2, d.y2), d.color, d.w)
+		"text":
+			if _font != null:
+				draw_string(_font, Vector2(d.x - 30.0, d.y), d.txt,
+					HORIZONTAL_ALIGNMENT_CENTER, 60, 8, d.color)
+
+func _draw_totem(m: TileMapData) -> void:
+	var c := _tile_center(m.totem)
+	var ts := float(tile_size)
+	# 影 + 柱 + 笠 + 彫られた目。
+	_ellipse(c + Vector2(0, ts * 0.4), ts * 0.5, ts * 0.16, Color(0, 0, 0, 0.4))
+	draw_rect(Rect2(c.x - 3.5, c.y - 14.0, 7.0, 18.0), Color("3a2a18"), true)
+	draw_rect(Rect2(c.x - 5.5, c.y - 17.0, 11.0, 4.0), Color("241a0e"), true)
+	draw_rect(Rect2(c.x - 2.5, c.y - 10.0, 2.0, 2.0), COL_EMBER, true)
+	draw_rect(Rect2(c.x + 0.5, c.y - 10.0, 2.0, 2.0), COL_EMBER, true)
+	# 炎: 揺らめく舌 + グロー (夜は強く)。
+	var fy := c.y - 20.0
+	var flick := 0.7 + 0.3 * sin(_t * 9.7) * sin(_t * 5.3)
+	var glow_r := 26.0 + 16.0 * flick + _night * 14.0
+	for i in range(3):
+		var rr := glow_r * (1.0 - i * 0.3)
+		draw_circle(Vector2(c.x, fy), rr, Color(0.91, 0.58, 0.22, 0.05 + i * 0.03 + _night * 0.02))
+	var sway := sin(_t * 13.0) * 1.6
+	var pts := PackedVector2Array([
+		Vector2(c.x - 3.0, fy + 4.0),
+		Vector2(c.x - 4.0, fy - 4.0 * flick),
+		Vector2(c.x + sway, fy - 9.0 * flick),
+		Vector2(c.x + 4.0, fy - 4.0 * flick),
+		Vector2(c.x + 3.0, fy + 4.0),
+	])
+	draw_colored_polygon(pts, COL_EMBER_BRIGHT)
+	_ellipse(Vector2(c.x, fy + 1.0), 1.6, 3.0 * flick, Color("ffe0a0"))
+	# 火の粉。
+	if randf() < 0.08:
+		_spawn_p({"x": c.x + randf_range(-2, 2), "y": fy, "vx": randf_range(-4, 4),
+			"vy": -randf_range(10, 22), "g": -6.0, "life": randf_range(0.8, 1.8), "size": 1.0,
+			"color": COL_EMBER_BRIGHT if randf() < 0.5 else COL_EMBER})
+
+func _ellipse(at: Vector2, rx: float, ry: float, col: Color) -> void:
+	if rx <= 0.0:
 		return
-	draw_string(_font, c + Vector2(-tile_size * 0.3, tile_size * 0.3), text,
-		HORIZONTAL_ALIGNMENT_CENTER, -1, 10, col)
+	draw_set_transform(at, 0.0, Vector2(1.0, ry / rx))
+	draw_circle(Vector2.ZERO, rx, col)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+# ── ゴブリンスプライト (Web 版 drawGoblin の移植) ──
+func _draw_goblin(pos: Vector2, g: Goblin, face: float) -> void:
+	var state_col: Color = STATE_COLORS.get(g.state, Color("8a7d68"))
+	var is_chief := g.role == Goblin.Role.CHIEF
+	var ph := float(GobNames.hash_id(g.id) % 628) / 100.0
+	var r := 6.0 if is_chief else (3.2 if g.is_child() else 4.6)
+	var sleeping := g.state == Goblin.State.SLEEP or g.state == Goblin.State.DYING \
+		or g.state == Goblin.State.KNOCKED_OUT
+	var moving := _sim_speed > 0.0 and g.state != Goblin.State.SLEEP
+	var bob := 0.0 if sleeping else sin(_t * (11.0 if moving else 2.2) + ph) * r * 0.14
+	var x := pos.x
+	var by := pos.y - bob
+
+	# 影
+	_ellipse(Vector2(x, pos.y + r * 0.95), r * 0.95, r * 0.3, Color(0, 0, 0, 0.4))
+	# 微光
+	var pulse := 0.7 + 0.3 * sin(_t * 3.0 + ph)
+	draw_circle(Vector2(x, by), r * 2.2, Color(state_col.r, state_col.g, state_col.b, 0.08))
+	# 耳
+	var ear_y := by - r * 0.5
+	var ear_col := state_col
+	draw_colored_polygon(PackedVector2Array([
+		Vector2(x - r * 0.5, ear_y), Vector2(x - r * 1.7, ear_y - r * 0.9), Vector2(x - r * 0.25, ear_y - r * 0.55),
+	]), ear_col)
+	draw_colored_polygon(PackedVector2Array([
+		Vector2(x + r * 0.5, ear_y), Vector2(x + r * 1.7, ear_y - r * 0.9), Vector2(x + r * 0.25, ear_y - r * 0.55),
+	]), ear_col)
+	# 体 (寝ているときは横たわる)
+	if sleeping and g.state != Goblin.State.HUNGRY:
+		_ellipse(Vector2(x, by + r * 0.25), r * 1.15, r * 0.75, state_col)
+	else:
+		_ellipse(Vector2(x, by), r * 0.95, r * 1.1, state_col)
+	# 腹の明るみ (雌はやや明るい)
+	var belly_a := 0.22 if g.sex == Goblin.Sex.FEMALE else 0.10
+	_ellipse(Vector2(x, by + r * 0.3), r * 0.5, r * 0.55, Color(0.91, 0.86, 0.78, belly_a))
+	# 目
+	var eo := face * r * 0.28
+	if sleeping:
+		draw_line(Vector2(x - r * 0.42 + eo, by - r * 0.25), Vector2(x - r * 0.1 + eo, by - r * 0.25), Color("0a0908"), 1.0)
+		draw_line(Vector2(x + r * 0.1 + eo, by - r * 0.25), Vector2(x + r * 0.42 + eo, by - r * 0.25), Color("0a0908"), 1.0)
+	else:
+		var eye_col := Color("ffd0a0") if g.state == Goblin.State.ENRAGED else Color("f5ecd8")
+		draw_circle(Vector2(x - r * 0.3 + eo, by - r * 0.25), r * 0.22, eye_col)
+		draw_circle(Vector2(x + r * 0.3 + eo, by - r * 0.25), r * 0.22, eye_col)
+		draw_circle(Vector2(x - r * 0.3 + eo * 1.3, by - r * 0.25), r * 0.1, Color("16100a"))
+		draw_circle(Vector2(x + r * 0.3 + eo * 1.3, by - r * 0.25), r * 0.1, Color("16100a"))
+	# 得物
+	if g.state == Goblin.State.COMBAT or g.state == Goblin.State.ENRAGED:
+		var swing := sin(_t * 12.0 + ph) * 0.7
+		draw_line(Vector2(x + face * r * 0.8, by),
+			Vector2(x + face * r * (1.9 + swing * 0.3), by - r * (1.1 + swing)), Color("6a4a28"), 1.6)
+	elif g.state == Goblin.State.WORK and not is_chief:
+		var swing2 := sin(_t * 9.0 + ph)
+		draw_line(Vector2(x + face * r * 0.7, by + r * 0.2),
+			Vector2(x + face * r * 1.8, by - r * (0.8 + swing2 * 0.5)), Color("7a6a50"), 1.3)
+		if swing2 < -0.85 and randf() < 0.25:
+			_burst(Vector2(x + face * r * 2.0, pos.y + r * 0.5), 2,
+				{"speed": 18.0, "up": 14.0, "g": 90.0, "life": 0.5, "size": 1.1, "color": Color("8a7a60")})
+	# 族長の骨冠 + 炎の輪
+	if is_chief:
+		for k in range(-1, 2):
+			var kx := x + k * r * 0.5
+			draw_colored_polygon(PackedVector2Array([
+				Vector2(kx - 1.4, by - r * 1.0), Vector2(kx, by - r * 1.65), Vector2(kx + 1.4, by - r * 1.0),
+			]), Color("e8c060"))
+		draw_arc(Vector2(x, by), r + 3.4, 0, TAU, 20, Color(1.0, 0.71, 0.33, 0.35 + pulse * 0.3), 1.2)
+	# HP の弧 (低 HP のみ)
+	var frac := clampf(g.hp / g.max_hp, 0.0, 1.0)
+	if frac < 0.4:
+		draw_arc(Vector2(x, by), r + 1.8, -PI * 0.5, -PI * 0.5 + TAU * frac, 16, Color("c0432e"), 1.5)
+	# ステートの吐息 (粒子)
+	if _sim_speed > 0.0:
+		if g.state == Goblin.State.SLEEP and randf() < 0.012:
+			_spawn_p({"kind": "text", "txt": "z", "color": Color("7a9ab8"),
+				"x": x + r, "y": by - r, "vx": 6.0, "vy": -10.0, "life": 1.6, "size": 8.0})
+		elif g.state == Goblin.State.FEAR and randf() < 0.02:
+			_spawn_p({"color": Color("9ab8d8"), "x": x - face * r * 0.6, "y": by - r * 0.6,
+				"vx": -face * 8.0, "vy": -6.0, "g": 60.0, "life": 0.6, "size": 1.2})
+		elif g.state == Goblin.State.HUNGRY and randf() < 0.02:
+			_spawn_p({"color": Color("a8842a"), "x": x + randf_range(-r, r), "y": by + r * 0.4,
+				"vx": randf_range(-6, 6), "vy": 8.0, "g": 40.0, "life": 0.5, "size": 1.0})
+
+# ── 敵スプライト (槍持ちのミニ人型) ──
+func _draw_enemy(pos: Vector2, e: EnemyUnit, face: float) -> void:
+	var bob := sin(_t * 6.0 + float(e.id)) * 0.8
+	var col := Color("b85a40") if e.is_human else Color("9a5838")
+	_ellipse(pos + Vector2(0, 4), 3.0, 1.1, Color(0, 0, 0, 0.35))
+	_ellipse(pos + Vector2(0, bob), 2.6, 3.4, col)
+	draw_circle(pos + Vector2(0, -4 + bob), 1.8, Color("d8b090") if e.is_human else col)
+	draw_line(pos + Vector2(face * 3.0, 3.0 + bob), pos + Vector2(face * 5.5, -7.0 + bob), COL_BONE, 0.9)
+	# HP バー (削れているときのみ)
+	var frac := clampf(e.hp / e.max_hp, 0.0, 1.0)
+	if frac < 0.999:
+		draw_rect(Rect2(pos.x - 4.0, pos.y - 8.0, 8.0 * frac, 1.5), Color("c0432e"), true)
+
+func _draw_particle(pt: Dictionary) -> void:
+	var a := clampf(float(pt.life) / float(pt.max_life), 0.0, 1.0)
+	var col: Color = pt.color
+	col.a *= a
+	match pt.kind:
+		"text":
+			if _font != null:
+				draw_string(_font, Vector2(pt.x, pt.y), pt.txt,
+					HORIZONTAL_ALIGNMENT_LEFT, -1, int(pt.size), col)
+		"bone":
+			draw_line(Vector2(pt.x - pt.size, pt.y + pt.size), Vector2(pt.x + pt.size, pt.y - pt.size), col, 1.2)
+			draw_circle(Vector2(pt.x - pt.size, pt.y + pt.size), 1.0, col)
+		_:
+			draw_circle(Vector2(pt.x, pt.y), float(pt.size) * (0.5 + a * 0.5), col)
