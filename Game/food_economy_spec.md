@@ -1,5 +1,11 @@
 # 食料経済の再設計 仕様書（Godot 版 / Game/ 限定）
 
+> **改訂 (2026-06)**: 食事は即時化された（HUNGRY で集積所到着 → `hunger=0`、在庫は
+> `food_per_meal=2.2` を一括消費）。`hunger_rate` は `1/1.2` 日（満腹→空腹MAXが1.2日）へ
+> 変更。需要 ≈ 1.19 食/日 × 2.2 ≈ 2.6 food/体/日 で、本仕様の収支均衡は維持される。
+> 本文 §2 の `food_eat_amount` / `hunger_relieve` 関連の記述は旧仕様（per-tick 漸次回復）
+> を前提にしており現状と一致しない。
+
 対象: `Game/scripts/sim/`（Godot 4.6 / GDScript）。TS コア（`src/sim/`）には食料力学が
 無いため**今回は触らない**。実装者（Codex）はこの仕様に沿って `params.gd` / `world.gd` /
 `state_machine.gd` を変更する。GDD/`game_spec_v1.md` §3-11・§2.5、`Game/README.md`、

@@ -258,7 +258,8 @@ func _step_goblins() -> void:
 		var hunger_before: float = g.hunger
 		StateMachine.step(g, ctx, params)
 		if ctx.food_available and g.state == Goblin.State.HUNGRY and g.hunger < hunger_before:
-			food = max(0.0, food - params.food_eat_amount)
+			# 食事 1 回ぶん一括消費 (即時満腹に対応)。
+			food = max(0.0, food - params.food_per_meal)
 
 		if g.state == Goblin.State.DEAD or g.state == Goblin.State.KNOCKED_OUT:
 			continue

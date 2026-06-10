@@ -9,6 +9,7 @@ func _init() -> void:
 	ok = _test_active_rancher_accounting() and ok
 	ok = _test_starvation_progression() and ok
 	ok = _test_relief_gate() and ok
+	ok = _test_instant_meal() and ok
 	ok = _test_snapshot_roundtrip() and ok
 	if ok:
 		print("FOOD_OK")
@@ -153,6 +154,51 @@ func _test_relief_gate() -> bool:
 		print("  FAIL: passive food spawn mismatch (got %.4f, expected %.4f)" % [w.food, expected])
 		return false
 	print("  relief-gate: OK")
+	return true
+
+## ⑥ 食事は即時かつ一括消費 (集積所到着 tick で hunger=0、在庫は food_per_meal だけ減る)。
+func _test_instant_meal() -> bool:
+	var p := SimParams.new()
+	var w := World.new()
+	w.setup(p)
+
+	# 牧場の割当を空にして稼働ゼロにする (生産経路を完全に遮断)。
+	for r in w.map.rooms:
+		if r.room_type == TileMapData.RoomType.RAT_RANCH:
+			r.assigned = []
+
+	# 対象として、ユニーク以外の1体を選ぶ。それ以外は空腹を解除して
+	# 同 tick に食事させない (在庫の差分を対象 1 体ぶんに限定する)。
+	var target: Goblin = null
+	for g in w.goblins:
+		if not g.is_unique:
+			if target == null:
+				target = g
+				continue
+			g.hunger = 0.0
+			g.hunger_latched = false
+
+	if target == null:
+		print("  FAIL: no non-unique goblin to test instant meal on")
+		return false
+
+	target.hunger = 1.0
+	target.hunger_latched = true
+	w._place(target, w._eat_slot(target.id))
+
+	# 在庫が生存頭数を上回るようにし、消費後もパン虫の自然湧きが発生しないようにする。
+	w.food = 20.0
+	var before := w.food
+	w._step_goblins()
+
+	if target.hunger != 0.0:
+		print("  FAIL: hunger did not become 0 on instant meal (got %.4f)" % target.hunger)
+		return false
+	var expected := before - p.food_per_meal
+	if absf(w.food - expected) > 1e-6:
+		print("  FAIL: food consumption mismatch (got %.4f, expected %.4f)" % [w.food, expected])
+		return false
+	print("  instant-meal: OK")
 	return true
 
 ## ⑤ 食料・飢餓・牧場割当を含むスナップショット往復が一致する。
