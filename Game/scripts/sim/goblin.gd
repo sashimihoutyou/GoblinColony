@@ -67,6 +67,9 @@ var target_y: int = -1
 var path: Array = []           # Array[Vector2i] A* 計算済みパス
 var equipped: bool = false     # §3-16 装備済み
 
+# 死亡イベントの二重記録防止 (同一 tick 内のみ有効。スナップショット対象外)。
+var death_logged: bool = false
+
 func pos() -> Vector2i:
 	return Vector2i(x, y)
 
