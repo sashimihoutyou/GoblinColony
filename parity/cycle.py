@@ -57,7 +57,7 @@ def simulate_raid(enemies, fighters, faith, p, allow_aoe=False):
     return max(g, 0.0), max(e, 0.0), casts, faith
 
 
-def run_campaign(p, days=30):
+def run_campaign(p, days=30, on_day=None):
     RI = p["RAID_INTERVAL"]
     thr = p["RANK_THRESHOLDS"]
     pop = float(p["START_GOBLINS"])
@@ -226,6 +226,28 @@ def run_campaign(p, days=30):
                     surge = min(p["SURGE_MAX"], surge + loss_frac * p["SURGE_GAIN"])
             pop_min = min(pop_min, pop)
             pop_max = max(pop_max, pop)
+        if on_day is not None:
+            # TS 側の SimState (src/sim/cycle.ts) と同じフィールド名 (camelCase) で
+            # 1 日分の全数値状態を渡す。照合ハーネス (parity/compare.mjs) が使用する。
+            on_day(
+                {
+                    "day": day,
+                    "pop": pop,
+                    "capPop": cap_pop,
+                    "faith": faith,
+                    "cum": cum,
+                    "surge": surge,
+                    "foodBuff": food_buff,
+                    "captives": captives,
+                    "humanCaptives": human_captives,
+                    "fledgeTotal": fledge_total,
+                    "popMin": pop_min,
+                    "popMax": pop_max,
+                    "rng": rng.snapshot(),
+                    "finalWin": final_win,
+                    "cond2": list(cond2),
+                }
+            )
     return {
         "finalWin": final_win,
         "cond2": cond2,
@@ -262,25 +284,53 @@ base = {
 }
 
 
-def scenarios():
-    """照合シナリオ集 (TS と同一セットを走らせる)。"""
-    out = {}
+def scenario_param_list():
+    """照合シナリオの (名前, params, days) 一覧 (TS と同一セットを走らせる)。
+
+    scenarios() / trace_scenarios() の双方がこれを参照することで、
+    シナリオ定義の重複によるズレを防ぐ。
+    """
+    out = []
     # A: 詳細ログ相当 (ratio, spend, siege=2, release, mixed)
     a = dict(base)
     a["SHAMAN_MODE"] = "ratio"; a["SIEGE_INTERVAL"] = 2
     a["RELEASE_MODE"] = "release"; a["CAPTIVE_STRATEGY"] = "mixed"
-    out["A_detail"] = run_campaign(a, days=a["FINAL_DAY"])
+    out.append(("A_detail", a, a["FINAL_DAY"]))
     # B: 既定 (max, none, nursery) 複数シード
     for seed in range(4):
         b = dict(base); b["SEED"] = seed
-        out[f"B_base_s{seed}"] = run_campaign(b, days=30)
+        out.append((f"B_base_s{seed}", b, 30))
     # C: nursery release ratio
     for seed in range(4):
         c = dict(base); c["SHAMAN_MODE"] = "ratio"; c["RELEASE_MODE"] = "release"
         c["SIEGE_INTERVAL"] = 2; c["SEED"] = seed
-        out[f"C_rel_s{seed}"] = run_campaign(c, days=30)
+        out.append((f"C_rel_s{seed}", c, 30))
+    return out
+
+
+def scenarios():
+    """照合シナリオ集 (TS と同一セットを走らせる)。"""
+    out = {}
+    for name, p, days in scenario_param_list():
+        out[name] = run_campaign(p, days=days)
+    return out
+
+
+def trace_scenarios():
+    """各シナリオの日次 state トレース (parity/compare.mjs 用)。
+
+    cycle_ts.ts と同じキー (シナリオ名) ・同じ形 (日次 SimState の配列) を返す。
+    """
+    out = {}
+    for name, p, days in scenario_param_list():
+        trace = []
+        run_campaign(p, days=days, on_day=trace.append)
+        out[name] = trace
     return out
 
 
 if __name__ == "__main__":
-    print(json.dumps(scenarios(), ensure_ascii=False))
+    if "--trace" in sys.argv:
+        print(json.dumps(trace_scenarios(), ensure_ascii=False))
+    else:
+        print(json.dumps(scenarios(), ensure_ascii=False))

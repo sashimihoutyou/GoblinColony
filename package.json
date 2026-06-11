@@ -11,6 +11,7 @@
     "test:tickdriver": "node --experimental-transform-types parity/tick_driver_test.ts",
     "test:timescale": "node --experimental-transform-types parity/timescale_test.ts",
     "test:world": "node --experimental-transform-types parity/world_test.ts",
+    "parity:check": "node parity/compare.mjs",
     "build": "node build_dashboard.mjs viz/goblin_colony_dashboard.html"
   },
   "devDependencies": {
