@@ -288,6 +288,7 @@ func _step_goblins() -> void:
 	for g in goblins:
 		if g.state == Goblin.State.DEAD:
 			continue
+		var state_before: int = g.state
 		var ctx := StateMachine.Context.new()
 		ctx.in_raid = in_raid
 		ctx.enemy_nearby = _enemy_near(g.pos(), 4)
@@ -314,7 +315,10 @@ func _step_goblins() -> void:
 
 		if g.state == Goblin.State.DEAD or g.state == Goblin.State.KNOCKED_OUT:
 			continue
-		var target := _movement_target(g, in_raid)
+		# WANDER への新規遷移か (食事後・起床後・戦闘解除後など)。前ステートの
+		# 残存パスを引き継がず、即座に新しい放浪先を引かせる (世話なし放置防止)。
+		var entered_wander: bool = g.state == Goblin.State.WANDER and state_before != Goblin.State.WANDER
+		var target := _movement_target(g, in_raid, entered_wander)
 		if target != Vector2i(-1, -1):
 			_advance_along_path(g, target, _move_speed(g))
 
@@ -333,7 +337,7 @@ func _move_speed(g: Goblin) -> float:
 # ステートに応じた移動目標 (§3-0 対応表)。
 # 同じ部屋へ向かう個体が 1 タイルに積み重ならないよう、id ハッシュで
 # 部屋内の床スロットへ決定的に散らす (rng 不使用 = 消費順序を乱さない)。
-func _movement_target(g: Goblin, in_raid: bool) -> Vector2i:
+func _movement_target(g: Goblin, in_raid: bool, entered_wander: bool = false) -> Vector2i:
 	# 防衛召集: 交戦中、戦線割り当ての個体は大広間 (トーテム) に集結して迎え撃ち、
 	# 視界内 (8 タイル) に踏み込んだ敵にだけ向かっていく。敵まで個別に駆けつけると
 	# 広い洞窟では各個撃破される (細い坑道へ 1 体ずつ吸い込まれて数の利を失う)。
@@ -383,6 +387,11 @@ func _movement_target(g: Goblin, in_raid: bool) -> Vector2i:
 		Goblin.State.WORK:
 			return _work_target(g)
 		Goblin.State.WANDER:
+			# WANDER への新規遷移 (食事後・起床後・戦闘解除後など): 前ステートの
+			# 残存パスを引き継がず、即座に新しい放浪先を引く (確率抽選を待たない。
+			# rng.next_float() は消費せず _random_nest_floor() の next_int へ直行)。
+			if entered_wander:
+				return _random_nest_floor()
 			# 移動中は続行、着いたらたまに次の行き先を引く (うろつき)。
 			if not g.path.is_empty():
 				return Vector2i(g.target_x, g.target_y)
