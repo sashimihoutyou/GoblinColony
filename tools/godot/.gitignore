@@ -1,0 +1,3 @@
+# 展開済みバイナリはコミットしない (133MB は GitHub の 100MB 制限超過)。
+# zip と setup.sh だけをリポジトリに含める。
+Godot_v4.6-stable_linux.x86_64

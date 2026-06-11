@@ -70,6 +70,10 @@ godot --headless --path Game --script res://scripts/test_scene_smoke.gd  # SCENE
 godot --headless --path Game --script res://scripts/test_seeds.gd        # 多シード勝率 (手動・数分)
 ```
 
+`godot` が無い環境 (Claude Code リモート実行等) では同梱バイナリを使う:
+`tools/godot/setup.sh` で展開し、`tools/godot/Godot_v4.6-stable_linux.x86_64` を
+`godot` の代わりに実行する (Linux x86_64 / 4.6-stable。zip 同梱・展開物は gitignore)。
+
 詳細は `Game/README.md`。**シム (scripts/sim/) と演出 (scripts/render/) の分離は TS 側と同じ規律**
 （補間位置・パーティクル・名前は描画層ローカル。シム状態に書き込まない / KI-09）。
 
