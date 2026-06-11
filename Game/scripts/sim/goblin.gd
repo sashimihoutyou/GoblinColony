@@ -19,7 +19,7 @@ enum State {
 	KNOCKED_OUT = 10,  # §3-21 HP0 で倒れたユニーク
 }
 
-enum Role { NONE = 0, SHAMAN = 1, CHIEF = 2, WITCH_DOCTOR = 3, NURSERY_HOST = 4, CONCUBINE = 5 }
+enum Role { NONE = 0, SHAMAN = 1, CHIEF = 2, WITCH_DOCTOR = 3, NURSERY_HOST = 4, CONCUBINE = 5, GUARD = 6 }
 enum Sex { MALE = 0, FEMALE = 1 }
 enum Origin { FOUNDER = 0, BORN = 1, NURSERY = 2, SUMMONED = 3, CAPTIVE_JOINED = 4, CONCUBINE = 5 }
 
@@ -37,21 +37,36 @@ var fear_hp_bias: float = 0.0
 var hunger_bias: float = 0.0
 var work_bias: float = 0.0
 var forage_bias: float = 0.0
+var clumsy: float = 0.5    # ドジ度 0..1 (転倒・事故死のロール係数)
+var temper: float = 0.5    # 気性の荒さ 0..1 (ケンカの発火条件)
 
 # ヒステリシス (KI-09: 必ず保存)
 var hunger_latched: bool = false
 var sleep_latched: bool = false
+# その夜すでに寝てゲージを抜いたか (§5)。夜入りで毎回 false にリセットし、
+# sleep_off まで抜けて起きたら true にする (同じ夜に再ラッチしない)。
+var night_sleep_done: bool = false
 
 # 増殖 (§2.5)
 var pregnant: bool = false
 var pregnant_ticks: int = 0
 var mate_id: int = -1
 var bereaved: bool = false
+# 求愛ランデブー (§3-6): 雌が雄を寝床に誘い、寝床で合流して初めて妊娠が成立する。
+# courting_id は雌雄両方に相手 id を相互設定する (-1 = 非求愛)。court_ticks は
+# タイムアウト用の経過 tick (雌側でカウント)。
+var courting_id: int = -1
+var court_ticks: int = 0
 
 var is_unique: bool = false
 var downed_ticks: int = -1     # -1 = 倒れていない
 var fear_safe_ticks: int = 0
 var child_born_tick: int = -1  # -1 = 成体
+var quarrel_cd: int = 0        # ケンカのクールダウン (tick。0 で発火可)
+
+# 仕事フラグ (§3-11)
+var carrying_food: bool = false  # T4 採集: キノコを摘んで集積所へ運搬中か
+var guard_gate: int = -1         # T5 見張り: 担当巣口 index (-1 = 見張りでない)
 
 # 出自 (KI-20)
 var born_tick: int = 0
@@ -95,11 +110,16 @@ func snapshot() -> Dictionary:
 		"hp": hp, "max_hp": max_hp, "hunger": hunger, "sleepiness": sleepiness,
 		"fear_hp_bias": fear_hp_bias, "hunger_bias": hunger_bias,
 		"work_bias": work_bias, "forage_bias": forage_bias,
+		"clumsy": clumsy, "temper": temper,
 		"hunger_latched": hunger_latched, "sleep_latched": sleep_latched,
+		"night_sleep_done": night_sleep_done,
 		"pregnant": pregnant, "pregnant_ticks": pregnant_ticks,
 		"mate_id": mate_id, "bereaved": bereaved,
+		"courting_id": courting_id, "court_ticks": court_ticks,
 		"is_unique": is_unique, "downed_ticks": downed_ticks,
 		"fear_safe_ticks": fear_safe_ticks, "child_born_tick": child_born_tick,
+		"quarrel_cd": quarrel_cd,
+		"carrying_food": carrying_food, "guard_gate": guard_gate,
 		"born_tick": born_tick, "mother_id": mother_id, "father_id": father_id,
 		"origin": origin, "x": x, "y": y, "fx": fx, "fy": fy,
 		"target_x": target_x, "target_y": target_y,

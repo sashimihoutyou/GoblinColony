@@ -91,7 +91,52 @@ static func make_initial_map() -> TileMapData:
 		"room_type": TileMapData.RoomType.NEST, "assigned": []})
 	m.rooms.append({"x": 35, "y": 13, "w": 9, "h": 9,
 		"room_type": TileMapData.RoomType.RAT_RANCH, "assigned": []})
+
+	# --- キノコ床 (T4 採集スポット): 坑道沿いの床に決定的に 6 箇所散らす ---
+	_place_forage_spots(m, 6)
 	return m
+
+## キノコ床を巣内の床へ決定的に配置する (rng 不使用)。
+## NEST/RAT_RANCH の部屋と集積所・トーテム周辺 2 タイルを避け、坑道沿い (= 部屋外) の
+## FLOOR を床走査順に列挙し、固定ストライドで間引きつつ既存スポットと一定距離あける
+## (観賞上、雌が巣のあちこちを歩き回るよう散らす)。
+static func _place_forage_spots(m: TileMapData, count: int) -> void:
+	m.forage_spots = []
+	m.forage_regrow = []
+	# 候補: 部屋 (NEST/RAT_RANCH) 外で、集積所・トーテムからチェビシェフ距離 2 超の床。
+	var cands: Array = []
+	for y in range(m.height):
+		for x in range(m.width):
+			if m.get_tile(x, y) != TileMapData.TileType.FLOOR:
+				continue
+			var rt := m.room_type_at(x, y)
+			if rt == TileMapData.RoomType.NEST or rt == TileMapData.RoomType.RAT_RANCH:
+				continue
+			if maxi(absi(x - m.storage.x), absi(y - m.storage.y)) <= 2:
+				continue
+			if maxi(absi(x - m.totem.x), absi(y - m.totem.y)) <= 2:
+				continue
+			cands.append(Vector2i(x, y))
+	if cands.is_empty():
+		return
+	# 固定ストライドで走査し、既存スポットからマンハッタン距離 6 以上離れたものを採る
+	# (坑道に沿って散る)。足りなければストライド・距離を緩めて埋める。
+	for min_dist in [6, 3, 0]:
+		var stride: int = maxi(1, cands.size() / (count * 3))
+		var i := 0
+		while i < cands.size() and m.forage_spots.size() < count:
+			var p: Vector2i = cands[i]
+			var ok := true
+			for s in m.forage_spots:
+				if absi((s as Vector2i).x - p.x) + absi((s as Vector2i).y - p.y) < min_dist:
+					ok = false
+					break
+			if ok:
+				m.forage_spots.append(p)
+				m.forage_regrow.append(0)  # 初期は全スポット摘み取り可
+			i += stride
+		if m.forage_spots.size() >= count:
+			break
 
 ## 岩山の内側か (楕円 + 角度ノイズ)。
 static func _in_rock(x: int, y: int) -> bool:

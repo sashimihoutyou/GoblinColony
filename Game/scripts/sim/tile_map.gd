@@ -34,6 +34,10 @@ var gates: Array = []   # Array[Vector2i] 巣口座標
 var rooms: Array = []   # Array[Dictionary] {x,y,w,h,room_type,assigned}
 var totem: Vector2i = Vector2i(-1, -1)
 var storage: Vector2i = Vector2i(-1, -1)
+# キノコ床 (T4 採集スポット §3-11)。タイル型は増やさず座標配列で持つ。
+# forage_regrow[i] = スポット i の再生長残り tick (0 = 摘み取り可)。
+var forage_spots: Array = []           # Array[Vector2i]
+var forage_regrow: Array = []          # Array[int] (forage_spots と同じ長さ)
 
 func idx(x: int, y: int) -> int:
 	return y * width + x
@@ -72,6 +76,8 @@ func snapshot() -> Dictionary:
 		"rooms": rooms.duplicate(true),
 		"totem": [totem.x, totem.y],
 		"storage": [storage.x, storage.y],
+		"forage_spots": forage_spots.map(func(s): return [s.x, s.y]),
+		"forage_regrow": forage_regrow.duplicate(),
 	}
 
 func restore(d: Dictionary) -> void:
@@ -83,3 +89,5 @@ func restore(d: Dictionary) -> void:
 	rooms = (d.rooms as Array).duplicate(true)
 	totem = Vector2i(d.totem[0], d.totem[1])
 	storage = Vector2i(d.storage[0], d.storage[1])
+	forage_spots = (d.forage_spots as Array).map(func(s): return Vector2i(s[0], s[1]))
+	forage_regrow = (d.forage_regrow as Array).duplicate()
