@@ -481,10 +481,8 @@ func _draw() -> void:
 				if g3 != null:
 					var pos: Vector2 = _gmap[sel_id].pos
 					draw_arc(pos, ts * 0.55 + sin(_t * 5.0) * 1.2, 0, TAU, 24, Color("e8dcc8"), 1.0)
-					if _font != null:
-						var nm := GobNames.of(g3)
-						draw_string(_font, pos + Vector2(-30, -ts * 0.8), nm,
-							HORIZONTAL_ALIGNMENT_CENTER, 60, 9, Color("e8dcc8"))
+					var nm := GobNames.of(g3)
+					_draw_text_crisp(pos + Vector2(0, -ts * 0.8), nm, 9, Color("e8dcc8"))
 		2:  # 敵: 血色の輪
 			if _emap.has(sel_id):
 				var epos: Vector2 = _emap[sel_id].pos
@@ -493,6 +491,23 @@ func _draw() -> void:
 			if sel_id >= 0 and sel_id < _world.map.rooms.size():
 				var r: Dictionary = _world.map.rooms[sel_id]
 				draw_rect(Rect2(r.x * ts, r.y * ts, r.w * ts, r.h * ts), Color("e8dcc8", 0.85), false, 1.5)
+
+## ズーム下でも文字がにじまない draw_string。Camera2D の zoom はフォントの
+## オーバーサンプリングに反映されない (Godot の既知の制約) ため、小サイズで
+## ラスタライズされたグリフが拡大されてガタつく。ズーム倍率をフォントサイズへ
+## 織り込んで実効ピクセルサイズでラスタライズし、逆スケールで見た目のサイズへ
+## 戻す (システムフォールバック由来のカナにも効く)。
+func _draw_text_crisp(at: Vector2, txt: String, size: float, color: Color,
+		align: HorizontalAlignment = HORIZONTAL_ALIGNMENT_CENTER, width: float = 60.0) -> void:
+	if _font == null:
+		return
+	var k: float = maxf(1.0, get_viewport_transform().get_scale().x)
+	var fs: int = maxi(1, roundi(size * k))
+	draw_set_transform(at, 0.0, Vector2.ONE / k)
+	var off_x: float = -width * 0.5 * k if width > 0.0 else 0.0
+	var w: float = width * k if width > 0.0 else -1.0
+	draw_string(_font, Vector2(off_x, 0), txt, align, w, fs, color)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 func _find_goblin(id: int) -> Goblin:
 	for g in _world.goblins:
@@ -514,9 +529,7 @@ func _draw_decor(d: Dictionary) -> void:
 		"line":
 			draw_line(Vector2(d.x1, d.y1), Vector2(d.x2, d.y2), d.color, d.w)
 		"text":
-			if _font != null:
-				draw_string(_font, Vector2(d.x - 30.0, d.y), d.txt,
-					HORIZONTAL_ALIGNMENT_CENTER, 60, 8, d.color)
+			_draw_text_crisp(Vector2(d.x, d.y), d.txt, 8, d.color)
 
 func _draw_totem(m: TileMapData) -> void:
 	var c := _tile_center(m.totem)
@@ -697,9 +710,8 @@ func _draw_particle(pt: Dictionary) -> void:
 	col.a *= a
 	match pt.kind:
 		"text":
-			if _font != null:
-				draw_string(_font, Vector2(pt.x, pt.y), pt.txt,
-					HORIZONTAL_ALIGNMENT_LEFT, -1, int(pt.size), col)
+			_draw_text_crisp(Vector2(pt.x, pt.y), pt.txt, float(pt.size), col,
+				HORIZONTAL_ALIGNMENT_LEFT, -1.0)
 		"bone":
 			draw_line(Vector2(pt.x - pt.size, pt.y + pt.size), Vector2(pt.x + pt.size, pt.y - pt.size), col, 1.2)
 			draw_circle(Vector2(pt.x - pt.size, pt.y + pt.size), 1.0, col)
