@@ -140,6 +140,12 @@ func on_event(e: Dictionary) -> void:
 			var at3 := _last_pos_of(int(e.get("mother", -1)))
 			if at3 != Vector2.ZERO:
 				_burst(at3, 6, {"speed": 16.0, "up": 8.0, "life": 0.9, "size": 1.2, "color": Color("9adb6e")})
+		"court":
+			# 誘い: 雌の足元から小さなハートがふわっと上がる (演出層ローカル)。
+			var atc := _last_pos_of(int(e.get("f", -1)))
+			if atc != Vector2.ZERO:
+				_spawn_p({"kind": "text", "txt": "♥", "color": Color("e8a0b8"),
+					"x": atc.x, "y": atc.y - 6.0, "vy": -9.0, "life": 1.0, "size": 6.0})
 		"pregnant":
 			var at4 := _last_pos_of(int(e.get("id", -1)))
 			if at4 != Vector2.ZERO:

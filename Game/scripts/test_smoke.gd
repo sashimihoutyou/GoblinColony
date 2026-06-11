@@ -10,6 +10,7 @@ func _init() -> void:
 	ok = _test_map_integrity() and ok
 	ok = _test_hungry_arrival_does_not_spend_food() and ok
 	ok = _test_night_sleep() and ok
+	ok = _test_courtship_rendezvous() and ok
 	ok = _test_run_to_end() and ok
 	ok = _test_snapshot_roundtrip() and ok
 	if ok:
@@ -221,7 +222,121 @@ func _test_run_to_end() -> bool:
 	if w.outcome == World.Outcome.ONGOING:
 		print("  FAIL: did not reach a terminal outcome")
 		return false
+	# 求愛ランデブー化後も増殖が止まらないこと (births_total > 0)。
+	if w.births_total <= 0:
+		print("  FAIL: no births over the whole run (breeding stalled)")
+		return false
 	return true
+
+## 求愛ランデブー (§3-6) の決定論的検証。雌雄 1 組に courting_id を相互設定し、
+##  (1) NEST 部屋で隣接した tick 以降に妊娠が成立する
+##  (2) 遠く離れたままだとタイムアウトで静かに解散する
+## の 2 ケースをシード固定で確認する。
+func _test_courtship_rendezvous() -> bool:
+	# (1) 寝床で合流 → 妊娠。
+	var p := SimParams.new()
+	var w := World.new()
+	w.setup(p)
+	var nest := _find_nest_tile(w.map)
+	if nest == Vector2i(-1, -1):
+		print("  FAIL: courtship — no NEST floor tile found")
+		return false
+	var pair := _pick_pair(w)
+	if pair.is_empty():
+		print("  FAIL: courtship — could not find a female+male pair")
+		return false
+	var f: Goblin = pair[0]
+	var m: Goblin = pair[1]
+	# 妊娠・求愛以外の割り込み (空腹/睡眠/恐怖) を抑えて力学を切り出す。
+	for g in w.goblins:
+		g.hunger = 0.0
+		g.hunger_latched = false
+		g.sleepiness = 0.0
+	f.pregnant = false
+	f.courting_id = m.id
+	f.court_ticks = 0
+	m.courting_id = f.id
+	m.court_ticks = 0
+	# 両者を寝床の同一タイルに隣接配置。
+	w._place(f, nest)
+	w._place(m, nest)
+	w._step_courtship()
+	if not f.pregnant:
+		print("  FAIL: courtship (1) — adjacent-in-nest pair did not conceive")
+		return false
+	if f.courting_id != -1 or m.courting_id != -1:
+		print("  FAIL: courtship (1) — courting not cleared after conception")
+		return false
+	if f.mate_id != m.id:
+		print("  FAIL: courtship (1) — mate_id not recorded")
+		return false
+
+	# (2) 離れたまま → タイムアウト解散。
+	var w2 := World.new()
+	w2.setup(p)
+	var pair2 := _pick_pair(w2)
+	var f2: Goblin = pair2[0]
+	var m2: Goblin = pair2[1]
+	for g in w2.goblins:
+		g.hunger = 0.0
+		g.hunger_latched = false
+		g.sleepiness = 0.0
+	f2.pregnant = false
+	f2.courting_id = m2.id
+	f2.court_ticks = 0
+	m2.courting_id = f2.id
+	m2.court_ticks = 0
+	# 雌を NEST、雄を遠く (集積所付近) に固定し、毎 tick 引き離して合流させない。
+	var far := w2.map.storage
+	var guard := 0
+	var dissolved := false
+	while guard <= p.court_timeout_ticks + 2:
+		w2._place(f2, nest)
+		w2._place(m2, far)
+		w2._step_courtship()
+		if f2.courting_id == -1 and m2.courting_id == -1:
+			dissolved = true
+			break
+		guard += 1
+	if not dissolved:
+		print("  FAIL: courtship (2) — distant pair never timed out")
+		return false
+	if f2.pregnant:
+		print("  FAIL: courtship (2) — distant pair conceived without meeting")
+		return false
+	if guard <= p.court_timeout_ticks:
+		print("  FAIL: courtship (2) — dissolved too early (guard=%d, timeout=%d)" % [
+			guard, p.court_timeout_ticks])
+		return false
+
+	print("  courtship-rendezvous: OK")
+	return true
+
+## NEST 部屋の歩行可能な床タイルを 1 つ返す (なければ (-1,-1))。
+func _find_nest_tile(m) -> Vector2i:
+	for r in m.rooms:
+		if r.room_type != TileMapData.RoomType.NEST:
+			continue
+		for y in range(r.y, r.y + r.h):
+			for x in range(r.x, r.x + r.w):
+				if m.is_walkable(x, y) and m.room_type_at(x, y) == TileMapData.RoomType.NEST:
+					return Vector2i(x, y)
+	return Vector2i(-1, -1)
+
+## 初期個体から成体の雌・雄を 1 体ずつ拾う ([f, m])。見つからなければ空配列。
+func _pick_pair(w) -> Array:
+	var f: Goblin = null
+	var m: Goblin = null
+	for g in w.goblins:
+		if g.is_child():
+			continue
+		if g.sex == Goblin.Sex.FEMALE and f == null:
+			f = g
+		elif g.sex == Goblin.Sex.MALE and m == null:
+			m = g
+	if f == null or m == null:
+		return []
+	return [f, m]
 
 func _test_snapshot_roundtrip() -> bool:
 	var p := SimParams.new()

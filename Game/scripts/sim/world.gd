@@ -343,6 +343,12 @@ func _movement_target(g: Goblin, in_raid: bool) -> Vector2i:
 		# 巣のあちこちに散ったままだと、敵の視界 (6 タイル) に入った端から
 		# 狩られる (雌の絶滅 = 増殖の停止)。
 		return _sanctuary_slot(g.id)
+	# 求愛ランデブー (§3-6): 求愛中の個体は寝床 (NEST) のスロットへ向かう。雌雄が
+	# 同じタイルに収束するよう、スロット鍵は「ペアの雌の id」で揃える (雌=自分,
+	# 雄=courting_id)。食事・睡眠など緊急系には介入せず WORK/WANDER のときだけ。
+	if g.courting_id >= 0 and (g.state == Goblin.State.WORK or g.state == Goblin.State.WANDER):
+		var pair_key: int = g.id if g.sex == Goblin.Sex.FEMALE else g.courting_id
+		return _room_slot(TileMapData.RoomType.NEST, pair_key)
 	match g.state:
 		Goblin.State.COMBAT:
 			# 隣接中は足を止めて殴り合う (敵側と同じ白兵の規律)。
@@ -505,24 +511,92 @@ func _step_breeding() -> void:
 			g.child_born_tick = -1
 			_event({"t": "grow", "id": g.id, "sex": g.sex})
 
-	# 求愛: 雌が起点 (雌律速)。平時かつ昼のみ。
+	# 求愛ランデブーの成立・解消 (雌が起点・雄は従属)。発火より先に処理して、
+	# このフレームで誘われた雌を即タイムアウト判定しない (court_ticks=0 始まり)。
+	_step_courtship()
+
+	# 求愛の誘い: 雌が起点 (雌律速)。平時かつ昼のみ。
 	if phase != Phase.PEACE or not is_day():
 		return
 	for f in goblins:
 		if f.sex != Goblin.Sex.FEMALE or f.pregnant or f.is_child():
 			continue
+		if f.courting_id >= 0:
+			continue  # すでに求愛中の雌は新規の誘いをしない
 		if f.state == Goblin.State.DEAD or f.state == Goblin.State.FEAR:
 			continue
-		# 損耗バフで妊娠率を乗算 (§2.5 必須骨格)。
+		# 誘えるのは活動中 (放浪/仕事/空腹) のときだけ。就寝中・瀕死では誘わない。
+		if f.state != Goblin.State.WANDER and f.state != Goblin.State.WORK \
+				and f.state != Goblin.State.HUNGRY:
+			continue
+		# 損耗バフで誘いの発火率を乗算 (§2.5 必須骨格)。
 		var chance := params.court_base_chance * (1.0 + surge)
 		if rng.next_float() < chance:
 			# 相手の雄を探す (近場優先・相性で確率)。
 			var mate := _find_mate(f)
 			if mate != null and rng.next_float() < (0.3 + Goblin.compatibility(f, mate) * 0.7):
-				f.pregnant = true
-				f.pregnant_ticks = 0
-				f.mate_id = mate.id
-				_event({"t": "pregnant", "id": f.id, "mate": mate.id})
+				# 妊娠はさせず、両者を相互に求愛中にして寝床へ向かわせる。
+				f.courting_id = mate.id
+				f.court_ticks = 0
+				mate.courting_id = f.id
+				mate.court_ticks = 0
+				_event({"t": "court", "f": f.id, "m": mate.id})
+
+## 求愛ランデブーの毎 tick 処理 (§3-6): 求愛中の雌を起点に、寝床での合流で妊娠を
+## 成立させ、危機・平時離脱・タイムアウトでは静かに解散する。雄側は従属 (相互に解除)。
+func _step_courtship() -> void:
+	# 孤児参照の掃除 (雌雄問わず): 相手が既に配列から消えている (事故死・餓死は
+	# _step_breeding より後に発生し _cleanup_dead で除去される) か、相手の
+	# courting_id がこちらを指していない非対称状態なら解除する。これが無いと
+	# 死んだ雌に誘われた雄が永久に求愛中のまま残る (寝床へ歩き続け、以後
+	# どの雌からも誘えなくなる)。
+	for g in goblins:
+		if g.courting_id < 0:
+			continue
+		var partner := _goblin_by_id(g.courting_id)
+		if partner == null or partner.state == Goblin.State.DEAD \
+				or partner.courting_id != g.id:
+			g.courting_id = -1
+			g.court_ticks = 0
+	for f in goblins:
+		if f.sex != Goblin.Sex.FEMALE or f.courting_id < 0:
+			continue
+		var mate := _goblin_by_id(f.courting_id)
+		# 解消条件: 相手が居ない/死亡、自分または相手が危機ステート、非平時、タイムアウト。
+		var dissolve := false
+		if mate == null or mate.state == Goblin.State.DEAD or f.state == Goblin.State.DEAD:
+			dissolve = true
+		elif phase != Phase.PEACE:
+			dissolve = true
+		elif _court_blocked(f) or _court_blocked(mate):
+			dissolve = true
+		elif f.court_ticks > params.court_timeout_ticks:
+			dissolve = true
+		if dissolve:
+			if mate != null:
+				mate.courting_id = -1
+				mate.court_ticks = 0
+			f.courting_id = -1
+			f.court_ticks = 0
+			continue
+		f.court_ticks += 1
+		# 成立: 雌雄がチェビシェフ距離 1 以内 かつ 雌が NEST 部屋内に居る。
+		var adjacent: bool = max(abs(f.x - mate.x), abs(f.y - mate.y)) <= 1
+		var in_nest: bool = map.room_type_at(f.x, f.y) == TileMapData.RoomType.NEST
+		if adjacent and in_nest:
+			f.pregnant = true
+			f.pregnant_ticks = 0
+			f.mate_id = mate.id
+			f.courting_id = -1
+			f.court_ticks = 0
+			mate.courting_id = -1
+			mate.court_ticks = 0
+			_event({"t": "pregnant", "id": f.id, "mate": mate.id})
+
+## 求愛を中断させる危機ステートか (FEAR/COMBAT/DYING/KNOCKED_OUT)。
+func _court_blocked(g: Goblin) -> bool:
+	return g.state == Goblin.State.FEAR or g.state == Goblin.State.COMBAT \
+		or g.state == Goblin.State.DYING or g.state == Goblin.State.KNOCKED_OUT
 
 func _find_mate(f: Goblin) -> Goblin:
 	var best: Goblin = null
@@ -532,7 +606,15 @@ func _find_mate(f: Goblin) -> Goblin:
 			continue
 		if m.state == Goblin.State.DEAD:
 			continue
+		if m.courting_id >= 0:
+			continue  # すでに別の雌と求愛中の雄は誘えない
+		# 寝ている/瀕死/戦闘中の雄は誘えない (活動中のみ)。
+		if m.state != Goblin.State.WANDER and m.state != Goblin.State.WORK \
+				and m.state != Goblin.State.HUNGRY:
+			continue
 		var d := _manhattan(f.pos(), m.pos())
+		if d > 20:
+			continue  # 遠すぎる雄は誘えない (マンハッタン距離上限)
 		if d < best_d:
 			best_d = d
 			best = m

@@ -52,6 +52,11 @@ var pregnant: bool = false
 var pregnant_ticks: int = 0
 var mate_id: int = -1
 var bereaved: bool = false
+# 求愛ランデブー (§3-6): 雌が雄を寝床に誘い、寝床で合流して初めて妊娠が成立する。
+# courting_id は雌雄両方に相手 id を相互設定する (-1 = 非求愛)。court_ticks は
+# タイムアウト用の経過 tick (雌側でカウント)。
+var courting_id: int = -1
+var court_ticks: int = 0
 
 var is_unique: bool = false
 var downed_ticks: int = -1     # -1 = 倒れていない
@@ -106,6 +111,7 @@ func snapshot() -> Dictionary:
 		"night_sleep_done": night_sleep_done,
 		"pregnant": pregnant, "pregnant_ticks": pregnant_ticks,
 		"mate_id": mate_id, "bereaved": bereaved,
+		"courting_id": courting_id, "court_ticks": court_ticks,
 		"is_unique": is_unique, "downed_ticks": downed_ticks,
 		"fear_safe_ticks": fear_safe_ticks, "child_born_tick": child_born_tick,
 		"quarrel_cd": quarrel_cd,

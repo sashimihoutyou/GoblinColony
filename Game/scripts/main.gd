@@ -278,10 +278,16 @@ func _push_feed_event(e: Dictionary) -> void:
 			var na: String = GobNames.of(ga) if ga != null else "ゴブリン"
 			var nb: String = GobNames.of(gb) if gb != null else "ゴブリン"
 			_push_feed("event", "%s と %s がケンカを始めた!" % [na, nb])
+		"court":
+			var cf := _find_goblin(int(e.get("f", -1)))
+			var cm := _find_goblin(int(e.get("m", -1)))
+			var cfn: String = GobNames.of(cf) if cf != null else "雌ゴブリン"
+			var cmn: String = GobNames.of(cm) if cm != null else "雄ゴブリン"
+			_push_feed("love", "%s が %s を寝床に誘った。" % [cfn, cmn])
 		"pregnant":
 			var f := _find_goblin(int(e.get("id", -1)))
 			if f != null:
-				_push_feed("love", "%s が身ごもった。" % GobNames.of(f))
+				_push_feed("love", "%s が寝床で身ごもった。" % GobNames.of(f))
 		"victory":
 			_push_feed("event", "★ ラストバトルを撃退 — 勝利!")
 		"defeat":
