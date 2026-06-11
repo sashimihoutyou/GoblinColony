@@ -58,6 +58,13 @@ var big_raid_interval_max: int = 1     # 敵対度 MAX のときの間隔 (日)
 var small_raid_prob: float = 0.3       # 小規模襲撃 (恵み) の 1 日あたり発生確率
 var final_mult: float = 2.5            # ラストバトル倍率 (FINAL_MULT)
 
+# --- 奇跡 (§4 / §12 縮小版: 嘲りの稲妻 1 種のみ) ---
+# 信仰残高を消費して指定した敵に固定ダメージ。三者カーブ (信仰供給・奇跡コスト・
+# 襲撃強度) の辛勝バランス検証用で、コスト/ダメージとも固定値 (§15 調整対象)。
+# レートではなく即時量なので _init() の per-tick 変換は通さない (KI-02 の対象外)。
+var lightning_cost: float = 4.0        # 1 回の発動コスト (信仰残高)
+var lightning_damage: float = 8.0      # 命中した敵への固定ダメージ (enemy_hp=6 を一掃)
+
 # --- 増殖 (§3-6) ---
 var court_base_chance: float           # 求愛の誘い発火 1 tick 確率 (日次 3.0 を変換)
 var court_timeout_ticks: int           # 求愛ランデブーのタイムアウト (0.5 日を変換)

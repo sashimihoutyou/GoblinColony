@@ -54,6 +54,10 @@ var _accum_ms: float = 0.0
 var sel_kind: int = SelKind.NONE
 var sel_id: int = -1   # GOBLIN/ENEMY: ユニット id。ROOM: world.map.rooms のインデックス
 var _forage_feed_count: int = 0  # T4: 採集フィードの間引き (4 回に 1 回だけ流す)
+# 奇跡「嘲りの稲妻」のターゲティング中か (演出/入力ローカル。シム・セーブに含めない)。
+# 武装中は左クリックが選択でなく敵への発動になる。Esc/右クリックで解除。
+var _casting: bool = false
+var _spell_button: Button
 
 # --- カメラ操作 (演出層ローカル状態。シムには触れない) ---
 const ZOOM_MIN := 1.0         # フィット倍率 (全体表示)
@@ -171,15 +175,20 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		match event.button_index:
 			MOUSE_BUTTON_LEFT:
-				# 左クリック: 個体/敵/部屋を選択 (ワールド座標なのでカメラ変換に自動追従)。追従はしない。
+				# 左クリック: 武装中は敵へ稲妻を発動、そうでなければ個体/敵/部屋を選択。
 				if event.pressed:
-					var picked := renderer.pick_any(world, get_global_mouse_position())
-					sel_kind = _sel_kind_from_pick(int(picked.kind))
-					sel_id = int(picked.id)
+					if _casting:
+						_try_cast(get_global_mouse_position())
+					else:
+						var picked := renderer.pick_any(world, get_global_mouse_position())
+						sel_kind = _sel_kind_from_pick(int(picked.kind))
+						sel_id = int(picked.id)
 			MOUSE_BUTTON_RIGHT:
-				# 右クリック: ゴブリンを拾えれば追従モード開始 (インスペクタ選択も同期)。
-				# 敵/部屋/空振りは選択のみ更新し追従は解除する。
-				if event.pressed:
+				# 右クリック: 武装中なら稲妻を解除。ゴブリンを拾えれば追従モード開始
+				# (インスペクタ選択も同期)。敵/部屋/空振りは選択のみ更新し追従は解除する。
+				if event.pressed and _casting:
+					_set_casting(false)
+				elif event.pressed:
 					var picked2 := renderer.pick_any(world, get_global_mouse_position())
 					var kind2 := _sel_kind_from_pick(int(picked2.kind))
 					sel_kind = kind2
@@ -206,6 +215,12 @@ func _unhandled_input(event: InputEvent) -> void:
 			_follow_id = -1
 			_manual_camera = true
 			_clamp_camera(cam)
+	elif event is InputEventKey and event.pressed and not event.echo:
+		# Q: 稲妻の武装トグル。Esc: 武装解除。
+		if event.keycode == KEY_Q:
+			_set_casting(not _casting)
+		elif event.keycode == KEY_ESCAPE and _casting:
+			_set_casting(false)
 
 ## ホイールズーム: カーソル位置をアンカーに倍率を変える (factor は 1.0〜8.0)。
 func _apply_zoom(new_factor: float) -> void:
@@ -353,6 +368,45 @@ func _sel_kind_from_pick(kind: int) -> int:
 		3: return SelKind.ROOM
 		_: return SelKind.NONE
 
+# ════ 奇跡「嘲りの稲妻」(§4 / §12) ════
+## 武装状態を切り替える。武装しようとして残高不足なら弾く。
+func _set_casting(on: bool) -> void:
+	if on and world.faith < params.lightning_cost:
+		_push_feed("event", "信仰が足りない (必要 %.0f)。" % params.lightning_cost)
+		on = false
+	_casting = on
+	_refresh_spell_button()
+
+## 武装中の左クリック: クリック位置の敵に稲妻を発動する。敵以外は無視 (武装維持)。
+## 発動後も武装は維持し連射でき、残高が尽きると自動解除する。
+func _try_cast(pos: Vector2) -> void:
+	var picked := renderer.pick_any(world, pos)
+	if int(picked.kind) != 2:  # 2 = 敵 (renderer.pick_any の kind)
+		return
+	var eid := int(picked.id)
+	var fx := 0.0
+	var fy := 0.0
+	for e in world.enemies:
+		if e.id == eid:
+			fx = (e.fx + 0.5) * renderer.tile_size
+			fy = (e.fy + 0.5) * renderer.tile_size
+			break
+	if world.cast_lightning(eid):
+		renderer.on_event({"t": "lightning", "x": fx, "y": fy})
+		_push_feed("raid", "嘲りの稲妻が敵を撃った! (信仰 -%.0f)" % params.lightning_cost)
+		if world.faith < params.lightning_cost:
+			_set_casting(false)  # 残高が尽きたら自動解除
+	else:
+		_set_casting(false)
+	_refresh_spell_button()
+
+func _refresh_spell_button() -> void:
+	if _spell_button == null:
+		return
+	_spell_button.text = "⚡ 稲妻 解除" if _casting else "⚡ 稲妻 %.0f" % params.lightning_cost
+	_style_button(_spell_button, _casting)
+	_spell_button.disabled = (not _casting) and world.faith < params.lightning_cost
+
 # ════ HUD ════
 func _update_status() -> void:
 	if _status_label == null:
@@ -369,12 +423,20 @@ func _update_status() -> void:
 		world._alive_count(), params.cap_pop, _child_count(),
 		world.food, world.faith, world.surge, totem_txt,
 	]
-	if world.outcome == World.Outcome.ONGOING and world.phase == World.Phase.PEACE:
+	if _casting:
+		# 武装中は ETA 行を稲妻ヒントに差し替える (発動は交戦中=平時以外が主)。
+		_eta_label.text = "⚡ 稲妻: 敵をクリックで発動 (Esc/右クリックで解除)"
+		_eta_label.add_theme_color_override("font_color", C_EMBER_BRIGHT)
+	elif world.outcome == World.Outcome.ONGOING and world.phase == World.Phase.PEACE:
 		var days_left := float(world.next_big_raid_tick - world.tick) / float(params.ticks_per_day)
 		_eta_label.text = "次の大襲撃まで 約 %s" % ("1 日未満" if days_left < 1.0 else "%d 日" % ceili(days_left))
 		_eta_label.add_theme_color_override("font_color", C_BLOOD if days_left <= 1.0 else C_INK_FAINT)
 	else:
 		_eta_label.text = ""
+	# 残高は時間で増えるので、ボタンの有効/無効だけ毎フレーム追従させる
+	# (再スタイルは武装トグル時のみ。毎フレームの StyleBox 生成を避ける)。
+	if _spell_button != null:
+		_spell_button.disabled = (not _casting) and world.faith < params.lightning_cost
 	# 勝敗バナー。
 	if world.outcome == World.Outcome.VICTORY:
 		_outcome_label.text = "★ 勝利 — 規定日数を生き延びた!"
@@ -549,8 +611,14 @@ func _build_ui() -> void:
 			_refresh_speed_buttons())
 		bar.add_child(b)
 		_speed_buttons.append({"btn": b, "speed": sp})
+	# 奇跡ボタン (嘲りの稲妻)。武装中は強調表示、残高不足で無効化 (§4 / §12)。
+	_spell_button = Button.new()
+	_spell_button.add_theme_font_size_override("font_size", 12)
+	_spell_button.pressed.connect(func() -> void: _set_casting(not _casting))
+	bar.add_child(_spell_button)
 	ui.add_child(bar)
 	_refresh_speed_buttons()
+	_refresh_spell_button()
 
 func _refresh_speed_buttons() -> void:
 	for d in _speed_buttons:

@@ -959,6 +959,24 @@ func _step_faith() -> void:
 	if phase == Phase.PEACE and totem_hp < params.totem_hp_max:
 		totem_hp = min(params.totem_hp_max, totem_hp + params.totem_repair_per_tick)
 
+# --- 奇跡コマンド (§4 / §12): プレイヤー入力 (main.gd) から呼ぶ ---
+## 嘲りの稲妻。指定 id の生存敵に固定ダメージを与える。信仰残高が足りれば消費して
+## true を返す (残高不足・対象不在・終局時は false)。撃破後の除去と恵み食料は次 tick
+## の _resolve_combat が一元処理する (KI-20)。演出/フィードは main.gd 側が出す。
+func cast_lightning(enemy_id: int) -> bool:
+	if outcome != Outcome.ONGOING or faith < params.lightning_cost:
+		return false
+	var target: EnemyUnit = null
+	for e in enemies:
+		if e.id == enemy_id and e.hp > 0.0:
+			target = e
+			break
+	if target == null:
+		return false
+	faith -= params.lightning_cost
+	target.hp -= params.lightning_damage
+	return true
+
 # --- 死亡の一元化 (KI-20) ---
 func _cleanup_dead() -> void:
 	var alive: Array = []

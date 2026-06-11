@@ -171,6 +171,14 @@ func on_event(e: Dictionary) -> void:
 			if atq != Vector2.ZERO:
 				_spawn_p({"kind": "text", "txt": "!", "color": Color("e06a50"),
 					"x": atq.x, "y": atq.y - 8.0, "vy": -10.0, "life": 1.0, "size": 8.0})
+		"lightning":
+			# 嘲りの稲妻 (§4): 着弾点 (ピクセル座標を直接受け取る) に青白い閃光バースト
+			# + "⚡"。敵を指すので _last_pos_of (ゴブリン用) は使わない。
+			var lx := float(e.get("x", 0.0))
+			var ly := float(e.get("y", 0.0))
+			_burst(Vector2(lx, ly), 14, {"speed": 60.0, "life": 0.5, "size": 2.0, "color": Color("cfe6ff")})
+			_spawn_p({"kind": "text", "txt": "⚡", "color": Color("e8e0ff"),
+				"x": lx, "y": ly - 10.0, "vy": -14.0, "life": 0.9, "size": 12.0})
 
 ## クリック位置 (ワールド座標) から最寄りの生存ゴブリン id を返す (-1 = なし)。
 func pick(world: World, pos: Vector2) -> int:
