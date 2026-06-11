@@ -270,6 +270,14 @@ func _push_feed_event(e: Dictionary) -> void:
 			_push_feed("birth", "%s が一人前に育った。" % GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))))
 		"mite_eaten":
 			_push_feed("event", "%s がパン虫を捕まえて食べた。" % GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))))
+		"fumble":
+			_push_feed("event", "%s がすっ転んだ。" % GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))))
+		"quarrel":
+			var ga := _find_goblin(int(e.get("a", -1)))
+			var gb := _find_goblin(int(e.get("b", -1)))
+			var na: String = GobNames.of(ga) if ga != null else "ゴブリン"
+			var nb: String = GobNames.of(gb) if gb != null else "ゴブリン"
+			_push_feed("event", "%s と %s がケンカを始めた!" % [na, nb])
 		"pregnant":
 			var f := _find_goblin(int(e.get("id", -1)))
 			if f != null:

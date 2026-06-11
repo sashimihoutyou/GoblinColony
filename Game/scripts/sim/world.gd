@@ -105,6 +105,10 @@ func _make_goblin(sex: int, role: int, origin: int) -> Goblin:
 	else:
 		g.fear_hp_bias = -0.2 + rng.next_float() * 0.15
 		g.work_bias = 0.15 + rng.next_float() * 0.25
+	# 性別共通の追加ロール (順序固定): 空腹の食いしん坊/小食 → ドジ度 → 気性。
+	g.hunger_bias = -0.1 + rng.next_float() * 0.2
+	g.clumsy = rng.next_float()
+	g.temper = rng.next_float()
 	_place(g, map.totem + Vector2i(0, -3))
 	return g
 
@@ -133,6 +137,7 @@ func tick_once() -> void:
 	_resolve_combat()
 	_step_breeding()
 	_step_accidents()
+	_step_social()
 	_step_food()
 	_step_starvation()
 	_step_faith()
@@ -570,18 +575,65 @@ func _roll_litter() -> int:
 			return i + 1
 	return params.litter_weights.size()
 
-# --- 事故死 (§3-3: ステートマシン外の独立レイヤー) ---
+# --- 事故死 / ドジ (§3-3: ステートマシン外の独立レイヤー) ---
 func _step_accidents() -> void:
 	for g in goblins:
 		if g.state != Goblin.State.WANDER:
 			continue
 		if g.is_unique:
 			continue  # ユニークは事故死無効 (§8)
-		if rng.next_float() < params.accident_prob:
+		# 各個体ごとに固定順で 2 ロールを消費する (RNG 消費順序を分岐させない)。
+		# 1) 転倒 (非致死): ドジな個体ほど起きやすい。移動を中断するだけ。
+		if rng.next_float() < params.fumble_prob * (0.4 + 1.2 * g.clumsy):
+			g.path = []
+			g.target_x = -1
+			g.target_y = -1
+			_event({"t": "fumble", "id": g.id, "sex": g.sex})
+		# 2) 事故死: ドジな個体ほど確率が上がる (平均は従来の accident_prob と同じ)。
+		if rng.next_float() < params.accident_prob * (0.5 + g.clumsy):
 			g.hp = 0.0
 			g.state = Goblin.State.DEAD
 			g.death_logged = true
 			_event({"t": "death", "id": g.id, "sex": g.sex, "cause": "accident"})
+
+# --- ケンカ (§5 個性配線。相性の悪い雄同士の小競り合い) ---
+func _step_social() -> void:
+	# クールダウンは毎 tick デクリメント (0 で下げ止め)。
+	for g in goblins:
+		if g.quarrel_cd > 0:
+			g.quarrel_cd -= 1
+	if phase != Phase.PEACE:
+		return  # 平時のみ (交戦中は防衛に集中させる)
+	for a in goblins:
+		if a.sex != Goblin.Sex.MALE or a.is_unique or a.is_child():
+			continue
+		if a.state != Goblin.State.WANDER or a.quarrel_cd > 0:
+			continue
+		# 配列順で最初に見つかる「相性が悪く気性が荒い」相手を探す。
+		var b: Goblin = null
+		for cand in goblins:
+			if cand == a:
+				continue
+			if cand.sex != Goblin.Sex.MALE or cand.is_unique or cand.is_child():
+				continue
+			if cand.state != Goblin.State.WANDER or cand.quarrel_cd > 0:
+				continue
+			if max(abs(a.x - cand.x), abs(a.y - cand.y)) > 1:
+				continue
+			if Goblin.compatibility(a, cand) >= 0.35:
+				continue
+			if a.temper + cand.temper <= 0.9:
+				continue
+			b = cand
+			break
+		if b == null:
+			continue
+		if rng.next_float() < params.quarrel_prob:
+			a.hp = max(1.0, a.hp - params.quarrel_damage)
+			b.hp = max(1.0, b.hp - params.quarrel_damage)
+			a.quarrel_cd = params.quarrel_cooldown_ticks
+			b.quarrel_cd = params.quarrel_cooldown_ticks
+			_event({"t": "quarrel", "a": a.id, "b": b.id})
 
 # --- 食料 (§3-11) ---
 func _step_food() -> void:

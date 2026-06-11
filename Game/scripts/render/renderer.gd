@@ -153,6 +153,17 @@ func on_event(e: Dictionary) -> void:
 			var atm := _last_pos_of(int(e.get("id", -1)))
 			if atm != Vector2.ZERO:
 				_burst(atm, 4, {"speed": 16.0, "life": 0.6, "size": 1.1, "color": Color("9adb6e")})
+		"fumble":
+			# すっ転んだ: 足元に土埃の小バースト。
+			var atf := _last_pos_of(int(e.get("id", -1)))
+			if atf != Vector2.ZERO:
+				_burst(atf, 3, {"speed": 10.0, "life": 0.5, "size": 1.4, "color": Color("8a7d68")})
+		"quarrel":
+			# ケンカ: 双方の間に "!" を表示。
+			var atq := _last_pos_of(int(e.get("a", -1)))
+			if atq != Vector2.ZERO:
+				_spawn_p({"kind": "text", "txt": "!", "color": Color("e06a50"),
+					"x": atq.x, "y": atq.y - 8.0, "vy": -10.0, "life": 1.0, "size": 8.0})
 
 ## クリック位置 (ワールド座標) から最寄りの生存ゴブリン id を返す (-1 = なし)。
 func pick(world: World, pos: Vector2) -> int:

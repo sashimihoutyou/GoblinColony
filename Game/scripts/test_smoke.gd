@@ -162,6 +162,33 @@ func _test_night_sleep() -> bool:
 		print("  FAIL: night-sleep (d) goblin slept during raid at night")
 		return false
 
+	# (e) 夜入りで就寝 → ゲージが sleep_off まで抜けたら夜中でも起きる
+	# (同じ夜に再ラッチしない)。sleep_rate=0 なので自然蓄積はなし。
+	var g_wake := _fresh_goblin()
+	g_wake.sleepiness = 0.5  # sleep_on (0.8) 未満だが夜トリガーで就寝する
+	var ctx_wake := StateMachine.Context.new()
+	ctx_wake.is_night = true
+	StateMachine.step(g_wake, ctx_wake, p)
+	if g_wake.state != Goblin.State.SLEEP:
+		print("  FAIL: night-sleep (e) goblin did not enter sleep at night start")
+		return false
+	# sleep_relieve_per_tick ぶつ抜けて sleep_off (0.15) を下回るまで進める。
+	var guard_e := 0
+	while g_wake.state == Goblin.State.SLEEP and guard_e < 1000:
+		StateMachine.step(g_wake, ctx_wake, p)
+		guard_e += 1
+	if g_wake.state == Goblin.State.SLEEP:
+		print("  FAIL: night-sleep (e) goblin never woke up (guard exceeded)")
+		return false
+	if not g_wake.night_sleep_done:
+		print("  FAIL: night-sleep (e) night_sleep_done not set after waking")
+		return false
+	# 起きた後、同じ夜のうちにもう一度ステップしても再ラッチしない。
+	StateMachine.step(g_wake, ctx_wake, p)
+	if g_wake.state == Goblin.State.SLEEP:
+		print("  FAIL: night-sleep (e) goblin re-latched sleep within the same night")
+		return false
+
 	print("  night-sleep: OK")
 	return true
 
