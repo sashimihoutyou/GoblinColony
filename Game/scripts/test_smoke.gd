@@ -171,6 +171,7 @@ func _test_night_sleep() -> bool:
 	g_wake.sleepiness = 0.5  # sleep_on (0.8) 未満だが夜トリガーで就寝する
 	var ctx_wake := StateMachine.Context.new()
 	ctx_wake.is_night = true
+	ctx_wake.at_rest = true  # 寝床到着済み (ゲージ減少はここからの規約をテスト)
 	StateMachine.step(g_wake, ctx_wake, p)
 	if g_wake.state != Goblin.State.SLEEP:
 		print("  FAIL: night-sleep (e) goblin did not enter sleep at night start")

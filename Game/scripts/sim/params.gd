@@ -27,9 +27,12 @@ var sleep_off: float = 0.15
 # 欲求ペーシング (§15 調整。Web 版ダッシュボードと同じ「観賞に耐える日次リズム」):
 #  - 空腹ゲージは満腹から 1.2 日で限界に達する。発火 (hunger_on=0.7) は約 0.84 日
 #    ごと = 1 日 1.2 回食事。食事は集積所到着で即時 (一括消費)。
-#  - 睡眠: 夜 (日の後ろ 3 割 = 0.3 日) に巣全体で就寝する (夜トリガー §5)。昼の
-#    疲労発火 (sleep_on=0.8) は予備経路。夜 0.3 日 × 解消 3.25/日 ≈ 0.975 で昼の
-#    蓄積 (0.7 日 × 1.0/day = 0.7) を完全に解消できる。
+#  - 睡眠: 夜 (日の後ろ 3 割 = 0.3 日) に巣全体で就寝する (夜トリガー §5)。ただし
+#    ゲージの減少 (と HP 回復) は寝床 (NEST) に到着してから始まる (巣内の移動
+#    ≈ 0.1〜0.2 日かかる)。夜トリガーから到着までの徒歩ぶんを差し引いた
+#    実消化時間 (≈ 0.1〜0.2 日) で、解消 4.5/日 × ≈0.15 日 ≈ 0.7 を確保し、
+#    昼の蓄積 (0.7 日 × 1.0/day = 0.7) を朝までに解消できる。昼の疲労発火
+#    (sleep_on=0.8) は予備経路。
 var hunger_rate: float
 var sleep_rate: float
 var hp_regen_per_tick: float
@@ -138,7 +141,7 @@ func _init() -> void:
 	hunger_rate = (1.0 / 1.2) / tpd
 	sleep_rate = 1.0 / tpd
 	hp_regen_per_tick = 1.5 / tpd
-	sleep_relieve_per_tick = 3.25 / tpd
+	sleep_relieve_per_tick = 4.5 / tpd
 	fear_clear_ticks = int(0.4 * tpd)
 	unique_downed_grace_ticks = int(1.5 * tpd)
 	goblin_attack = 24.0 / tpd
