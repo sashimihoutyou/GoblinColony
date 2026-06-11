@@ -9,7 +9,24 @@ class_name AutoController
 
 const TARGET_RANCHERS := 3
 
+# §11.5 派遣を自動で出すか。観賞シーン (main.gd) ではプレイヤーがスライダーで
+# 決めるため false にする (ヘッドレスの自動プレイでは true のまま)。
+var auto_dispatch: bool = true
+
 func decide(world: World) -> void:
+	# §11.5 派遣: 出現物が湧いていて誰も向かっていなければ 2 体送る。
+	# 出現は日中の任意 tick なので、日次の見直しとは別に毎 tick 軽く走査する
+	# (出現物が無ければ即抜ける。送れない tick は world 側が無視し翌 tick 再送)。
+	if auto_dispatch and not world.field_resources.is_empty() \
+			and world.phase == World.Phase.PEACE:
+		for f in world.field_resources:
+			var going := 0
+			for g in world.goblins:
+				if g.dispatch_id == f.id:
+					going += 1
+			if going == 0:
+				queue.append({"type": CommandType.DISPATCH, "target": f.id, "count": 2})
+
 	# 1 日に 1 回だけ見直す (頻繁な再配分を避ける)。
 	if (world.tick % world.params.ticks_per_day) != 1:
 		return

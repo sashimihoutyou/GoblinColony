@@ -20,6 +20,15 @@ config/icon="res://icon.svg"
 window/stretch/mode="canvas_items"
 window/handheld/orientation=1
 
+[gui]
+
+; UI ラベル等の既定フォントを MSDF 化。任意倍率 (canvas_items ストレッチの
+; 端数スケール・Camera2D ズーム) でもグリフ輪郭が崩れない (Font クラス文書の
+; 推奨手順。カナはシステムフォールバック由来のため renderer.gd 側の
+; _draw_text_crisp が実効サイズでのラスタライズを併用する)。
+theme/default_font_multichannel_signed_distance_field=true
+theme/default_font_generate_mipmaps=true
+
 [physics]
 
 3d/physics_engine="Jolt Physics"

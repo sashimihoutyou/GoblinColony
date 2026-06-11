@@ -23,6 +23,7 @@ class Context:
 	var food_available: bool = false   # この個体がいま食べられるか (集積所 + 在庫)
 	var food_in_stock: bool = true     # 巣に在庫があるか (飢餓判定)
 	var is_night: bool = false         # 夜か。夜は巣全体で就寝する (§5)
+	var at_rest: bool = false          # 寝床 (NEST 部屋) のタイル上に居るか (world 側で判定)
 
 static func step(g: Goblin, ctx: Context, p: SimParams) -> void:
 	if g.state == Goblin.State.DEAD:
@@ -115,9 +116,12 @@ static func step(g: Goblin, ctx: Context, p: SimParams) -> void:
 	# (KI-26: 慢性飢餓へ戻らないための核心)。
 	if g.sleep_latched:
 		g.state = Goblin.State.SLEEP
-		g.sleepiness = max(0.0, g.sleepiness - p.sleep_relieve_per_tick)
-		if not starving:
-			g.hp = min(g.max_hp, g.hp + p.hp_regen_per_tick)
+		# 寝床 (NEST) へ歩いている間はゲージが減らない (到着してから眠りに落ちる)。
+		# SLEEP への遷移自体は無条件 (移動目標は world 側が NEST スロットへ向ける)。
+		if ctx.at_rest:
+			g.sleepiness = max(0.0, g.sleepiness - p.sleep_relieve_per_tick)
+			if not starving:
+				g.hp = min(g.max_hp, g.hp + p.hp_regen_per_tick)
 		return
 
 	# 空腹 (睡眠の下位。眠気が解消されてから食べに行く)。

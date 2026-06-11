@@ -27,9 +27,12 @@ var sleep_off: float = 0.15
 # 欲求ペーシング (§15 調整。Web 版ダッシュボードと同じ「観賞に耐える日次リズム」):
 #  - 空腹ゲージは満腹から 1.2 日で限界に達する。発火 (hunger_on=0.7) は約 0.84 日
 #    ごと = 1 日 1.2 回食事。食事は集積所到着で即時 (一括消費)。
-#  - 睡眠: 夜 (日の後ろ 3 割 = 0.3 日) に巣全体で就寝する (夜トリガー §5)。昼の
-#    疲労発火 (sleep_on=0.8) は予備経路。夜 0.3 日 × 解消 3.25/日 ≈ 0.975 で昼の
-#    蓄積 (0.7 日 × 1.0/day = 0.7) を完全に解消できる。
+#  - 睡眠: 夜 (日の後ろ 3 割 = 0.3 日) に巣全体で就寝する (夜トリガー §5)。ただし
+#    ゲージの減少 (と HP 回復) は寝床 (NEST) に到着してから始まる (巣内の移動
+#    ≈ 0.1〜0.2 日かかる)。夜トリガーから到着までの徒歩ぶんを差し引いた
+#    実消化時間 (≈ 0.1〜0.2 日) で、解消 4.5/日 × ≈0.15 日 ≈ 0.7 を確保し、
+#    昼の蓄積 (0.7 日 × 1.0/day = 0.7) を朝までに解消できる。昼の疲労発火
+#    (sleep_on=0.8) は予備経路。
 var hunger_rate: float
 var sleep_rate: float
 var hp_regen_per_tick: float
@@ -113,6 +116,14 @@ var forage_regrow_ticks: int          # 摘んだ後の再生長 (1.5 日を _in
 # 1 回の運搬で集積所に加わる食料 (一食分。イベント単位なので KI-02 変換不要)。
 var forage_carry_value: float = 1.0
 
+# --- 巣外の出現物 (§11.5 昼の外征の縮小版: 採取系のみ) ---
+var field_spawn_per_tick: float    # 自然湧き確率 (日次 2.5 を変換。昼のみ判定 = 実効 ≈ 1.75 個/日)
+var field_max: int = 2             # 同時存在の上限
+var field_amount_min: int = 2      # 出現物 1 つの収量の下限 (一食単位)
+var field_amount_spread: int = 4   # 収量 = min + next_int(spread) → 2〜5 食
+# 1 運搬で集積所に加わる食料 (一食分。イベント単位なので KI-02 変換不要)。
+var field_carry_value: float = 1.0
+
 # --- パン虫 (§3-11 救済床の実体化。攻撃してこない食用ザコ) ---
 var mite_spawn_per_tick: float     # 自然湧き確率 (日次 1.2 を変換。上限と合わせ 1 日 0〜2 匹ほど)
 var mite_max: int = 2              # 同時存在の上限
@@ -138,7 +149,7 @@ func _init() -> void:
 	hunger_rate = (1.0 / 1.2) / tpd
 	sleep_rate = 1.0 / tpd
 	hp_regen_per_tick = 1.5 / tpd
-	sleep_relieve_per_tick = 3.25 / tpd
+	sleep_relieve_per_tick = 4.5 / tpd
 	fear_clear_ticks = int(0.4 * tpd)
 	unique_downed_grace_ticks = int(1.5 * tpd)
 	goblin_attack = 24.0 / tpd
@@ -157,6 +168,7 @@ func _init() -> void:
 	# (旧 4.5 相当は、廃止した抽象救済 + 一括消費クランプ (在庫が僅かでも一食に
 	# なる) の隠れ補助に依存した見かけの均衡で、キャップ人口で飢餓スパイラル化)
 	food_per_rancher_tick = 8.0 / tpd
+	field_spawn_per_tick = 2.5 / tpd
 	mite_spawn_per_tick = 1.2 / tpd
 	mite_move_per_tick = 30.0 / tpd
 	mite_retarget_per_tick = 24.0 / tpd

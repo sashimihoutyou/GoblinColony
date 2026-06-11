@@ -67,6 +67,9 @@ var quarrel_cd: int = 0        # ケンカのクールダウン (tick。0 で発
 # 仕事フラグ (§3-11)
 var carrying_food: bool = false  # T4 採集: キノコを摘んで集積所へ運搬中か
 var guard_gate: int = -1         # T5 見張り: 担当巣口 index (-1 = 見張りでない)
+# §11.5 派遣: 回収を命じられた巣外出現物の id (-1 = 派遣されていない)。
+# 運搬中 (carrying_food) は出現物が消えても集積所への配達を済ませてから解除する。
+var dispatch_id: int = -1
 
 # 出自 (KI-20)
 var born_tick: int = 0
@@ -120,6 +123,7 @@ func snapshot() -> Dictionary:
 		"fear_safe_ticks": fear_safe_ticks, "child_born_tick": child_born_tick,
 		"quarrel_cd": quarrel_cd,
 		"carrying_food": carrying_food, "guard_gate": guard_gate,
+		"dispatch_id": dispatch_id,
 		"born_tick": born_tick, "mother_id": mother_id, "father_id": father_id,
 		"origin": origin, "x": x, "y": y, "fx": fx, "fy": fy,
 		"target_x": target_x, "target_y": target_y,
