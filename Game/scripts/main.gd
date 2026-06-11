@@ -49,10 +49,16 @@ const ZOOM_MIN := 1.0         # フィット倍率 (全体表示)
 const ZOOM_MAX := 8.0         # 最大拡大
 const ZOOM_STEP := 1.15       # ホイール 1 段ぶんの倍率
 const RIGHT_PANEL_W := 290.0  # 右パネルぶんの横オフセット
+const KEY_PAN_SPEED := 600.0  # キーボードパン速度 (画面スペース px/秒)
+const FOLLOW_LERP := 8.0      # 追従カメラの指数追従係数 (大きいほど速く追いつく)
 var _zoom_factor: float = 1.0 # フィット倍率に対するユーザー倍率 (1.0=全体フィット)
 var _fit_zoom: float = 1.0    # viewport から算出したフィット倍率 (キャッシュ)
 var _fit_pos: Vector2 = Vector2.ZERO  # factor=1.0 のときのカメラ位置 (キャッシュ)
 var _panning: bool = false    # 中ボタンドラッグ中か
+var _follow_id: int = -1      # 右クリックで追従中のゴブリン id (-1 = 追従なし)
+# 手動パン/追従が一度でも行われたか。true の間はズーム=1.0 でもフィット位置への
+# 自動復帰を止める (ホイールでズームアウトし切ったときのみ _apply_zoom が解除する)。
+var _manual_camera: bool = false
 
 # UI ノード (コード構築)
 var _status_label: Label
@@ -94,6 +100,46 @@ func _process(delta: float) -> void:
 	renderer.render(world, delta, speed, clampf(_accum_ms / MS_PER_TICK, 0.0, 1.0))
 	_update_status()
 	_update_inspector()
+	# カメラ操作はシム停止中 (speed=0) でも独立して動く。
+	_process_keyboard_pan(delta)
+	_process_follow_camera(delta)
+
+## 矢印キー / WASD でのパン。画面スペースで一定速度になるよう zoom で割る。
+## パンしたら追従モードを解除する。
+func _process_keyboard_pan(delta: float) -> void:
+	var dir := Vector2.ZERO
+	if Input.is_physical_key_pressed(KEY_LEFT) or Input.is_physical_key_pressed(KEY_A):
+		dir.x -= 1.0
+	if Input.is_physical_key_pressed(KEY_RIGHT) or Input.is_physical_key_pressed(KEY_D):
+		dir.x += 1.0
+	if Input.is_physical_key_pressed(KEY_UP) or Input.is_physical_key_pressed(KEY_W):
+		dir.y -= 1.0
+	if Input.is_physical_key_pressed(KEY_DOWN) or Input.is_physical_key_pressed(KEY_S):
+		dir.y += 1.0
+	if dir == Vector2.ZERO:
+		return
+	var cam := $Camera2D as Camera2D
+	if cam == null:
+		return
+	cam.position += dir.normalized() * KEY_PAN_SPEED * delta / cam.zoom.x
+	_follow_id = -1
+	_manual_camera = true
+	_clamp_camera(cam)
+
+## 右クリックで追従中のゴブリンへカメラを軽い指数追従で寄せる。
+## 死亡/巣立ちで補間エントリが消えたら自動解除する。
+func _process_follow_camera(delta: float) -> void:
+	if _follow_id < 0:
+		return
+	var target := renderer.unit_screen_pos(_follow_id)
+	if target == Vector2.INF:
+		_follow_id = -1
+		return
+	var cam := $Camera2D as Camera2D
+	if cam == null:
+		return
+	cam.position = cam.position.lerp(target, 1.0 - exp(-FOLLOW_LERP * delta))
+	_clamp_camera(cam)
 
 func _step_one_tick() -> void:
 	controller.decide(world)
@@ -113,9 +159,20 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		match event.button_index:
 			MOUSE_BUTTON_LEFT:
-				# 左クリック: 個体選択 (ワールド座標なのでカメラ変換に自動追従)。
+				# 左クリック: 個体選択 (ワールド座標なのでカメラ変換に自動追従)。追従はしない。
 				if event.pressed:
 					selected_id = renderer.pick(world, get_global_mouse_position())
+			MOUSE_BUTTON_RIGHT:
+				# 右クリック: ゴブリンを拾えれば追従モード開始 (インスペクタ選択も同期)。
+				# 空振りなら追従解除。
+				if event.pressed:
+					var id := renderer.pick(world, get_global_mouse_position())
+					if id >= 0:
+						selected_id = id
+						_follow_id = id
+						_manual_camera = true
+					else:
+						_follow_id = -1
 			MOUSE_BUTTON_WHEEL_UP:
 				if event.pressed:
 					_apply_zoom(_zoom_factor * ZOOM_STEP)
@@ -130,6 +187,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		if cam != null:
 			# 画面上のドラッグ量ぶん、カメラを逆方向へ動かす (ズーム補正)。
 			cam.position -= event.relative / cam.zoom
+			_follow_id = -1
+			_manual_camera = true
 			_clamp_camera(cam)
 
 ## ホイールズーム: カーソル位置をアンカーに倍率を変える (factor は 1.0〜8.0)。
@@ -144,7 +203,11 @@ func _apply_zoom(new_factor: float) -> void:
 	_zoom_factor = new_factor
 	if _zoom_factor <= ZOOM_MIN + 0.0001:
 		# 全体フィットへ正確に復帰 (右パネルぶんのオフセット込み)。
+		# ホイールでズームアウトし切ったときだけ、手動パン/追従の解除も含めて
+		# フィット表示へ戻す (仕様: フィット復帰はここのみがトリガー)。
 		_zoom_factor = ZOOM_MIN
+		_manual_camera = false
+		_follow_id = -1
 		cam.zoom = Vector2(_fit_zoom, _fit_zoom)
 		cam.position = _fit_pos
 		return
@@ -157,9 +220,11 @@ func _apply_zoom(new_factor: float) -> void:
 	cam.position = mouse_world + (cam.position - mouse_world) * (old_zoom / new_zoom)
 	_clamp_camera(cam)
 
-## カメラ位置をマップ矩形から大きく外れないようクランプ (ズームイン時のみ可動)。
+## カメラ位置をマップ矩形から大きく外れないようクランプ。
+## ズーム=1.0 (フィット) かつ手動操作 (パン/追従) が一度も無ければフィット位置に固定する。
+## 手動操作後はズーム=1.0 でも自由に動ける (フィット復帰はホイールズームアウトのみ)。
 func _clamp_camera(cam: Camera2D) -> void:
-	if _zoom_factor <= ZOOM_MIN + 0.0001:
+	if _zoom_factor <= ZOOM_MIN + 0.0001 and not _manual_camera:
 		cam.position = _fit_pos
 		return
 	var m := world.map
@@ -286,7 +351,8 @@ func _update_inspector() -> void:
 	var age_days := float(world.tick - g.born_tick) / float(params.ticks_per_day)
 	var state_hex: String = STATE_HEX.get(g.state, "8a7d68")
 	var lines: Array = []
-	lines.append("[b][color=#ffb454]%s[/color][/b]" % GobNames.of(g))
+	var follow_tag := "  [color=#e8943a]📍追従中[/color]" if _follow_id == g.id else ""
+	lines.append("[b][color=#ffb454]%s[/color][/b]%s" % [GobNames.of(g), follow_tag])
 	lines.append("[color=#8a7d68]%s · %s · %.1f 日齢 · [color=#%s]%s[/color][/color]" % [
 		sex_jp, ROLE_JP.get(g.role, "?"), age_days, state_hex, STATE_JP.get(g.state, "?")])
 	lines.append("[color=#7a9a4e]体力[/color] %s %.1f/%.0f" % [_text_bar(g.hp / g.max_hp, 8), g.hp, g.max_hp])
@@ -432,10 +498,11 @@ func _update_camera() -> void:
 	_fit_zoom = minf(zoom_x, zoom_y)
 	_fit_pos = Vector2(m.width * renderer.tile_size / 2.0, m.height * renderer.tile_size / 2.0) \
 		+ Vector2(RIGHT_PANEL_W / 2.0 / _fit_zoom, -20.0 / _fit_zoom)
-	# 現在のユーザー倍率を保って再適用 (factor=1.0 ならフィット位置へ正確に復帰)。
+	# 現在のユーザー倍率を保って再適用
+	# (factor=1.0 かつ手動操作なしならフィット位置へ正確に復帰)。
 	var z := _fit_zoom * _zoom_factor
 	cam.zoom = Vector2(z, z)
-	if _zoom_factor <= ZOOM_MIN + 0.0001:
+	if _zoom_factor <= ZOOM_MIN + 0.0001 and not _manual_camera:
 		cam.position = _fit_pos
 	else:
 		_clamp_camera(cam)
