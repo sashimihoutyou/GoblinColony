@@ -34,6 +34,15 @@ const STATE_HEX := {
 	Goblin.State.HUNGRY: "c08a3a", Goblin.State.SLEEP: "4a6b8a", Goblin.State.WORK: "7a9a4e",
 	Goblin.State.WANDER: "8a7d68", Goblin.State.ENRAGED: "ff5530", Goblin.State.KNOCKED_OUT: "6a4838",
 }
+const ROOM_TYPE_JP := {
+	TileMapData.RoomType.NEST: "寝床", TileMapData.RoomType.NURSERY: "苗床",
+	TileMapData.RoomType.SMITHY: "泥鍛冶屋", TileMapData.RoomType.RAT_RANCH: "ネズミ牧場",
+	TileMapData.RoomType.MUSHROOM: "キノコ農園", TileMapData.RoomType.WITCH: "まじない医",
+}
+
+# --- 選択対象の種別 (将来の奇跡ターゲティングでも再利用)。renderer の pick_any() が
+# 返す int (0=なし/1=ゴブリン/2=敵/3=部屋) をこの enum へ写像する。---
+enum SelKind { NONE, GOBLIN, ENEMY, ROOM }
 
 var world: World
 var params: SimParams
@@ -42,7 +51,8 @@ var renderer: Renderer
 
 var speed: float = 1.0        # 0 / 1 / 3
 var _accum_ms: float = 0.0
-var selected_id: int = -1
+var sel_kind: int = SelKind.NONE
+var sel_id: int = -1   # GOBLIN/ENEMY: ユニット id。ROOM: world.map.rooms のインデックス
 var _forage_feed_count: int = 0  # T4: 採集フィードの間引き (4 回に 1 回だけ流す)
 
 # --- カメラ操作 (演出層ローカル状態。シムには触れない) ---
@@ -97,7 +107,8 @@ func _process(delta: float) -> void:
 				break
 	# 描画は毎フレーム (tick 間も補間・粒子・炎が動く)。
 	# α = 次 tick までの端数 (固定タイムステップ補間。停止中は固定され静止)。
-	renderer.selected_id = selected_id
+	renderer.sel_kind = sel_kind
+	renderer.sel_id = sel_id
 	renderer.render(world, delta, speed, clampf(_accum_ms / MS_PER_TICK, 0.0, 1.0))
 	_update_status()
 	_update_inspector()
@@ -160,17 +171,21 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		match event.button_index:
 			MOUSE_BUTTON_LEFT:
-				# 左クリック: 個体選択 (ワールド座標なのでカメラ変換に自動追従)。追従はしない。
+				# 左クリック: 個体/敵/部屋を選択 (ワールド座標なのでカメラ変換に自動追従)。追従はしない。
 				if event.pressed:
-					selected_id = renderer.pick(world, get_global_mouse_position())
+					var picked := renderer.pick_any(world, get_global_mouse_position())
+					sel_kind = _sel_kind_from_pick(int(picked.kind))
+					sel_id = int(picked.id)
 			MOUSE_BUTTON_RIGHT:
 				# 右クリック: ゴブリンを拾えれば追従モード開始 (インスペクタ選択も同期)。
-				# 空振りなら追従解除。
+				# 敵/部屋/空振りは選択のみ更新し追従は解除する。
 				if event.pressed:
-					var id := renderer.pick(world, get_global_mouse_position())
-					if id >= 0:
-						selected_id = id
-						_follow_id = id
+					var picked2 := renderer.pick_any(world, get_global_mouse_position())
+					var kind2 := _sel_kind_from_pick(int(picked2.kind))
+					sel_kind = kind2
+					sel_id = int(picked2.id)
+					if kind2 == SelKind.GOBLIN:
+						_follow_id = sel_id
 						_manual_camera = true
 					else:
 						_follow_id = -1
@@ -330,6 +345,14 @@ func _find_goblin(id: int) -> Goblin:
 			return g
 	return null
 
+## renderer.pick_any() の int (0=なし/1=ゴブリン/2=敵/3=部屋) を SelKind へ写像する。
+func _sel_kind_from_pick(kind: int) -> int:
+	match kind:
+		1: return SelKind.GOBLIN
+		2: return SelKind.ENEMY
+		3: return SelKind.ROOM
+		_: return SelKind.NONE
+
 # ════ HUD ════
 func _update_status() -> void:
 	if _status_label == null:
@@ -371,13 +394,26 @@ func _child_count() -> int:
 			n += 1
 	return n
 
+const _INSPECTOR_HELP := "[color=#5a4f40]ゴブリン・敵・部屋をタップすると、その詳細が見える。[/color]"
+
 func _update_inspector() -> void:
 	if _inspector == null:
 		return
-	var g := _find_goblin(selected_id)
-	if g == null:
-		_inspector.text = "[color=#5a4f40]ゴブリンをタップすると、その個体の暮らしぶりが見える。[/color]"
-		return
+	match sel_kind:
+		SelKind.GOBLIN:
+			var g := _find_goblin(sel_id)
+			if g == null:
+				_inspector.text = _INSPECTOR_HELP
+				return
+			_update_inspector_goblin(g)
+		SelKind.ENEMY:
+			_update_inspector_enemy(sel_id)
+		SelKind.ROOM:
+			_update_inspector_room(sel_id)
+		_:
+			_inspector.text = _INSPECTOR_HELP
+
+func _update_inspector_goblin(g: Goblin) -> void:
 	var sex_jp := "♀ 雌" if g.sex == Goblin.Sex.FEMALE else "♂ 雄"
 	var age_days := float(world.tick - g.born_tick) / float(params.ticks_per_day)
 	var state_hex: String = STATE_HEX.get(g.state, "8a7d68")
@@ -407,6 +443,35 @@ func _update_inspector() -> void:
 		tags.append("伴侶を失った悲しみ")
 	if not tags.is_empty():
 		lines.append("[color=#5a4f40]" + " · ".join(tags) + "[/color]")
+	_inspector.text = "\n".join(lines)
+
+func _update_inspector_enemy(id: int) -> void:
+	var e: EnemyUnit = null
+	for cand in world.enemies:
+		if cand.id == id:
+			e = cand
+			break
+	if e == null:
+		_inspector.text = "[color=#5a4f40]討ち取った。[/color]"
+		return
+	var lines: Array = []
+	var title := "人間の襲撃者" if e.is_human else "ゴブリンの襲撃者 (敵対部族)"
+	lines.append("[b][color=#c0432e]%s[/color][/b]" % title)
+	lines.append("[color=#7a9a4e]体力[/color] %s %.1f/%.0f" % [_text_bar(e.hp / e.max_hp, 8), e.hp, e.max_hp])
+	lines.append("[color=#8a7d68]第%d巣口へ進軍中[/color]" % (e.target_gate_idx + 1))
+	_inspector.text = "\n".join(lines)
+
+func _update_inspector_room(idx: int) -> void:
+	if idx < 0 or idx >= world.map.rooms.size():
+		_inspector.text = _INSPECTOR_HELP
+		return
+	var r: Dictionary = world.map.rooms[idx]
+	var name_jp: String = ROOM_TYPE_JP.get(r.room_type, "?")
+	var lines: Array = []
+	lines.append("[b][color=#ffb454]%s[/color][/b]" % name_jp)
+	lines.append("[color=#8a7d68]広さ %d×%d[/color]" % [r.w, r.h])
+	var assigned_n: int = (r.assigned as Array).size() if r.has("assigned") else 0
+	lines.append("[color=#7a9a4e]配置済み[/color] %d 体" % assigned_n)
 	_inspector.text = "\n".join(lines)
 
 # ════ UI 構築 (Web 版ダッシュボードの配色) ════
