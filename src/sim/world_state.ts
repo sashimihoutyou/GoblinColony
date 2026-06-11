@@ -69,6 +69,14 @@ export interface WorldState {
   // 表のメーターであり、KI-10 が却下した「裏で追従する DDA」とは別物。
   // humanHostility > 0 は人間への加害が始まった = 中立ルート (§13) から外れた印。
   humanHostility: number;
+  // ゴブリン 2 部族の敵対度メーター (§13 3 勢力分離 / KI-24 残り)。
+  // 人間と違い「常時の業」(小ノイズ層 §13) で放置でもじわじわ悪化する (自然位置が
+  // やや敵対寄り)。苦魚族は同種に容赦なく悪化が最速、ブン・タ＝タ族は友好的で最遅。
+  // 朝貢 (tributeCaptive = 捕虜の返還) で下げられる (§13 双方向化)。
+  // 人間メーターにドリフトを乗せないのは §14.5.7 の中立ルート保護のため:
+  // humanHostility は「加害でのみ動く」からこそ中立グッドエンドの判定に使える。
+  buntaHostility: number;
+  kugyoHostility: number;
   rng: RngState;
 
   // --- 捕虜 (§2.5 ワイルドカード資源 / 性別×種族で出口が変わる) ---
@@ -104,4 +112,8 @@ export interface WorldState {
   raidStartHp: number; // 戦闘開始時の総 HP (損耗 = HP 損失で測る / KI-13)
   raidIsHuman: boolean; // 現襲撃の敵が人間勢力か (撃退時の捕虜種族を決める)
   raidMaleFrac: number; // 現襲撃から取れる捕虜の雄割合
+  raidFaction: Faction; // 現襲撃の勢力 (§13。raidIsHuman の精密版・部族の色付け用)
 }
+
+/** 3 勢力 (§13): 人間 (強・敵対) / ブン・タ＝タ族 (友好的) / 苦魚族 (容赦ない)。 */
+export type Faction = "human" | "bunta" | "kugyo";

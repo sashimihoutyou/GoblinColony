@@ -87,6 +87,15 @@ export interface WorldParams {
   raidIntervalDaysAtPeace: number; // 敵対度 0 のときの大規模襲撃間隔 (日)
   raidIntervalDaysAtMax: number; // 敵対度 1 (MAX) のときの間隔 (日・最短)
 
+  // --- 3 勢力分離 (§13 / KI-24 残り) ---
+  // 常時の業 (小ノイズ層): ゴブリン 2 部族は放置でじわじわ悪化する。人間に
+  // ドリフトは無い (加害でのみ動く = 中立ルート保護 §14.5.7)。日次で校正し
+  // makeWorldParams が per-tick へ変換する (KI-02)。
+  hostilityDriftPerTickBunta: number; // ブン・タ＝タ族の自然悪化 (友好的 = 最遅)
+  hostilityDriftPerTickKugyo: number; // 苦魚族の自然悪化 (同種に容赦ない = 最速)
+  hostilityTributeDrop: number; // 朝貢 (捕虜返還) 1 体での下降 (解放より大きい)
+  kugyoBaseRaidShare: number; // 敵対度ゼロ同士のときゴブリン襲撃が苦魚族である割合
+
   // --- 自動襲撃スケジューラ (§11/§12。raidIntervalDays を読んで大規模襲撃を発火) ---
   // opt-in (既定 false): 既存の外部トリガ (beginRaid) ベースのテスト/手動運用を
   // 壊さないため。real game / §12 夜間バッチ自動プレイヤーが true にして使う。
@@ -270,6 +279,13 @@ export function makeWorldParams(ticksPerDay = TICKS_PER_DAY_BASE): WorldParams {
     hostilityReleaseDrop: 0.04,
     raidIntervalDaysAtPeace: 5,
     raidIntervalDaysAtMax: 1,
+    // 3 勢力分離 (§13): 常時の業は日次定義 → per-tick 変換 (KI-02)。30 日放置で
+    // 苦魚 +0.36 / ブン・タ＝タ +0.06 ほど。朝貢は解放 (0.04) より大きく下げる
+    // (能動的な外交手段の手応え)。最終値は §15。
+    hostilityDriftPerTickBunta: 0.002 / ticksPerDay,
+    hostilityDriftPerTickKugyo: 0.012 / ticksPerDay,
+    hostilityTributeDrop: 0.1,
+    kugyoBaseRaidShare: 0.7,
     // 自動襲撃スケジューラ: 既定はオフ。規模式は cycle.ts と同一の出所 (KI-01)。
     autoRaidEnabled: false,
     baseEnemies: b.BASE_ENEMIES,

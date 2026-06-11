@@ -1219,6 +1219,8 @@
     const rows = [
       { name: "信仰", val: w.faith, max: p.faithCap, color: "var(--ember)", fmt: v=>v.toFixed(0) },
       { name: "人間の敵対度", val: w.humanHostility, max: 1, color: "var(--blood)", fmt: v=>(v*100).toFixed(0)+"%" },
+      { name: "苦魚族の敵対度", val: w.kugyoHostility, max: 1, color: "var(--blood)", fmt: v=>(v*100).toFixed(0)+"%" },
+      { name: "ブン・タ＝タの敵対度", val: w.buntaHostility, max: 1, color: "var(--blood)", fmt: v=>(v*100).toFixed(0)+"%" },
       { name: "損耗バフ (surge)", val: w.surge, max: p.surgeMax, color: "var(--blood)", fmt: v=>v.toFixed(2) },
       { name: "食料バフ", val: w.foodBuff, max: p.foodBuffMax, color: "var(--moss)", fmt: v=>v.toFixed(2) },
       { name: "頭数 / 上限", val: pop, max: w.capPop, color: "var(--moss)", fmt: ()=>String(pop) },
@@ -1281,11 +1283,20 @@
     const releaseButtons = `
       <button data-act="release" data-sex="male" ${w.capMaleHuman < 1 ? "disabled" : ""}>雄人間捕虜を解放</button>
       <button data-act="release" data-sex="female" ${w.capFemaleHuman < 1 ? "disabled" : ""}>雌人間捕虜を解放</button>`;
+    // 朝貢 (§13 双方向化): 種族の合う捕虜 1 体を返して該当勢力の敵対度を下げる。
+    const goblinCaptives = w.capMaleGoblin + w.capFemaleGoblin;
+    const humanCaptives = w.capMaleHuman + w.capFemaleHuman;
+    const tributeButtons = `
+      <button data-act="tribute" data-faction="human" ${humanCaptives < 1 ? "disabled" : ""}>人間へ朝貢</button>
+      <button data-act="tribute" data-faction="kugyo" ${goblinCaptives < 1 ? "disabled" : ""}>苦魚族へ朝貢</button>
+      <button data-act="tribute" data-faction="bunta" ${goblinCaptives < 1 ? "disabled" : ""}>ブン・タ＝タへ朝貢</button>`;
     const actionsHtml = `
       <div class="group-label">側室に娶る — 異性の空いた個体に捕虜を添わせる</div>
       <div class="row">${concubineButtons}</div>
       <div class="group-label">解放 — 人間の敵対度をわずかに下げる</div>
-      <div class="row">${releaseButtons}</div>`;
+      <div class="row">${releaseButtons}</div>
+      <div class="group-label">朝貢 — 捕虜を返して相手勢力の敵対度を大きく下げる</div>
+      <div class="row">${tributeButtons}</div>`;
 
     const html = countsHtml + " " + actionsHtml;
     if (html === lastCaptiveHtml) return;
@@ -1317,6 +1328,15 @@
       w = GS.releaseHumanCaptive(w, p, sex);
       if (w.humanHostility < before - 1e-9) {
         pushLog("event", `${btn.dataset.sex === "male" ? "雄" : "雌"}の人間捕虜を解放した。人間の敵対度がわずかに和らいだ。`);
+      }
+    } else if (btn.dataset.act === "tribute") {
+      const faction = btn.dataset.faction;
+      const before = GS.maxHostility(w);
+      const sumBefore = w.humanHostility + w.buntaHostility + w.kugyoHostility;
+      w = GS.tributeCaptive(w, p, faction);
+      if (w.humanHostility + w.buntaHostility + w.kugyoHostility < sumBefore - 1e-9) {
+        const names = { human: "人間", kugyo: "苦魚族", bunta: "ブン・タ＝タ族" };
+        pushLog("event", `${names[faction]}へ捕虜を差し出し、機嫌を取り結んだ。敵対度が和らいだ。`);
       }
     }
   });

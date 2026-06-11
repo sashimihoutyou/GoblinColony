@@ -27,7 +27,7 @@ import {
 } from "./goblin.ts";
 import { stepGoblin, type GoblinContext } from "./state_machine.ts";
 import { rankFromCumulative } from "./cycle.ts";
-import type { WorldState, RaidPhase, DeathCause } from "./world_state.ts";
+import type { WorldState, RaidPhase, DeathCause, Faction } from "./world_state.ts";
 import {
   CAPTIVE_COMP,
   type WorldParams,
@@ -73,6 +73,10 @@ export function initWorld(
     totemRank: 0,
     capPop: opts.capPop,
     humanHostility: 0, // §13 敵対度: 開始時は和平 (人間への加害なし)
+    // ゴブリン 2 部族も和平から始まるが、常時の業 (自然ドリフト §13) で
+    // 放置でもじわじわ悪化していく (苦魚族が最速)。
+    buntaHostility: 0,
+    kugyoHostility: 0,
     rng: rng.snapshot(),
     capMaleGoblin: 0,
     // 初期捕虜は「すでに巣にいる産み手候補」とみなし雌ゴブリン扱い (苗床の種)。
@@ -95,6 +99,7 @@ export function initWorld(
     raidStartHp: 0,
     raidIsHuman: false,
     raidMaleFrac: 0.7,
+    raidFaction: "kugyo", // 既定の侵攻側 (同種に容赦ない §13)。襲撃ごとに抽選で上書き
   };
 }
 
@@ -116,7 +121,8 @@ export function totalHp(w: WorldState): number {
 export function beginRaid(
   w: WorldState,
   enemies: number,
-  comp: CaptiveComposition = CAPTIVE_COMP.goblin
+  comp: CaptiveComposition = CAPTIVE_COMP.goblin,
+  faction?: Faction
 ): WorldState {
   const s = cloneWorld(w);
   s.phase = "combat";
@@ -126,6 +132,7 @@ export function beginRaid(
   s.raidLossThisFight = 0;
   s.raidIsHuman = comp.isHuman;
   s.raidMaleFrac = comp.maleFrac;
+  s.raidFaction = faction ?? (comp.isHuman ? "human" : "kugyo");
   return s;
 }
 
@@ -242,6 +249,12 @@ export function stepWorld(prev: WorldState, p: WorldParams): WorldState {
     }
   }
 
+  // --- 6.5. 常時の業 (§13 小ノイズ層): ゴブリン 2 部族の敵対度の自然悪化 ---
+  // 放置で関係がじわじわ悪化する (自然位置がやや敵対寄り)。苦魚族が最速。
+  // 人間メーターはドリフトさせない (加害でのみ動く = 中立ルート保護 §14.5.7)。
+  w.buntaHostility = clamp01(w.buntaHostility + p.hostilityDriftPerTickBunta);
+  w.kugyoHostility = clamp01(w.kugyoHostility + p.hostilityDriftPerTickKugyo);
+
   // --- 7. 自動襲撃スケジューラ (§11/§13: 敵対度連動の大規模襲撃) ---
   // opt-in。平時に予約 tick へ達したら大規模襲撃を発火し、次回を現在の敵対度で
   // 予約する (敵対度が高いほど短間隔 = 高難度 / KI-08)。発火は beginRaid と同等の
@@ -250,8 +263,13 @@ export function stepWorld(prev: WorldState, p: WorldParams): WorldState {
     // 規模: 検証済みマクロと同式 (cycle.ts / KI-01)。ランクは累計信仰から。
     const rank = rankFromCumulative(w.cum, p.rankThresholds);
     const enemies = p.baseEnemies + w.day * p.enemySlope + p.enemyPerRank * rank;
-    // 勢力: 怒らせた相手が攻めてくる。人間敵対度が高いほど人間勢力が来やすい。
-    const comp = rng.nextFloat() < w.humanHostility ? CAPTIVE_COMP.human : CAPTIVE_COMP.goblin;
+    // 勢力: 怒らせた相手が攻めてくる (§13 3 勢力)。人間敵対度が高いほど人間勢力が
+    // 来やすいのは従来どおりで、ゴブリン側は 2 部族の敵対度の重みで割れる。
+    // RNG 消費は従来と同じ 1 float (消費順序を変えない)。
+    const faction = pickRaidFaction(
+      w.humanHostility, w.buntaHostility, w.kugyoHostility,
+      p.kugyoBaseRaidShare, rng.nextFloat());
+    const comp = faction === "human" ? CAPTIVE_COMP.human : CAPTIVE_COMP.goblin;
     w.phase = "combat";
     w.enemiesRemaining = enemies;
     w.raidStartPop = livePop(w);
@@ -259,8 +277,9 @@ export function stepWorld(prev: WorldState, p: WorldParams): WorldState {
     w.raidLossThisFight = 0;
     w.raidIsHuman = comp.isHuman;
     w.raidMaleFrac = comp.maleFrac;
-    // 次回を現在の敵対度で予約 (§11/§13 の難度ダイヤル)。
-    const gapTicks = Math.max(1, Math.round(raidIntervalDays(w.humanHostility, p) * p.ticksPerDay));
+    w.raidFaction = faction;
+    // 次回は「最も怒っている勢力」の敵対度で予約 (§11/§13 の難度ダイヤル)。
+    const gapTicks = Math.max(1, Math.round(raidIntervalDays(maxHostility(w), p) * p.ticksPerDay));
     w.nextBigRaidTick = w.tick + gapTicks;
   }
 
@@ -1067,10 +1086,64 @@ export function releaseHumanCaptive(prev: WorldState, p: WorldParams, sex: Sex):
 }
 
 /**
+ * 朝貢 (§13 双方向化 / KI-24 残り): 捕虜 1 体を相手勢力へ返し、敵対度を大きく
+ * 下げる (解放より効く能動的な外交手段)。人間勢力には人間捕虜、ゴブリン部族には
+ * ゴブリン捕虜と、種族が合う捕虜しか差し出せない。雄から先に出す (雌は産み手と
+ * して温存 / KI-17)。在庫が無ければ何もしない (元の state を返す)。
+ * 注: 中立ルートの人間捕虜は朝貢も加害系の消費 (§13) — UI 側がルートで弾く。
+ */
+export function tributeCaptive(prev: WorldState, p: WorldParams, faction: Faction): WorldState {
+  const w = cloneWorld(prev);
+  if (faction === "human") {
+    if (w.capMaleHuman >= 1) w.capMaleHuman -= 1;
+    else if (w.capFemaleHuman >= 1) w.capFemaleHuman -= 1;
+    else return prev;
+    w.humanHostility = clamp01(w.humanHostility - p.hostilityTributeDrop);
+  } else {
+    if (w.capMaleGoblin >= 1) w.capMaleGoblin -= 1;
+    else if (w.capFemaleGoblin >= 1) w.capFemaleGoblin -= 1;
+    else return prev;
+    if (faction === "bunta") {
+      w.buntaHostility = clamp01(w.buntaHostility - p.hostilityTributeDrop);
+    } else {
+      w.kugyoHostility = clamp01(w.kugyoHostility - p.hostilityTributeDrop);
+    }
+  }
+  return w;
+}
+
+/** 3 勢力のうち最も高い敵対度 (§13)。襲撃間隔 (難度ダイヤル) の入力になる。 */
+export function maxHostility(w: WorldState): number {
+  return Math.max(w.humanHostility, w.buntaHostility, w.kugyoHostility);
+}
+
+/**
+ * 襲撃してくる勢力を抽選する純粋関数 (§13 3 勢力)。r は [0,1) の乱数 1 個。
+ * 人間判定は従来式 (r < humanHostility) のまま = 既存の検証帯を崩さない。
+ * 残りをゴブリン 2 部族で割る: 基礎割合 kugyoBaseShare (苦魚族は同種に容赦なく
+ * 攻めやすい) に互いの敵対度を重みとして上乗せする。
+ */
+export function pickRaidFaction(
+  human: number,
+  bunta: number,
+  kugyo: number,
+  kugyoBaseShare: number,
+  r: number
+): Faction {
+  if (r < human) return "human";
+  // 残り区間 [human, 1) を [0,1) へ正規化して部族間で分け合う (乱数は 1 個のまま)。
+  const u = human >= 1 ? 0 : (r - human) / (1 - human);
+  const wKugyo = kugyoBaseShare + kugyo;
+  const wBunta = 1 - kugyoBaseShare + bunta;
+  return u < wKugyo / (wKugyo + wBunta) ? "kugyo" : "bunta";
+}
+
+/**
  * 敵対度 → 大規模襲撃の間隔 (日) を線形写像する (§11/KI-08 の検証帯)。
  * 和平 (0) で raidIntervalDaysAtPeace、MAX (1) で raidIntervalDaysAtMax (最短)。
  * 襲撃トリガ層がこの間隔を読んで大規模襲撃を仕掛ける = 敵対度ループの消費側。
  * 純粋関数: state を持たず、敵対度メーターだけから難度ダイヤルを引く。
+ * 3 勢力化後は「最も怒っている勢力」(maxHostility) を入力に使う。
  */
 export function raidIntervalDays(hostility: number, p: WorldParams): number {
   const h = clamp01(hostility);
