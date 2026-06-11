@@ -12,6 +12,7 @@ func _init() -> void:
 	ok = _test_night_sleep() and ok
 	ok = _test_courtship_rendezvous() and ok
 	ok = _test_forage_loop() and ok
+	ok = _test_field_dispatch() and ok
 	ok = _test_guard_alarm() and ok
 	ok = _test_run_to_end() and ok
 	ok = _test_snapshot_roundtrip() and ok
@@ -270,6 +271,91 @@ func _test_forage_loop() -> bool:
 			food_before, w.food])
 		return false
 	print("  forage-loop: OK (food %.1f → %.1f)" % [food_before, w.food])
+	return true
+
+## 巣外の出現物 + 派遣 (§11.5) の決定論的検証。
+##  (1) 派遣 2 体が巣口を抜けて摘み取り → 集積所運搬で food が収量ぶん増える
+##  (2) 取り尽くしで出現物が消え、配達後に派遣が解除される
+##  (3) 夜になると未回収の出現物が消え、非運搬の派遣も解除される
+func _test_field_dispatch() -> bool:
+	var p := SimParams.new()
+	p.start_goblins = 4
+	p.food_per_rancher_tick = 0.0
+	p.hunger_rate = 0.0          # 空腹/睡眠/求愛の割り込みを抑えて派遣だけを切り出す
+	p.sleep_rate = 0.0
+	p.accident_prob = 0.0
+	p.fumble_prob = 0.0
+	p.court_base_chance = 0.0
+	p.field_spawn_per_tick = 0.0  # 自然湧きを止め、テストが置いた 1 つに限定
+	p.move_per_tick = 100.0
+	var w := World.new()
+	w.setup(p)
+	w.food = 0.0
+	# 全員を手すきの成体にする (役職・部屋割当・採集仕事を外す)。
+	for r in w.map.rooms:
+		(r.assigned as Array).clear()
+	for g in w.goblins:
+		g.role = Goblin.Role.NONE
+		g.is_unique = false
+		g.child_born_tick = -1
+		g.hunger = 0.0
+		g.hunger_latched = false
+		g.sleepiness = 0.0
+		g.sleep_latched = false
+	for i in range(w.map.forage_regrow.size()):
+		w.map.forage_regrow[i] = p.forage_regrow_ticks
+	# 出現物を直接置く (湧き抽選と同じタイル選択を使う)。
+	var pos := w._field_spawn_tile()
+	if pos == Vector2i(-1, -1):
+		print("  FAIL: field — no reachable exterior spawn tile")
+		return false
+	var f := FieldResource.new()
+	f.id = w.next_field_id
+	w.next_field_id += 1
+	f.x = pos.x
+	f.y = pos.y
+	f.amount = 2
+	w.field_resources.append(f)
+	# (1)(2) 2 体派遣 → 収量 2 食が集積所に届き、出現物が消える。
+	if w.dispatch_to_field(f.id, 2) != 2:
+		print("  FAIL: field — could not dispatch 2 goblins")
+		return false
+	var guard := 0
+	while w.food < 2.0 - 0.001 and guard < 500:
+		w.tick_once()
+		guard += 1
+	if w.food < 2.0 - 0.001:
+		print("  FAIL: field — hauled food did not reach 2.0 (food=%.2f)" % w.food)
+		return false
+	if w._field_by_id(f.id) != null:
+		print("  FAIL: field — depleted resource was not removed")
+		return false
+	# 配達と解除の後始末が済むまで少し回す。
+	for i in range(30):
+		w.tick_once()
+	for g in w.goblins:
+		if g.dispatch_id != -1 or g.carrying_food:
+			print("  FAIL: field — goblin %d still dispatched/carrying after depletion" % g.id)
+			return false
+	# (3) 夜の店じまい: 出現物 + 非運搬の派遣を置いて夜の tick を 1 回回す。
+	var f2 := FieldResource.new()
+	f2.id = w.next_field_id
+	w.next_field_id += 1
+	f2.x = pos.x
+	f2.y = pos.y
+	f2.amount = 2
+	w.field_resources.append(f2)
+	var g0 := w.goblins[0] as Goblin
+	g0.dispatch_id = f2.id
+	w.tick = p.day_ticks  # 次の tick_once で夜に入る (日境界はまたがない)
+	w.tick_once()
+	if not w.field_resources.is_empty():
+		print("  FAIL: field — resource survived nightfall")
+		return false
+	if g0.dispatch_id != -1:
+		print("  FAIL: field — dispatch not recalled at nightfall")
+		return false
+	print("  field-dispatch: OK (food %.1f, guard=%d)" % [w.food, guard])
 	return true
 
 ## 警報 (T5) の決定論的検証。就寝中の個体 + 巣内の敵 + 生存見張りを用意し、

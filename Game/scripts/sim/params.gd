@@ -116,6 +116,14 @@ var forage_regrow_ticks: int          # 摘んだ後の再生長 (1.5 日を _in
 # 1 回の運搬で集積所に加わる食料 (一食分。イベント単位なので KI-02 変換不要)。
 var forage_carry_value: float = 1.0
 
+# --- 巣外の出現物 (§11.5 昼の外征の縮小版: 採取系のみ) ---
+var field_spawn_per_tick: float    # 自然湧き確率 (日次 2.5 を変換。昼のみ判定 = 実効 ≈ 1.75 個/日)
+var field_max: int = 2             # 同時存在の上限
+var field_amount_min: int = 2      # 出現物 1 つの収量の下限 (一食単位)
+var field_amount_spread: int = 4   # 収量 = min + next_int(spread) → 2〜5 食
+# 1 運搬で集積所に加わる食料 (一食分。イベント単位なので KI-02 変換不要)。
+var field_carry_value: float = 1.0
+
 # --- パン虫 (§3-11 救済床の実体化。攻撃してこない食用ザコ) ---
 var mite_spawn_per_tick: float     # 自然湧き確率 (日次 1.2 を変換。上限と合わせ 1 日 0〜2 匹ほど)
 var mite_max: int = 2              # 同時存在の上限
@@ -160,6 +168,7 @@ func _init() -> void:
 	# (旧 4.5 相当は、廃止した抽象救済 + 一括消費クランプ (在庫が僅かでも一食に
 	# なる) の隠れ補助に依存した見かけの均衡で、キャップ人口で飢餓スパイラル化)
 	food_per_rancher_tick = 8.0 / tpd
+	field_spawn_per_tick = 2.5 / tpd
 	mite_spawn_per_tick = 1.2 / tpd
 	mite_move_per_tick = 30.0 / tpd
 	mite_retarget_per_tick = 24.0 / tpd

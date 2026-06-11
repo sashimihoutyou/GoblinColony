@@ -16,7 +16,7 @@ enum CommandType {
 	APPOINT_ROLE,   # 役職任命 {goblin_id, role}
 	CAST_MIRACLE,   # 奇跡発動 {miracle, x, y}  (P2 で実装)
 	BUILD_ROOM,     # 建築 {room_type, x, y}     (P2 で実装)
-	DISPATCH,       # 派遣 {count, target}        (P2 で実装)
+	DISPATCH,       # 派遣 {count, target}  (§11.5: target = 出現物 id)
 }
 
 var queue: Array = []  # Array[Dictionary] {type, ...}
@@ -33,6 +33,8 @@ func apply(world: World) -> void:
 				_apply_assign(world, cmd)
 			CommandType.APPOINT_ROLE:
 				_apply_role(world, cmd)
+			CommandType.DISPATCH:
+				world.dispatch_to_field(cmd.target, cmd.count)
 			_:
 				pass  # P2 で実装予定の干渉
 	queue.clear()
