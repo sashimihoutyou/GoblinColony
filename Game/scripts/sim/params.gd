@@ -8,13 +8,13 @@ class_name SimParams
 ##
 ## ★ tick/day の規律 (KI-02): レート・所要時間は「日単位」で定義し、_init() が
 ## ticks_per_day で per-tick 値へ変換する。per-tick 定数を素で書かないこと。
-## 1 tick = 1 実秒 (main.gd MS_PER_TICK) × ticks_per_day=60 で 1 日 = 実 60 秒。
+## 1 tick = 0.375 実秒 (main.gd MS_PER_TICK) × ticks_per_day=240 で 1 日 = 実 90 秒。
 
 # --- 時間 (§3-10) ---
-# 1 tick = 0.25 実秒 (main.gd MS_PER_TICK) × ticks_per_day=240 で 1 日 = 実 60 秒。
+# 1 tick = 0.375 実秒 (main.gd MS_PER_TICK) × ticks_per_day=240 で 1 日 = 実 90 秒。
 # tick を細かくしたのは連続移動 (RimWorld 風) を滑らかにサンプリングするため。
 var ticks_per_day: int = 240
-var day_ticks: int = 144         # 昼の tick 数 (= 日の 6 割)
+var day_ticks: int = 168         # 昼の tick 数 (= 日の 7 割。_init で再計算)
 var final_day: int = 30          # 規定日数 (最終日にラストバトル)
 
 # --- 個体ステートマシン (閾値は比率なので解像度に依らない) ---
@@ -27,9 +27,9 @@ var sleep_off: float = 0.15
 # 欲求ペーシング (§15 調整。Web 版ダッシュボードと同じ「観賞に耐える日次リズム」):
 #  - 空腹ゲージは満腹から 1.2 日で限界に達する。発火 (hunger_on=0.7) は約 0.84 日
 #    ごと = 1 日 1.2 回食事。食事は集積所到着で即時 (一括消費)。
-#  - 睡眠: 夜 (日の後ろ 4 割 = 0.4 日) に巣全体で就寝する (夜トリガー §5)。昼の
-#    疲労発火 (sleep_on=0.8) は予備経路。夜 0.4 日 × 解消 3.25/日 = 1.3 で昼の
-#    蓄積 (0.6) を完全に解消できる。
+#  - 睡眠: 夜 (日の後ろ 3 割 = 0.3 日) に巣全体で就寝する (夜トリガー §5)。昼の
+#    疲労発火 (sleep_on=0.8) は予備経路。夜 0.3 日 × 解消 3.25/日 ≈ 0.975 で昼の
+#    蓄積 (0.7 日 × 1.0/day = 0.7) を完全に解消できる。
 var hunger_rate: float
 var sleep_rate: float
 var hp_regen_per_tick: float
@@ -127,7 +127,7 @@ var seed: int = 0
 func _init() -> void:
 	# 日次レート → per-tick (KI-02)。値そのものは旧 20tpd 校正の日次等価。
 	var tpd := float(ticks_per_day)
-	day_ticks = int(tpd * 0.6)
+	day_ticks = int(tpd * 0.7)
 	hunger_rate = (1.0 / 1.2) / tpd
 	sleep_rate = 1.0 / tpd
 	hp_regen_per_tick = 1.5 / tpd

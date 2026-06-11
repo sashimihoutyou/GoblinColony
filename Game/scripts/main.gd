@@ -2,11 +2,11 @@ extends Node2D
 ## メインループ (P1-09 / P1-10)。実時間 → tick 変換 → controller → world.tick → render。
 ##
 ## 実時間に触れるのはここだけ (KI-09 tick_driver 相当)。速度倍率と端数持ち越し。
-## タイムスケール: 1 tick = 0.25 実秒 × ticks_per_day=240 → 1 日 = 実 60 秒 (3x で 20 秒)。
+## タイムスケール: 1 tick = 0.375 実秒 × ticks_per_day=240 → 1 日 = 実 90 秒 (3x で 30 秒)。
 ## tick が細かいのは連続移動 (RimWorld 風) のサンプリングのため (params.gd 参照)。
 ## UI はコードで構築する (Web 版ダッシュボードと同じ配色言語: 闇の岩・琥珀・苔)。
 
-const MS_PER_TICK := 250.0
+const MS_PER_TICK := 375.0
 
 # --- Web 版と同じ配色 ---
 const C_BG_PANEL := Color(0.078, 0.067, 0.055, 0.92)

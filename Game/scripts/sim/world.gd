@@ -364,9 +364,9 @@ func _movement_target(g: Goblin, in_raid: bool) -> Vector2i:
 				return Vector2i(-1, -1)
 			return _nearest_enemy_pos(g.pos())
 		Goblin.State.FEAR:
-			# 戦えないので肉の壁の内側へ。外の部屋へ逃げると敵を引き込んだ上で
-			# 処刑される (恐怖は隣接攻撃に反撃できない)。
-			return _sanctuary_slot(g.id)
+			# 戦えない恐怖個体はトーテムの足元 (敵が殺到する) に留まると処刑
+			# される。寝床 (NEST) へ退いて前線から離れる。
+			return _room_slot(TileMapData.RoomType.NEST, g.id)
 		Goblin.State.DYING, Goblin.State.SLEEP:
 			return _room_slot(TileMapData.RoomType.NEST, g.id)
 		Goblin.State.HUNGRY:
