@@ -146,6 +146,19 @@
   .bond-banner .msg { flex: 1; min-width: 220px; color: var(--ink); }
   .bond-banner .msg b { color: #c79be0; }
 
+  /* ── 捕虜の処遇 (GDD §10 プレイヤー動詞: 解放/側室) ── */
+  .captive-counts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; margin-bottom: 12px; }
+  .captive-row { display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 11px; color: var(--ink-dim); border-bottom: 1px solid var(--rock-line); padding-bottom: 3px; }
+  .captive-row .n { font-family: var(--font-display); font-size: 15px; color: var(--bone); }
+  .captive-actions { display: flex; flex-direction: column; gap: 6px; }
+  .captive-actions .group-label { font-size: 10px; color: var(--ink-faint);
+    letter-spacing: 0.12em; margin-top: 4px; }
+  .captive-actions .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .captive-actions button { flex: 1; min-width: 0; font-size: 11px; padding: 6px 8px; }
+  .captive-actions button:disabled { opacity: 0.35; cursor: not-allowed; }
+  .captive-actions button:disabled:hover { background: var(--rock); border-color: var(--rock-line); color: var(--ink); }
+
   /* ── メーター ── */
   .meters { display: flex; flex-direction: column; gap: 14px; }
   .meter-head { display: flex; justify-content: space-between; align-items: baseline;
@@ -265,6 +278,11 @@
       <div class="panel">
         <div class="panel-title">資源</div>
         <div class="meters" id="meters"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">捕虜の処遇</div>
+        <div class="captive-counts" id="captive-counts"></div>
+        <div class="captive-actions" id="captive-actions"></div>
       </div>
       <div class="panel">
         <div class="panel-title">ステート分布</div>
@@ -1198,10 +1216,8 @@
   /* ════ 右ペイン: メーター・分布 ════ */
   function renderMeters() {
     const pop = GS.livePop(w);
-    const captives = w.capMaleGoblin + w.capFemaleGoblin + w.capMaleHuman + w.capFemaleHuman;
     const rows = [
       { name: "信仰", val: w.faith, max: p.faithCap, color: "var(--ember)", fmt: v=>v.toFixed(0) },
-      { name: "捕虜", val: captives, max: 20, color: "var(--bone)", fmt: v=>v.toFixed(1) },
       { name: "人間の敵対度", val: w.humanHostility, max: 1, color: "var(--blood)", fmt: v=>(v*100).toFixed(0)+"%" },
       { name: "損耗バフ (surge)", val: w.surge, max: p.surgeMax, color: "var(--blood)", fmt: v=>v.toFixed(2) },
       { name: "食料バフ", val: w.foodBuff, max: p.foodBuffMax, color: "var(--moss)", fmt: v=>v.toFixed(2) },
@@ -1218,6 +1234,92 @@
       </div>`;
     }).join("");
   }
+
+  /* ════ 捕虜パネル (GDD §10: 解放/側室) ════
+     操作はすべて GoblinSim の関数経由 (KI-09)。演出層からシム状態を直書きしない。 */
+  // takeConcubine の suitorId 探索: 捕虜と異性で、生存中・成体・つがい未定の個体を
+  // 先頭から1体選ぶ (決定的: goblins 配列順)。見つからなければ娶れない (ボタン無効化)。
+  function findSuitor(captiveSex) {
+    const wantSex = captiveSex === GS.Sex.Female ? GS.Sex.Male : GS.Sex.Female;
+    return w.goblins.find((g) =>
+      g.sex === wantSex &&
+      GS.stateName(g.state) !== "Dead" &&
+      g.childBornTick === null &&
+      g.role !== GS.Role.Concubine &&
+      g.mateId === null
+    ) || null;
+  }
+
+  // 側室に娶れる捕虜区分 (data-idx がこの配列の添字)。
+  const CONCUBINE_TARGETS = [
+    { sex: () => GS.Sex.Male, human: false, label: "雄ゴブリンを側室に", n: () => w.capMaleGoblin },
+    { sex: () => GS.Sex.Female, human: false, label: "雌ゴブリンを側室に", n: () => w.capFemaleGoblin },
+    { sex: () => GS.Sex.Male, human: true, label: "雄人間を側室に", n: () => w.capMaleHuman },
+    { sex: () => GS.Sex.Female, human: true, label: "雌人間を側室に", n: () => w.capFemaleHuman },
+  ];
+
+  // renderHUD は毎フレーム呼ばれる。innerHTML を毎回書き換えるとクリックの瞬間に
+  // ボタンが差し替わって click が落ちるため、マークアップが変わったときだけ書き、
+  // クリックはコンテナへの委譲リスナー 1 本 (起動時登録) で受ける (bond バナーと同じ規律)。
+  let lastCaptiveHtml = "";
+
+  function renderCaptivePanel() {
+    const counts = [
+      { label: "雄ゴブリン", n: w.capMaleGoblin },
+      { label: "雌ゴブリン", n: w.capFemaleGoblin },
+      { label: "雄人間", n: w.capMaleHuman },
+      { label: "雌人間", n: w.capFemaleHuman },
+    ];
+    const countsHtml = counts.map(c =>
+      `<div class="captive-row"><span>${c.label}</span><span class="n">${c.n.toFixed(1)}</span></div>`
+    ).join("");
+
+    const concubineButtons = CONCUBINE_TARGETS.map((t, i) => {
+      const disabled = (t.n() < 1 || !findSuitor(t.sex())) ? "disabled" : "";
+      return `<button data-act="concubine" data-idx="${i}" ${disabled}>${t.label}</button>`;
+    }).join("");
+    const releaseButtons = `
+      <button data-act="release" data-sex="male" ${w.capMaleHuman < 1 ? "disabled" : ""}>雄人間捕虜を解放</button>
+      <button data-act="release" data-sex="female" ${w.capFemaleHuman < 1 ? "disabled" : ""}>雌人間捕虜を解放</button>`;
+    const actionsHtml = `
+      <div class="group-label">側室に娶る — 異性の空いた個体に捕虜を添わせる</div>
+      <div class="row">${concubineButtons}</div>
+      <div class="group-label">解放 — 人間の敵対度をわずかに下げる</div>
+      <div class="row">${releaseButtons}</div>`;
+
+    const html = countsHtml + " " + actionsHtml;
+    if (html === lastCaptiveHtml) return;
+    lastCaptiveHtml = html;
+    document.getElementById("captive-counts").innerHTML = countsHtml;
+    document.getElementById("captive-actions").innerHTML = actionsHtml;
+  }
+
+  // 委譲リスナー (起動時に 1 回だけ登録。innerHTML 書き換え後も生きる)。
+  document.getElementById("captive-actions").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-act]");
+    if (!btn || btn.disabled) return;
+    if (btn.dataset.act === "concubine") {
+      const t = CONCUBINE_TARGETS[Number(btn.dataset.idx)];
+      const suitor = findSuitor(t.sex());
+      if (!suitor) return;
+      const r = GS.takeConcubine(w, p, suitor.id, t.sex(), t.human);
+      if (r.ok) {
+        w = r.state;
+        const concubine = w.goblins[w.goblins.length - 1];
+        pushLog("love", `${nameOf(suitor)} が捕虜 ${nameOf(concubine)} を側室に迎えた。`);
+        prevSnap = snapshotForDiff(w);
+      } else {
+        pushLog("event", "側室に迎えることができなかった。");
+      }
+    } else if (btn.dataset.act === "release") {
+      const sex = btn.dataset.sex === "male" ? GS.Sex.Male : GS.Sex.Female;
+      const before = w.humanHostility;
+      w = GS.releaseHumanCaptive(w, p, sex);
+      if (w.humanHostility < before - 1e-9) {
+        pushLog("event", `${btn.dataset.sex === "male" ? "雄" : "雌"}の人間捕虜を解放した。人間の敵対度がわずかに和らいだ。`);
+      }
+    }
+  });
 
   function renderStates() {
     const counts = {};
@@ -1327,7 +1429,7 @@
     document.getElementById("s-dead").textContent = deaths;
     document.getElementById("s-fledge").textContent = fledges;
     document.getElementById("s-cap").textContent = Math.round(w.capPop);
-    renderMeters(); renderStates(); renderBondBanner();
+    renderMeters(); renderStates(); renderBondBanner(); renderCaptivePanel();
   }
 
   /* ════ tick 前進と差分検出 ════ */
