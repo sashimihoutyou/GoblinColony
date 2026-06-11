@@ -378,6 +378,12 @@ func _draw() -> void:
 	for d in _decor:
 		_draw_decor(d)
 
+	# --- キノコ床 (T4 採集スポット。生長済みは明るく、再生長中はしぼむ) ---
+	# forage_regrow は毎 tick 変わる動的状態なので decor キャッシュに乗せず直接描く。
+	for i in range(m.forage_spots.size()):
+		var grown: bool = (i < m.forage_regrow.size()) and m.forage_regrow[i] == 0
+		_draw_forage(_tile_center(m.forage_spots[i] as Vector2i), i, grown)
+
 	# --- トーテム像 + 炎 ---
 	_draw_totem(m)
 
@@ -566,6 +572,21 @@ func _draw_goblin(pos: Vector2, g: Goblin, face: float) -> void:
 				Vector2(kx - 1.4, by - r * 1.0), Vector2(kx, by - r * 1.65), Vector2(kx + 1.4, by - r * 1.0),
 			]), Color("e8c060"))
 		draw_arc(Vector2(x, by), r + 3.4, 0, TAU, 20, Color(1.0, 0.71, 0.33, 0.35 + pulse * 0.3), 1.2)
+	# 見張り (GUARD): 背に小さな槍を負う識別 (演出層ローカル / T5)。
+	if g.role == Goblin.Role.GUARD:
+		draw_line(Vector2(x - face * r * 0.8, by + r * 0.6),
+			Vector2(x - face * r * 1.1, by - r * 1.5), Color("8a7a58"), 1.2)
+		draw_colored_polygon(PackedVector2Array([
+			Vector2(x - face * r * 1.1, by - r * 1.5),
+			Vector2(x - face * r * 1.35, by - r * 1.1),
+			Vector2(x - face * r * 0.85, by - r * 1.1),
+		]), COL_BONE)
+	# キノコ運搬中 (T4): 頭上に小さなキノコを抱える。
+	if g.carrying_food:
+		var mx := x + face * r * 0.7
+		var my := by - r * 1.1
+		draw_line(Vector2(mx, my + 1.4), Vector2(mx, my - 0.4), Color("9a8a70"), 1.0)
+		_ellipse(Vector2(mx, my - 0.8), 1.8, 1.0, Color("c08a5a"))
 	# HP の弧 (低 HP のみ)
 	var frac := clampf(g.hp / g.max_hp, 0.0, 1.0)
 	if frac < 0.4:
@@ -581,6 +602,21 @@ func _draw_goblin(pos: Vector2, g: Goblin, face: float) -> void:
 		elif g.state == Goblin.State.HUNGRY and randf() < 0.02:
 			_spawn_p({"color": Color("a8842a"), "x": x + randf_range(-r, r), "y": by + r * 0.4,
 				"vx": randf_range(-6, 6), "vy": 8.0, "g": 40.0, "life": 0.5, "size": 1.0})
+
+# ── キノコ床スプライト (小さなキノコ群。生長済み = 明るい笠、再生長中 = しぼむ) ──
+func _draw_forage(pos: Vector2, id: int, grown: bool) -> void:
+	var cap_col := Color("c08a5a") if grown else Color("4a3a2c")  # 笠 (摘めると明るい)
+	var stem_col := Color("9a8a70") if grown else Color("3a342a") # 柄
+	var h := GobNames.hash_id(id * 2654435761)
+	# 3 本のキノコを足元に散らす (決定的な小オフセット)。
+	for k in range(3):
+		var ox := float((h >> (k * 4)) % 7) - 3.0
+		var oy := float((h >> (k * 4 + 2)) % 5) - 2.0
+		var cx := pos.x + ox
+		var cy := pos.y + oy
+		var sc := 1.0 if grown else 0.7
+		draw_line(Vector2(cx, cy + 2.0 * sc), Vector2(cx, cy - 0.5 * sc), stem_col, 1.0)
+		_ellipse(Vector2(cx, cy - 1.0 * sc), 2.2 * sc, 1.2 * sc, cap_col)
 
 # ── パン虫スプライト (青白い小さな幼虫。体長 3px ほど、わずかに蠢く) ──
 func _draw_mite(pos: Vector2, id: int) -> void:

@@ -97,7 +97,14 @@ var food_per_rancher_tick: float       # ネズミ牧場 (日次 8.0 を変換)
 # 一食 = 1.0 単位 (食料カウンタ = 残り食事回数)。
 # 需要 ≈ hunger_rate/hunger_on ≈ 1.19 食/体/日。
 var food_per_meal: float = 1.0
-var ranch_assign_frac: float = 0.34    # 無役成体のうち牧場へ寄せる目標割合
+# 牧場へ寄せる目標割合。雌は採集 (T4) へ移したぶん、牧場プールが雄のみになり
+# 供給が上振れしないよう 0.34 → 0.30 へ下げる (採集の純増を相殺する置換)。
+var ranch_assign_frac: float = 0.30    # 無役成体のうち牧場へ寄せる目標割合
+
+# --- キノコ採集 (T4 メスの仕事。巣内のキノコ床から摘み集積所へ運ぶ) ---
+var forage_regrow_ticks: int          # 摘んだ後の再生長 (1.5 日を _init() で変換)
+# 1 回の運搬で集積所に加わる食料 (一食分。イベント単位なので KI-02 変換不要)。
+var forage_carry_value: float = 1.0
 
 # --- パン虫 (§3-11 救済床の実体化。攻撃してこない食用ザコ) ---
 var mite_spawn_per_tick: float     # 自然湧き確率 (日次 1.2 を変換。上限と合わせ 1 日 0〜2 匹ほど)
@@ -152,3 +159,4 @@ func _init() -> void:
 	move_per_tick = 150.0 / tpd
 	enemy_move_per_tick = 110.0 / tpd
 	wander_retarget_per_tick = 8.0 / tpd
+	forage_regrow_ticks = int(1.5 * tpd)

@@ -31,6 +31,7 @@ var over_cap_ticks: int = 0
 var next_big_raid_tick: int = 0
 var raid_is_human: bool = false
 var raid_start_hp: float = 0.0
+var alarm_raised: bool = false   # T5: この襲撃で見張りが警報を上げ済みか (襲撃ごとにリセット)
 var outcome: int = Outcome.ONGOING
 
 # ログ (UI / デバッグ用)。
@@ -86,6 +87,8 @@ func setup(p: SimParams) -> void:
 			break
 	# ネズミ牧場に数体割り当て (食料生産 §3-11)。
 	_assign_to_room(TileMapData.RoomType.RAT_RANCH, 3)
+	# 見張りを任命 (T5: 巣口の番。目標人数 = alive/10 を 1〜3 でクランプ)。
+	_maintain_guards()
 
 func _make_goblin(sex: int, role: int, origin: int) -> Goblin:
 	var g := Goblin.new()
@@ -133,11 +136,13 @@ func tick_once() -> void:
 	_update_raid_schedule()
 	_step_enemies()
 	_step_mites()
+	_step_guard_alarm()   # T5: 見張りが巣内の敵を発見したら警報 (寝た個体を叩き起こす)
 	_step_goblins()
 	_resolve_combat()
 	_step_breeding()
 	_step_accidents()
 	_step_social()
+	_step_forage()        # T4: キノコ床の再生長を進める (食料加算は採集者の運搬で行う)
 	_step_food()
 	_step_starvation()
 	_step_faith()
@@ -153,6 +158,7 @@ func _on_day_boundary() -> void:
 	if surge > 0.0:
 		surge = max(0.0, surge - params.surge_decay)
 	_rebalance_ranch()
+	_maintain_guards()  # T5: 見張りの目標人数を維持 (死亡で欠けたら補充・過剰なら解任)
 	# ラストバトルは最終日に一度だけ (>= だと日境界ごとに多重スポーンしていた)。
 	if day == params.final_day:
 		_spawn_raid(true, true)  # ラストバトル
@@ -177,6 +183,7 @@ func _spawn_raid(final_battle: bool, human: bool) -> void:
 	phase = Phase.COMBAT
 	raid_is_human = human
 	raid_start_hp = _total_hp()
+	alarm_raised = false  # T5: 新しい襲撃ごとに警報フラグをリセット
 	var count := int(params.base_enemies + params.enemy_per_day * day)
 	if final_battle:
 		count = int(count * params.final_mult)
@@ -193,6 +200,7 @@ func _spawn_raid_small() -> void:
 	phase = Phase.COMBAT
 	raid_is_human = false
 	raid_start_hp = _total_hp()
+	alarm_raised = false  # T5: 新しい襲撃ごとに警報フラグをリセット
 	_event({"t": "raid_small", "count": count})
 	for i in range(count):
 		_spawn_enemy_at_gate(gate_idx, false)
@@ -284,7 +292,7 @@ func _step_goblins() -> void:
 		ctx.in_raid = in_raid
 		ctx.enemy_nearby = _enemy_near(g.pos(), 4)
 		ctx.assigned_to_combat = (g.sex == Goblin.Sex.MALE or g.is_unique)
-		ctx.assigned_to_room = _has_room_assignment(g.id)
+		ctx.assigned_to_room = _has_room_assignment(g.id) or _is_forager(g)
 		# 隣接 (8 近傍) のパン虫を狩れる。mite は各個体のループ内で都度取得するため、
 		# 同 tick に 2 体が同じ 1 匹を食べる二重計上は起きない (食べた時点で erase)。
 		var mite := _nearest_mite(g.pos(), 1)
@@ -382,10 +390,64 @@ func _movement_target(g: Goblin, in_raid: bool) -> Vector2i:
 		_:
 			return Vector2i(-1, -1)
 
+# T4: この個体がキノコ採集の対象か (雌成体・役職 NONE・部屋未割当)。
+# 仕事の有無は「摘み取り可能なスポットがある or 運搬中」で判定する (放浪との切替)。
+func _is_forager(g: Goblin) -> bool:
+	if g.sex != Goblin.Sex.FEMALE or g.is_child() or g.role != Goblin.Role.NONE:
+		return false
+	if _has_room_assignment(g.id):
+		return false
+	if g.carrying_food:
+		return true
+	# 摘み取り可能なスポット (再生長 0) が 1 つでもあれば仕事がある。
+	for i in range(map.forage_spots.size()):
+		if map.forage_regrow[i] == 0:
+			return true
+	return false
+
+# T4: 採集者の WORK 移動目標。運搬中なら集積所、非運搬なら最寄りの生長済みスポット。
+# 食料への加算・摘み取りは到着判定 (チェビシェフ <=1) でここから副作用として行う。
+func _forage_target(g: Goblin) -> Vector2i:
+	if g.carrying_food:
+		# 集積所へ運搬。到着で食料を加え、手ぶらに戻る (採集ループを 1 周終える)。
+		if _at_storage(g.pos()):
+			food += params.forage_carry_value
+			g.carrying_food = false
+			_event({"t": "forage", "id": g.id, "sex": g.sex})
+			return Vector2i(-1, -1)
+		return _eat_slot(g.id)  # 集積所隣接スロットへ散らして向かう (_slot_hash 規約)
+	# 非運搬: 最寄りの生長済みスポットへ。距離最小・同距離はインデックス順 (決定的)。
+	var best := -1
+	var bd := 999999
+	for i in range(map.forage_spots.size()):
+		if map.forage_regrow[i] != 0:
+			continue
+		var sp: Vector2i = map.forage_spots[i]
+		var d: int = maxi(abs(g.x - sp.x), abs(g.y - sp.y))
+		if d < bd:
+			bd = d
+			best = i
+	if best < 0:
+		return Vector2i(-1, -1)  # 摘み取れるスポットがない (再生長待ち) → その場で待機
+	var spot: Vector2i = map.forage_spots[best]
+	if maxi(abs(g.x - spot.x), abs(g.y - spot.y)) <= 1:
+		# 到着: 摘み取り (再生長を仕掛け、運搬状態へ)。先着が摘めば他は次 tick で
+		# 別スポットへ向き直る (forage_regrow が即 >0 になり選択対象から外れる)。
+		map.forage_regrow[best] = params.forage_regrow_ticks
+		g.carrying_food = true
+		return Vector2i(-1, -1)
+	return spot
+
 func _work_target(g: Goblin) -> Vector2i:
+	# T4: 雌の採集者はキノコ床⇔集積所を往復する (役職判定より先に分岐)。
+	if _is_forager(g):
+		return _forage_target(g)
 	# 役職に応じた作業場所。族長/シャーマンはトーテム付近、牧場係は牧場へ。
 	if g.role == Goblin.Role.CHIEF or g.role == Goblin.Role.SHAMAN:
 		return _hall_slot(g.id)
+	# T5: 見張りは担当巣口の内側に立つ (持ち場で番をする)。
+	if g.role == Goblin.Role.GUARD:
+		return _guard_post(g)
 	for i in range(map.rooms.size()):
 		var r: Dictionary = map.rooms[i]
 		if (g.id in r.assigned):
@@ -394,6 +456,128 @@ func _work_target(g: Goblin) -> Vector2i:
 				return tiles[_slot_hash(g.id) % tiles.size()]
 			return Vector2i(r.x + r.w / 2, r.y + r.h / 2)
 	return Vector2i(-1, -1)
+
+# T5: 見張りの持ち場 = 担当巣口の内側の床 (gate からチェビシェフ距離 2〜3 で巣内側)。
+# 決定的に 1 タイルを選ぶ (gate に最も近い該当床。同距離は走査順で安定)。たまに
+# 隣の巣口へローテーションして坑道を歩く姿が見える (持ち場の巡回)。
+func _guard_post(g: Goblin) -> Vector2i:
+	if map.gates.is_empty():
+		return _hall_slot(g.id)
+	# 0.5 日ごとに担当巣口をローテーション (決定的トリガー。rng 不使用)。
+	var half := maxi(1, int(0.5 * params.ticks_per_day))
+	if g.guard_gate >= 0 and (tick % half) == 0:
+		g.guard_gate = (g.guard_gate + 1) % map.gates.size()
+	var gi: int = g.guard_gate if g.guard_gate >= 0 else 0
+	gi = clampi(gi, 0, map.gates.size() - 1)
+	var gate: Vector2i = map.gates[gi]
+	# gate から巣内側 (トーテム寄り) で距離 2〜3 の床を、gate に最も近い順で 1 つ。
+	var best := Vector2i(-1, -1)
+	var bd := 999999
+	for p in _nest_floors:
+		var dg: int = maxi(abs(p.x - gate.x), abs(p.y - gate.y))
+		if dg < 2 or dg > 3:
+			continue
+		# 巣内側であること (トーテムへ向かう敵を最初に迎える位置)。
+		if _manhattan(p, map.totem) >= _manhattan(gate, map.totem):
+			continue
+		if dg < bd:
+			bd = dg
+			best = p
+	if best != Vector2i(-1, -1):
+		return best
+	# フォールバック: 距離条件を満たす床が無ければ gate に最も近い巣内床へ寄る。
+	# (_find_floor_near は rng を消費するため、移動目標の選択では使わない =
+	#  スロット選択は rng 不使用の規約を守る)
+	var near := Vector2i(-1, -1)
+	var nd := 999999
+	for p in _nest_floors:
+		var dn: int = _manhattan(p, gate)
+		if dn < nd:
+			nd = dn
+			near = p
+	return near if near != Vector2i(-1, -1) else _hall_slot(g.id)
+
+# T5: 見張りの目標人数を維持する (任命/補充/解任)。setup と日境界で呼ぶ。
+# 候補は雄成体・役職 NONE・部屋未割当から work_bias 降順 (同値は id 昇順) で決定的に選ぶ。
+func _maintain_guards() -> void:
+	if map.gates.is_empty():
+		return
+	var target := clampi(_alive_count() / 10, 1, 3)
+	# 現任の見張り (生存) を集計。
+	var current: Array = []
+	for g in goblins:
+		if g.role == Goblin.Role.GUARD and g.state != Goblin.State.DEAD:
+			current.append(g)
+	# 過剰なら id 昇順で末尾を NONE へ戻す (決定的)。
+	if current.size() > target:
+		current.sort_custom(func(a, b): return a.id < b.id)
+		while current.size() > target:
+			var g: Goblin = current.pop_back()
+			g.role = Goblin.Role.NONE
+			g.guard_gate = -1
+	elif current.size() < target:
+		# 不足ぶんを候補から補充。work_bias 降順・同値 id 昇順で決定的に選ぶ。
+		var pool: Array = []
+		for g in goblins:
+			if g.sex != Goblin.Sex.MALE or g.is_child() or g.role != Goblin.Role.NONE:
+				continue
+			if _has_room_assignment(g.id):
+				continue
+			pool.append(g)
+		pool.sort_custom(func(a, b):
+			if a.work_bias != b.work_bias:
+				return a.work_bias > b.work_bias
+			return a.id < b.id)
+		var gate_idx := 0
+		# 既存の見張りが使っている巣口の次から順繰りに割り当てる。
+		for gg in current:
+			gate_idx = maxi(gate_idx, gg.guard_gate + 1)
+		var need := target - current.size()
+		for i in range(min(need, pool.size())):
+			var g: Goblin = pool[i]
+			g.role = Goblin.Role.GUARD
+			g.guard_gate = gate_idx % map.gates.size()
+			gate_idx += 1
+			_event({"t": "guard", "id": g.id})
+
+# T5: 見張りの警報。交戦中に巣内へ侵入した敵を見張りが発見したら、1 襲撃に 1 回だけ
+# 全個体を叩き起こす (寝た個体が防衛召集に乗れるようにする)。_step_goblins の直前に呼ぶ。
+func _step_guard_alarm() -> void:
+	if alarm_raised or phase != Phase.COMBAT:
+		return
+	# 巣内に敵が居るか。
+	var intruder := false
+	for e in enemies:
+		if _inside_nest(e.pos()):
+			intruder = true
+			break
+	if not intruder:
+		return
+	# いずれかの生存 (起きている) 見張りからチェビシェフ距離 8 以内に敵がいるか。
+	var alarm_guard: Goblin = null
+	for g in goblins:
+		if g.role != Goblin.Role.GUARD:
+			continue
+		if g.state == Goblin.State.DEAD or g.state == Goblin.State.KNOCKED_OUT \
+				or g.state == Goblin.State.SLEEP:
+			continue
+		for e in enemies:
+			if maxi(abs(g.x - e.x), abs(g.y - e.y)) <= 8:
+				alarm_guard = g
+				break
+		if alarm_guard != null:
+			break
+	if alarm_guard == null:
+		return
+	# 警報: 全生存個体を起こす (睡眠ラッチ解除 + 今夜は就寝済み扱い)。睡眠ゲージは
+	# そのまま (起きて防衛に向かう。in_raid 中は夜トリガーの再ラッチが効かない)。
+	alarm_raised = true
+	for g in goblins:
+		if g.state == Goblin.State.DEAD:
+			continue
+		g.sleep_latched = false
+		g.night_sleep_done = true
+	_event({"t": "alarm", "id": alarm_guard.id})
 
 # 連続移動 (§3-0): 1 tick に speed タイルぶん waypoint へ前進する。
 # パス再計算は「目標が 3 タイル超動いた」か「パスが尽きてまだ目標に居ない」とき
@@ -670,7 +854,11 @@ func _step_accidents() -> void:
 			g.path = []
 			g.target_x = -1
 			g.target_y = -1
-			_event({"t": "fumble", "id": g.id, "sex": g.sex})
+			# T4: 運搬中なら手のキノコを取り落とす (食料は加算されない)。
+			var dropped: bool = g.carrying_food
+			if dropped:
+				g.carrying_food = false
+			_event({"t": "fumble", "id": g.id, "sex": g.sex, "dropped": dropped})
 		# 2) 事故死: ドジな個体ほど確率が上がる (平均は従来の accident_prob と同じ)。
 		if rng.next_float() < params.accident_prob * (0.5 + g.clumsy):
 			g.hp = 0.0
@@ -716,6 +904,15 @@ func _step_social() -> void:
 			a.quarrel_cd = params.quarrel_cooldown_ticks
 			b.quarrel_cd = params.quarrel_cooldown_ticks
 			_event({"t": "quarrel", "a": a.id, "b": b.id})
+
+# --- キノコ採集 (T4): キノコ床の再生長 ---
+# 摘み取られたスポット (forage_regrow[i] > 0) を毎 tick デクリメントする。
+# 0 になったら再び摘み取り可。食料への加算は採集者が集積所へ運んだ時点で行う
+# (_movement_target の WORK 分岐)。
+func _step_forage() -> void:
+	for i in range(map.forage_regrow.size()):
+		if map.forage_regrow[i] > 0:
+			map.forage_regrow[i] -= 1
 
 # --- 食料 (§3-11) ---
 func _step_food() -> void:
@@ -1006,12 +1203,17 @@ func _rebalance_ranch() -> void:
 		var cleaned: Array = []
 		for gid in assigned:
 			var g: Goblin = _goblin_by_id(int(gid))
-			if g != null and g.state != Goblin.State.DEAD:
+			# T4: 死亡に加え雌も外す (創設時の _assign_to_room は性別を見ないため、
+			# 混ざった雌は最初の日境界でここから抜けて採集へ回る)。
+			if g != null and g.state != Goblin.State.DEAD and g.sex == Goblin.Sex.MALE:
 				cleaned.append(gid)
 		assigned = cleaned
 		if assigned.size() < target:
 			var pool: Array = []
 			for g in goblins:
+				# T4: 牧場プールは雄のみ (雌は採集専任へ移した)。
+				if g.sex != Goblin.Sex.MALE:
+					continue
 				if g.role == Goblin.Role.NONE and not g.is_unique and not g.is_child() \
 						and not (g.id in assigned):
 					pool.append(g.id)
@@ -1035,6 +1237,7 @@ func snapshot() -> Dictionary:
 		"surge": surge, "over_cap_ticks": over_cap_ticks,
 		"next_big_raid_tick": next_big_raid_tick,
 		"raid_is_human": raid_is_human, "raid_start_hp": raid_start_hp,
+		"alarm_raised": alarm_raised,
 		"outcome": outcome, "next_goblin_id": next_goblin_id,
 		"next_enemy_id": next_enemy_id, "next_mite_id": next_mite_id,
 		"deaths_total": deaths_total, "births_total": births_total,
@@ -1051,6 +1254,7 @@ func restore(d: Dictionary) -> void:
 	surge = d.surge; over_cap_ticks = d.over_cap_ticks
 	next_big_raid_tick = d.next_big_raid_tick
 	raid_is_human = d.raid_is_human; raid_start_hp = d.raid_start_hp
+	alarm_raised = d.alarm_raised
 	outcome = d.outcome; next_goblin_id = d.next_goblin_id
 	next_enemy_id = d.next_enemy_id; next_mite_id = d.next_mite_id
 	deaths_total = d.deaths_total; births_total = d.births_total

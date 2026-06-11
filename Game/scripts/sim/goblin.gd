@@ -19,7 +19,7 @@ enum State {
 	KNOCKED_OUT = 10,  # §3-21 HP0 で倒れたユニーク
 }
 
-enum Role { NONE = 0, SHAMAN = 1, CHIEF = 2, WITCH_DOCTOR = 3, NURSERY_HOST = 4, CONCUBINE = 5 }
+enum Role { NONE = 0, SHAMAN = 1, CHIEF = 2, WITCH_DOCTOR = 3, NURSERY_HOST = 4, CONCUBINE = 5, GUARD = 6 }
 enum Sex { MALE = 0, FEMALE = 1 }
 enum Origin { FOUNDER = 0, BORN = 1, NURSERY = 2, SUMMONED = 3, CAPTIVE_JOINED = 4, CONCUBINE = 5 }
 
@@ -63,6 +63,10 @@ var downed_ticks: int = -1     # -1 = 倒れていない
 var fear_safe_ticks: int = 0
 var child_born_tick: int = -1  # -1 = 成体
 var quarrel_cd: int = 0        # ケンカのクールダウン (tick。0 で発火可)
+
+# 仕事フラグ (§3-11)
+var carrying_food: bool = false  # T4 採集: キノコを摘んで集積所へ運搬中か
+var guard_gate: int = -1         # T5 見張り: 担当巣口 index (-1 = 見張りでない)
 
 # 出自 (KI-20)
 var born_tick: int = 0
@@ -115,6 +119,7 @@ func snapshot() -> Dictionary:
 		"is_unique": is_unique, "downed_ticks": downed_ticks,
 		"fear_safe_ticks": fear_safe_ticks, "child_born_tick": child_born_tick,
 		"quarrel_cd": quarrel_cd,
+		"carrying_food": carrying_food, "guard_gate": guard_gate,
 		"born_tick": born_tick, "mother_id": mother_id, "father_id": father_id,
 		"origin": origin, "x": x, "y": y, "fx": fx, "fy": fy,
 		"target_x": target_x, "target_y": target_y,

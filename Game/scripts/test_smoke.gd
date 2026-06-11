@@ -11,6 +11,8 @@ func _init() -> void:
 	ok = _test_hungry_arrival_does_not_spend_food() and ok
 	ok = _test_night_sleep() and ok
 	ok = _test_courtship_rendezvous() and ok
+	ok = _test_forage_loop() and ok
+	ok = _test_guard_alarm() and ok
 	ok = _test_run_to_end() and ok
 	ok = _test_snapshot_roundtrip() and ok
 	if ok:
@@ -207,6 +209,133 @@ func _fresh_goblin() -> Goblin:
 	g.sleepiness = 0.0
 	g.sleep_latched = false
 	return g
+
+## キノコ採集ループ (T4) の決定論的検証。雌 1 体 + 生長済みスポット 1 つを用意し、
+## 摘み取り → 集積所へ運搬 → food が forage_carry_value ぶん増えることを確認する。
+func _test_forage_loop() -> bool:
+	var p := SimParams.new()
+	p.start_goblins = 1
+	p.food_per_rancher_tick = 0.0
+	p.hunger_rate = 0.0          # 空腹/睡眠の割り込みを抑えて採集だけを切り出す
+	p.sleep_rate = 0.0
+	p.accident_prob = 0.0        # 事故死で個体が消えないように
+	p.fumble_prob = 0.0          # 転倒で取り落とさないように
+	p.move_per_tick = 100.0      # 1 tick で到達できるよう十分速く
+	var w := World.new()
+	w.setup(p)
+	w.food = 0.0
+	# 唯一の個体を雌・無役・成体にし、スポットの真上に置く。
+	var g := w.goblins[0] as Goblin
+	g.sex = Goblin.Sex.FEMALE
+	g.role = Goblin.Role.NONE
+	g.is_unique = false
+	g.child_born_tick = -1
+	g.hunger = 0.0
+	g.hunger_latched = false
+	g.sleepiness = 0.0
+	g.sleep_latched = false
+	g.carrying_food = false
+	# 部屋割当を外す (採集者条件: 役職 NONE・部屋未割当)。
+	for r in w.map.rooms:
+		(r.assigned as Array).clear()
+	# スポットを 1 つだけ生長済みにし、他は再生長中にして対象を一意にする。
+	if w.map.forage_spots.is_empty():
+		print("  FAIL: forage — no forage spots on map")
+		return false
+	for i in range(w.map.forage_regrow.size()):
+		w.map.forage_regrow[i] = p.forage_regrow_ticks
+	w.map.forage_regrow[0] = 0
+	var spot: Vector2i = w.map.forage_spots[0]
+	w._place(g, spot)
+	# 摘み取り: スポット上で 1 tick 回すと carrying_food になり、スポットが再生長へ。
+	w.tick_once()
+	if not g.carrying_food:
+		print("  FAIL: forage — female did not pick mushroom on the spot")
+		return false
+	if w.map.forage_regrow[0] <= 0:
+		print("  FAIL: forage — picked spot did not enter regrow")
+		return false
+	var food_before: float = w.food
+	# 運搬: 集積所まで回す (毎 tick 集積所へ向かう。move 100 で数 tick)。
+	var guard := 0
+	while g.carrying_food and guard < 200:
+		w.tick_once()
+		guard += 1
+	if g.carrying_food:
+		print("  FAIL: forage — carrier never reached storage (guard exceeded)")
+		return false
+	if w.food < food_before + p.forage_carry_value - 0.001:
+		print("  FAIL: forage — food did not increase by carry value (%.2f → %.2f)" % [
+			food_before, w.food])
+		return false
+	print("  forage-loop: OK (food %.1f → %.1f)" % [food_before, w.food])
+	return true
+
+## 警報 (T5) の決定論的検証。就寝中の個体 + 巣内の敵 + 生存見張りを用意し、
+## _step_guard_alarm で alarm イベントが出て、全個体の sleep_latched が解除されることを確認する。
+func _test_guard_alarm() -> bool:
+	var p := SimParams.new()
+	var w := World.new()
+	w.setup(p)
+	# 見張りが少なくとも 1 体居ること (setup で任命済み)。
+	var guard_g: Goblin = null
+	for g in w.goblins:
+		if g.role == Goblin.Role.GUARD:
+			guard_g = g
+			break
+	if guard_g == null:
+		print("  FAIL: alarm — no guard appointed at setup")
+		return false
+	# 全個体を就寝ラッチ状態に。
+	for g in w.goblins:
+		g.sleep_latched = true
+		g.night_sleep_done = false
+	# 交戦フェーズにし、巣内 (トーテム隣) に敵を 1 体置き、見張りの隣に寄せる。
+	w.phase = World.Phase.COMBAT
+	w.alarm_raised = false
+	var e := EnemyUnit.new()
+	e.id = 9000
+	e.max_hp = p.enemy_hp
+	e.hp = e.max_hp
+	w._place(e, guard_g.pos())  # 見張りと同タイル = チェビシェフ距離 0 (8 以内)
+	# 念のため巣内であることを確認 (見張りの持ち場は巣内のはず)。
+	if not w._inside_nest(e.pos()):
+		w._place(e, w.map.totem)
+		w._place(guard_g, w.map.totem)
+	w.enemies = [e]
+	# 見張りは起きている状態に (SLEEP/DEAD/KNOCKED_OUT 以外)。
+	guard_g.state = Goblin.State.WORK
+	guard_g.sleep_latched = false
+	w.last_events.clear()
+	w._step_guard_alarm()
+	# alarm イベントが出たか。
+	var alarmed := false
+	for ev in w.last_events:
+		if ev.get("t", "") == "alarm":
+			alarmed = true
+			break
+	if not alarmed:
+		print("  FAIL: alarm — no alarm event raised by guard near intruder")
+		return false
+	if not w.alarm_raised:
+		print("  FAIL: alarm — alarm_raised flag not set")
+		return false
+	# 全生存個体の sleep_latched が解除されたか (叩き起こし)。
+	for g in w.goblins:
+		if g.state == Goblin.State.DEAD:
+			continue
+		if g.sleep_latched:
+			print("  FAIL: alarm — goblin %d still sleep_latched after alarm" % g.id)
+			return false
+	# 1 襲撃 1 回: もう一度呼んでも二重発火しない。
+	w.last_events.clear()
+	w._step_guard_alarm()
+	for ev in w.last_events:
+		if ev.get("t", "") == "alarm":
+			print("  FAIL: alarm — alarm fired twice in one raid")
+			return false
+	print("  guard-alarm: OK")
+	return true
 
 func _test_run_to_end() -> bool:
 	var p := SimParams.new()
