@@ -364,9 +364,9 @@ func _movement_target(g: Goblin, in_raid: bool) -> Vector2i:
 				return Vector2i(-1, -1)
 			return _nearest_enemy_pos(g.pos())
 		Goblin.State.FEAR:
-			# 戦えないので肉の壁の内側へ。外の部屋へ逃げると敵を引き込んだ上で
-			# 処刑される (恐怖は隣接攻撃に反撃できない)。
-			return _sanctuary_slot(g.id)
+			# 戦えない恐怖個体はトーテムの足元 (敵が殺到する) に留まると処刑
+			# される。寝床 (NEST) へ退いて前線から離れる。
+			return _room_slot(TileMapData.RoomType.NEST, g.id)
 		Goblin.State.DYING, Goblin.State.SLEEP:
 			return _room_slot(TileMapData.RoomType.NEST, g.id)
 		Goblin.State.HUNGRY:
@@ -958,6 +958,24 @@ func _step_faith() -> void:
 	# トーテムの修繕 (§3-20): 平時に削れたぶんを直す。
 	if phase == Phase.PEACE and totem_hp < params.totem_hp_max:
 		totem_hp = min(params.totem_hp_max, totem_hp + params.totem_repair_per_tick)
+
+# --- 奇跡コマンド (§4 / §12): プレイヤー入力 (main.gd) から呼ぶ ---
+## 嘲りの稲妻。指定 id の生存敵に固定ダメージを与える。信仰残高が足りれば消費して
+## true を返す (残高不足・対象不在・終局時は false)。撃破後の除去と恵み食料は次 tick
+## の _resolve_combat が一元処理する (KI-20)。演出/フィードは main.gd 側が出す。
+func cast_lightning(enemy_id: int) -> bool:
+	if outcome != Outcome.ONGOING or faith < params.lightning_cost:
+		return false
+	var target: EnemyUnit = null
+	for e in enemies:
+		if e.id == enemy_id and e.hp > 0.0:
+			target = e
+			break
+	if target == null:
+		return false
+	faith -= params.lightning_cost
+	target.hp -= params.lightning_damage
+	return true
 
 # --- 死亡の一元化 (KI-20) ---
 func _cleanup_dead() -> void:

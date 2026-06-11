@@ -8,7 +8,8 @@ class_name Renderer
 ## 闇に沈んだ洞窟・琥珀の信仰の炎・耳と目を持つゴブリンスプライト・粒子演出。
 
 var tile_size: int = 16
-var selected_id: int = -1
+var sel_kind: int = 0   # 0=なし / 1=ゴブリン / 2=敵 / 3=部屋 (main.gd SelKind と対応)
+var sel_id: int = -1
 
 var _world: World = null
 var _font: Font
@@ -170,6 +171,14 @@ func on_event(e: Dictionary) -> void:
 			if atq != Vector2.ZERO:
 				_spawn_p({"kind": "text", "txt": "!", "color": Color("e06a50"),
 					"x": atq.x, "y": atq.y - 8.0, "vy": -10.0, "life": 1.0, "size": 8.0})
+		"lightning":
+			# 嘲りの稲妻 (§4): 着弾点 (ピクセル座標を直接受け取る) に青白い閃光バースト
+			# + "⚡"。敵を指すので _last_pos_of (ゴブリン用) は使わない。
+			var lx := float(e.get("x", 0.0))
+			var ly := float(e.get("y", 0.0))
+			_burst(Vector2(lx, ly), 14, {"speed": 60.0, "life": 0.5, "size": 2.0, "color": Color("cfe6ff")})
+			_spawn_p({"kind": "text", "txt": "⚡", "color": Color("e8e0ff"),
+				"x": lx, "y": ly - 10.0, "vy": -14.0, "life": 0.9, "size": 12.0})
 
 ## クリック位置 (ワールド座標) から最寄りの生存ゴブリン id を返す (-1 = なし)。
 func pick(world: World, pos: Vector2) -> int:
@@ -186,6 +195,38 @@ func pick(world: World, pos: Vector2) -> int:
 			best_d = d
 			best = g.id
 	return best
+
+## クリック位置から対象を拾う。{kind, id} を返す (kind: 0=なし/1=ゴブリン/2=敵/3=部屋)。
+## 優先: ユニット (ゴブリン→敵) を近接で拾い、外れたら部屋矩形で内包判定する。
+## 将来の奇跡ターゲティングでも再利用する (敵を指してキャスト等)。
+func pick_any(world: World, pos: Vector2) -> Dictionary:
+	# 1) 最寄りの生存ゴブリン (既存 pick と同じ近接判定)。
+	var gid := pick(world, pos)
+	if gid >= 0:
+		return {"kind": 1, "id": gid}
+	# 2) 最寄りの生存敵 (補間位置 _emap で判定)。
+	var best := -1
+	var best_d := tile_size * 1.3
+	for e in world.enemies:
+		if e.hp <= 0.0:
+			continue
+		var v: Dictionary = _emap.get(e.id, {})
+		if v.is_empty():
+			continue
+		var d: float = (v.pos as Vector2).distance_to(pos)
+		if d < best_d:
+			best_d = d
+			best = e.id
+	if best >= 0:
+		return {"kind": 2, "id": best}
+	# 3) 部屋矩形 (タイル座標で内包判定)。
+	var tx := int(floor(pos.x / tile_size))
+	var ty := int(floor(pos.y / tile_size))
+	for i in world.map.rooms.size():
+		var r: Dictionary = world.map.rooms[i]
+		if tx >= r.x and tx < r.x + r.w and ty >= r.y and ty < r.y + r.h:
+			return {"kind": 3, "id": i}
+	return {"kind": 0, "id": -1}
 
 # ════ 内部: 補間移動 ════
 # 各エントリの pos を prev→cur の線形補間で求める (固定タイムステップ補間)。
@@ -432,16 +473,26 @@ func _draw() -> void:
 		draw_rect(Rect2(0, 0, 6, hpx), red, true)
 		draw_rect(Rect2(wpx - 6, 0, 6, hpx), red, true)
 
-	# --- 選択中の個体 ---
-	if selected_id >= 0 and _gmap.has(selected_id):
-		var g3 := _find_goblin(selected_id)
-		if g3 != null:
-			var pos: Vector2 = _gmap[selected_id].pos
-			draw_arc(pos, ts * 0.55 + sin(_t * 5.0) * 1.2, 0, TAU, 24, Color("e8dcc8"), 1.0)
-			if _font != null:
-				var nm := GobNames.of(g3)
-				draw_string(_font, pos + Vector2(-30, -ts * 0.8), nm,
-					HORIZONTAL_ALIGNMENT_CENTER, 60, 9, Color("e8dcc8"))
+	# --- 選択中の対象 (ゴブリン/敵/部屋) ---
+	match sel_kind:
+		1:  # ゴブリン: 名前つきの淡い輪
+			if _gmap.has(sel_id):
+				var g3 := _find_goblin(sel_id)
+				if g3 != null:
+					var pos: Vector2 = _gmap[sel_id].pos
+					draw_arc(pos, ts * 0.55 + sin(_t * 5.0) * 1.2, 0, TAU, 24, Color("e8dcc8"), 1.0)
+					if _font != null:
+						var nm := GobNames.of(g3)
+						draw_string(_font, pos + Vector2(-30, -ts * 0.8), nm,
+							HORIZONTAL_ALIGNMENT_CENTER, 60, 9, Color("e8dcc8"))
+		2:  # 敵: 血色の輪
+			if _emap.has(sel_id):
+				var epos: Vector2 = _emap[sel_id].pos
+				draw_arc(epos, ts * 0.55 + sin(_t * 5.0) * 1.2, 0, TAU, 24, Color("c0432e"), 1.5)
+		3:  # 部屋: 矩形のアウトライン
+			if sel_id >= 0 and sel_id < _world.map.rooms.size():
+				var r: Dictionary = _world.map.rooms[sel_id]
+				draw_rect(Rect2(r.x * ts, r.y * ts, r.w * ts, r.h * ts), Color("e8dcc8", 0.85), false, 1.5)
 
 func _find_goblin(id: int) -> Goblin:
 	for g in _world.goblins:
