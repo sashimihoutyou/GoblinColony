@@ -52,17 +52,19 @@ func decide(world: World) -> void:
 				})
 				need -= 1
 
-	# シャーマン最低 1 体。
-	var has_shaman := false
+	# シャーマン: 任命枠 (1 + トーテムランク §3) まで満たす。枠は上限であって
+	# 強制でない (KI-03) が、オートプレイは信仰を絶やさないため枠まで埋める。
+	var shamans := 0
 	for g in world.goblins:
 		if g.role == Goblin.Role.SHAMAN:
-			has_shaman = true
-			break
-	if not has_shaman:
+			shamans += 1
+	if shamans < world.shaman_slots():
 		for g in world.goblins:
+			if shamans >= world.shaman_slots():
+				break
 			if g.role == Goblin.Role.NONE and g.sex == Goblin.Sex.MALE and not g.is_child():
 				queue.append({
 					"type": CommandType.APPOINT_ROLE,
 					"goblin_id": g.id, "role": Goblin.Role.SHAMAN,
 				})
-				break
+				shamans += 1

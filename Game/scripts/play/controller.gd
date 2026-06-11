@@ -14,9 +14,21 @@ class_name Controller
 enum CommandType {
 	ASSIGN_ROOM,    # ゴブリンを部屋へ任命 {goblin_id, room_index}
 	APPOINT_ROLE,   # 役職任命 {goblin_id, role}
-	CAST_MIRACLE,   # 奇跡発動 {miracle, x, y}  (P2 で実装)
+	CAST_MIRACLE,   # 奇跡発動 {miracle, x, y} or {miracle, target_id}
 	BUILD_ROOM,     # 建築 {room_type, x, y}     (P2 で実装)
 	DISPATCH,       # 派遣 {count, target}  (§11.5: target = 出現物 id)
+}
+
+# 奇跡の種別 (§4)。CAST_MIRACLE コマンドの cmd.miracle に入れる。
+enum Miracle {
+	LIGHTNING,      # 嘲りの稲妻 {target_id = 敵 id}
+	MITES,          # 恵みのパン虫 (対象不要)
+	HONOR,          # 名誉ある死 {target_id = ゴブリン id}
+	MUD,            # 泥の抱擁 {x, y}
+	RAGE,           # 抑えられない怒り {x, y}
+	SUMMON,         # 下僕召喚 {x, y}
+	RALLY,          # 集合命令 {x, y} (無料の基本命令)
+	RALLY_CLEAR,    # 集合解除 (対象不要)
 }
 
 var queue: Array = []  # Array[Dictionary] {type, ...}
@@ -35,9 +47,30 @@ func apply(world: World) -> void:
 				_apply_role(world, cmd)
 			CommandType.DISPATCH:
 				world.dispatch_to_field(cmd.target, cmd.count)
+			CommandType.CAST_MIRACLE:
+				_apply_miracle(world, cmd)
 			_:
-				pass  # P2 で実装予定の干渉
+				pass  # P2 で実装予定の干渉 (BUILD_ROOM)
 	queue.clear()
+
+func _apply_miracle(world: World, cmd: Dictionary) -> void:
+	match cmd.miracle:
+		Miracle.LIGHTNING:
+			world.cast_lightning(cmd.get("target_id", -1))
+		Miracle.MITES:
+			world.cast_mites()
+		Miracle.HONOR:
+			world.cast_honor(cmd.get("target_id", -1))
+		Miracle.MUD:
+			world.cast_mud(cmd.x, cmd.y)
+		Miracle.RAGE:
+			world.cast_rage(cmd.x, cmd.y)
+		Miracle.SUMMON:
+			world.cast_summon(cmd.x, cmd.y)
+		Miracle.RALLY:
+			world.cast_rally(cmd.x, cmd.y)
+		Miracle.RALLY_CLEAR:
+			world.rally_clear()
 
 func _apply_assign(world: World, cmd: Dictionary) -> void:
 	if cmd.room_index < 0 or cmd.room_index >= world.map.rooms.size():

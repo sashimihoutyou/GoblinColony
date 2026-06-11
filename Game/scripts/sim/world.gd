@@ -35,6 +35,10 @@ var raid_is_human: bool = false
 var raid_start_hp: float = 0.0
 var alarm_raised: bool = false   # T5: この襲撃で見張りが警報を上げ済みか (襲撃ごとにリセット)
 var outcome: int = Outcome.ONGOING
+# 奇跡「泥の抱擁」(§4) の一時壁。{x, y, prev, expire_tick} の配列 (KI-09 保存対象)。
+var mud_walls: Array = []
+# 集合命令 (§4 基本命令)。(-1,-1) = 未発令。平時の WANDER/WORK をここへ上書きする。
+var rally_point: Vector2i = Vector2i(-1, -1)
 
 # ログ (UI / デバッグ用)。
 var deaths_total: int = 0
@@ -72,6 +76,8 @@ func setup(p: SimParams) -> void:
 	faith = 0.0
 	food = 15.0
 	outcome = Outcome.ONGOING
+	mud_walls = []
+	rally_point = Vector2i(-1, -1)
 	_rebuild_floor_caches()
 	_schedule_next_raid()
 
@@ -139,6 +145,7 @@ func tick_once() -> void:
 		_on_day_boundary()
 
 	_update_raid_schedule()
+	_step_mud()           # §4 泥の抱擁: 寿命が尽きた泥壁を元のタイルへ戻す
 	_step_enemies()
 	_step_mites()
 	_step_field()         # §11.5: 巣外の出現物の湧き・日没の店じまい
@@ -243,6 +250,20 @@ func _step_enemies() -> void:
 	for e in enemies:
 		occ[e.pos()] = (occ.get(e.pos(), 0) as int) + 1
 	for e in enemies:
+		# 抑えられない怒り (§4): 残 tick の間は最寄りの同胞だけを狙う。
+		if e.enraged_ticks > 0:
+			e.enraged_ticks -= 1
+			var foe := _nearest_other_enemy(e)
+			if foe == null:
+				continue  # 一人ぼっちの怒りは空転する (持続だけ減る)
+			if maxi(abs(foe.x - e.x), abs(foe.y - e.y)) <= 1:
+				continue  # 白兵: 足を止めて殴り合う (下と同じ規律)
+			var before_rage: Vector2i = e.pos()
+			_advance_along_path(e, foe.pos(), params.enemy_move_per_tick, occ)
+			if e.pos() != before_rage:
+				occ[before_rage] = (occ.get(before_rage, 0) as int) - 1
+				occ[e.pos()] = (occ.get(e.pos(), 0) as int) + 1
+			continue
 		# 白兵は足を止めて殴り合う (隣接中は移動しない)。追いかけ合いのまま
 		# 殴ると隣接が明滅し、互いの DPS が出ず戦闘が間延びする。
 		if _adjacent_goblin(e.pos()) != null:
@@ -478,9 +499,23 @@ func _movement_target(g: Goblin, in_raid: bool, entered_wander: bool = false) ->
 	if g.courting_id >= 0 and (g.state == Goblin.State.WORK or g.state == Goblin.State.WANDER):
 		var pair_key: int = g.id if g.sex == Goblin.Sex.FEMALE else g.courting_id
 		return _room_slot(TileMapData.RoomType.NEST, pair_key)
+	# 集合命令 (§4 基本命令): 平時の手すき (WANDER/WORK) を rally 地点へ上書きする。
+	# 欲求・戦闘・求愛・運搬・派遣には割り込まない (解除で通常へ戻る)。
+	if rally_point != Vector2i(-1, -1) and not in_raid \
+			and (g.state == Goblin.State.WANDER or g.state == Goblin.State.WORK) \
+			and g.courting_id < 0 and not g.carrying_food and g.dispatch_id < 0:
+		# 1 タイルに積み重ならないよう id ハッシュで周囲 8 タイルへ散らす。
+		var slot: Vector2i = rally_point + OFFS8[_slot_hash(g.id) % 8]
+		return slot if map.is_walkable(slot.x, slot.y) else rally_point
 	match g.state:
 		Goblin.State.COMBAT:
 			# 隣接中は足を止めて殴り合う (敵側と同じ白兵の規律)。
+			if _adjacent_enemy(g.pos()) != null:
+				return Vector2i(-1, -1)
+			return _nearest_enemy_pos(g.pos())
+		Goblin.State.ENRAGED:
+			# 激昂 (§4): 最寄りの敵へ向かい、隣接で足を止めて殴り合う。
+			# 敵が尽きたら動かない (解除は state_machine の ENRAGED 節)。
 			if _adjacent_enemy(g.pos()) != null:
 				return Vector2i(-1, -1)
 			return _nearest_enemy_pos(g.pos())
@@ -797,9 +832,17 @@ func _resolve_combat() -> void:
 				atk *= (1.0 + params.equip_bonus)
 			if g.is_unique:
 				atk *= 1.5
+			if g.state == Goblin.State.ENRAGED:
+				atk *= params.honor_attack_mult  # 名誉ある死 (§4): 捨て身の強化
 			e.hp -= atk
 	# 敵 → ゴブリン。隣にゴブリンが居なければトーテムを壊しにかかる (§3-20)。
+	# 抑えられない怒り (§4) 中の敵は同胞だけを殴り、ゴブリン/トーテムに手を出さない。
 	for e in enemies:
+		if e.enraged_ticks > 0:
+			var foe := _adjacent_other_enemy(e)
+			if foe != null:
+				foe.hp -= params.enemy_attack
+			continue
 		var g := _adjacent_goblin(e.pos())
 		if g != null:
 			g.hp -= params.enemy_attack
@@ -822,6 +865,9 @@ func _resolve_combat() -> void:
 func _can_fight(g: Goblin) -> bool:
 	if g.state == Goblin.State.DEAD or g.state == Goblin.State.KNOCKED_OUT:
 		return false
+	# 激昂 (§4 名誉ある死): 恐怖も性別の縛りも越えて死ぬまで戦う。
+	if g.state == Goblin.State.ENRAGED:
+		return true
 	if g.state == Goblin.State.FEAR or g.state == Goblin.State.DYING:
 		return false
 	# 雌は戦線に立たない (恐怖閾値が高い / 産み手の保護 §8)。
@@ -935,9 +981,10 @@ func _step_courtship() -> void:
 			mate.court_ticks = 0
 			_event({"t": "pregnant", "id": f.id, "mate": mate.id})
 
-## 求愛を中断させる危機ステートか (FEAR/COMBAT/DYING/KNOCKED_OUT)。
+## 求愛を中断させる危機ステートか (FEAR/COMBAT/DYING/KNOCKED_OUT/ENRAGED)。
 func _court_blocked(g: Goblin) -> bool:
 	return g.state == Goblin.State.FEAR or g.state == Goblin.State.COMBAT \
+		or g.state == Goblin.State.ENRAGED \
 		or g.state == Goblin.State.DYING or g.state == Goblin.State.KNOCKED_OUT
 
 func _find_mate(f: Goblin) -> Goblin:
@@ -1111,18 +1158,44 @@ func _step_faith() -> void:
 		if g.role == Goblin.Role.SHAMAN or g.role == Goblin.Role.CHIEF:
 			shamans += 1
 	var gain := shamans * params.faith_per_shaman_tick
-	faith += gain
+	# 二重構造 (§3): 残高はランク連動キャップで頭打ち、超過ぶんは累計にのみ積む。
+	faith = min(faith_cap(), faith + gain)
 	cum_faith += gain
 	# トーテムの修繕 (§3-20): 平時に削れたぶんを直す。
 	if phase == Phase.PEACE and totem_hp < params.totem_hp_max:
 		totem_hp = min(params.totem_hp_max, totem_hp + params.totem_repair_per_tick)
 
-# --- 奇跡コマンド (§4 / §12): プレイヤー入力 (main.gd) から呼ぶ ---
-## 嘲りの稲妻。指定 id の生存敵に固定ダメージを与える。信仰残高が足りれば消費して
-## true を返す (残高不足・対象不在・終局時は false)。撃破後の除去と恵み食料は次 tick
-## の _resolve_combat が一元処理する (KI-20)。演出/フィードは main.gd 側が出す。
+# --- トーテムランク (§3 / P3-04) ---
+## 累計信仰から導出する派生値 (保存しない = KI-09 セーフ)。減らない。
+func rank() -> int:
+	var r := 0
+	for t in params.rank_thresholds:
+		if cum_faith >= float(t):
+			r += 1
+	return r
+
+## 信仰残高のキャップ (ランク連動 §3)。超過ぶんは累計にのみ積まれる。
+func faith_cap() -> float:
+	return params.faith_base_cap + params.faith_cap_per_rank * rank()
+
+## シャーマン任命枠 (上限であって強制でない KI-03)。
+func shaman_slots() -> int:
+	return params.shaman_base_slots + rank()
+
+## 奇跡の一律ランクアップ倍率 (§4: 性能が向上し、消費も増加する)。
+func miracle_mult() -> float:
+	return 1.0 + params.miracle_rank_gain * rank()
+
+# --- 奇跡コマンド (§4): プレイヤー入力 (main.gd) / Controller から呼ぶ ---
+# 規約: 残高不足・対象不在・終局時は何も消費せず false。成功時のみコストを引いて
+# true。撃破後の除去と恵み食料は次 tick の _resolve_combat が一元処理する (KI-20)。
+# 演出/フィードは main.gd 側が出す。cast_* は tick 外で走るが、消費する rng は
+# SimState の一部なので決定性・スナップショット往復は崩れない (KI-09)。
+
+## 嘲りの稲妻。指定 id の生存敵に固定ダメージ (敵を減らす・直接)。
 func cast_lightning(enemy_id: int) -> bool:
-	if outcome != Outcome.ONGOING or faith < params.lightning_cost:
+	var cost := params.lightning_cost * miracle_mult()
+	if outcome != Outcome.ONGOING or faith < cost:
 		return false
 	var target: EnemyUnit = null
 	for e in enemies:
@@ -1131,9 +1204,160 @@ func cast_lightning(enemy_id: int) -> bool:
 			break
 	if target == null:
 		return false
-	faith -= params.lightning_cost
-	target.hp -= params.lightning_damage
+	faith -= cost
+	target.hp -= params.lightning_damage * miracle_mult()
 	return true
+
+## 恵みのパン虫。巣内にパン虫を一斉に湧かせる (維持・強化/平時・面的)。
+## 自然湧きの上限 (mite_max) を超えられるのは奇跡だけ (§14 パン虫の生態)。
+func cast_mites() -> bool:
+	var cost := params.mites_cost * miracle_mult()
+	if outcome != Outcome.ONGOING or faith < cost:
+		return false
+	faith -= cost
+	var n := int(round(params.mite_blessing_count * miracle_mult()))
+	for i in range(n):
+		var m := MiteUnit.new()
+		m.id = next_mite_id
+		next_mite_id += 1
+		_place(m, _random_nest_floor())
+		mites.append(m)
+	_event({"t": "mite_blessing", "count": n})
+	return true
+
+## 名誉ある死。対象を激昂させる (博打/捨て身)。恐怖なし・攻撃強化で、敵が尽きる
+## まで戦い続ける (解除は state_machine の ENRAGED 節)。ユニーク (族長) と子は不可。
+func cast_honor(goblin_id: int) -> bool:
+	var cost := params.honor_cost * miracle_mult()
+	if outcome != Outcome.ONGOING or faith < cost:
+		return false
+	var g := _goblin_by_id(goblin_id)
+	if g == null or g.is_unique or g.is_child():
+		return false
+	if g.state == Goblin.State.DEAD or g.state == Goblin.State.KNOCKED_OUT:
+		return false
+	faith -= cost
+	g.state = Goblin.State.ENRAGED
+	_event({"t": "honor", "id": g.id, "sex": g.sex})
+	return true
+
+# 泥壁の形 = 指定タイル + 上下左右 (十字)。坑道 (幅 1〜2) を 1 発で塞げる広さ。
+const MUD_OFFS := [Vector2i(0, 0), Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+
+## 泥の抱擁。指定地点に一時的な泥壁を生成して侵入経路を塞ぐ (今すぐ凌ぐ・防御)。
+## 床・巣口・外の地面のみ壁化でき、ユニットが立つタイルは避ける (閉じ込め防止)。
+## 寿命が尽きると元のタイルへ戻る (_step_mud)。
+func cast_mud(x: int, y: int) -> bool:
+	var cost := params.mud_cost * miracle_mult()
+	if outcome != Outcome.ONGOING or faith < cost:
+		return false
+	var expire := tick + int(params.mud_wall_ticks * miracle_mult())
+	var placed: Array = []
+	for o in MUD_OFFS:
+		var p: Vector2i = Vector2i(x, y) + o
+		if not map.in_bounds(p.x, p.y):
+			continue
+		var t := map.get_tile(p.x, p.y)
+		if t != TileMapData.TileType.FLOOR and t != TileMapData.TileType.GATE \
+				and t != TileMapData.TileType.EXTERIOR:
+			continue
+		if _unit_on_tile(p):
+			continue
+		placed.append({"x": p.x, "y": p.y, "prev": t, "expire_tick": expire})
+	if placed.is_empty():
+		return false
+	faith -= cost
+	for m in placed:
+		map.set_tile(m.x, m.y, TileMapData.TileType.WALL)
+		mud_walls.append(m)
+	_invalidate_paths_through(placed)
+	_event({"t": "mud", "x": x, "y": y, "tiles": placed.size()})
+	return true
+
+## 抑えられない怒り。範囲内の敵を一定時間同士討ちさせる (敵を乱す・間接)。
+func cast_rage(x: int, y: int) -> bool:
+	var cost := params.rage_cost * miracle_mult()
+	if outcome != Outcome.ONGOING or faith < cost:
+		return false
+	var dur := int(params.rage_ticks * miracle_mult())
+	var n := 0
+	for e in enemies:
+		if e.hp > 0.0 and maxi(abs(e.x - x), abs(e.y - y)) <= params.rage_radius:
+			e.enraged_ticks = dur
+			n += 1
+	if n == 0:
+		return false
+	faith -= cost
+	_event({"t": "rage", "count": n})
+	return true
+
+## 下僕召喚。指定地点付近にゴブリン (成体雄) を 1 体出現させる (欠員補充・戦時/点的)。
+## 消費は重く常用不可。頭数上限の対象で、超過すれば巣立ちで流出する (§4)。
+func cast_summon(x: int, y: int) -> bool:
+	var cost := params.summon_cost * miracle_mult()
+	if outcome != Outcome.ONGOING or faith < cost:
+		return false
+	var p := _find_floor_near(Vector2i(x, y), 3)
+	if not map.is_walkable(p.x, p.y):
+		p = _random_nest_floor()
+	faith -= cost
+	var g := _make_goblin(Goblin.Sex.MALE, Goblin.Role.NONE, Goblin.Origin.SUMMONED)
+	_place(g, p)
+	goblins.append(g)
+	_event({"t": "summon", "id": g.id})
+	return true
+
+## 集合命令 (§4 基本命令)。無料。平時の手すき (WANDER/WORK) を指定地点へ集める。
+## 欲求・戦闘・求愛・運搬には割り込まない緊急上書き専用。解除 (rally_clear) で戻る。
+func cast_rally(x: int, y: int) -> bool:
+	if outcome != Outcome.ONGOING or not map.is_walkable(x, y):
+		return false
+	rally_point = Vector2i(x, y)
+	_event({"t": "rally", "x": x, "y": y})
+	return true
+
+func rally_clear() -> void:
+	if rally_point != Vector2i(-1, -1):
+		_event({"t": "rally_clear"})
+	rally_point = Vector2i(-1, -1)
+
+# --- 奇跡の下働きヘルパ ---
+## 泥壁の寿命処理: 尽きたタイルを元へ戻す。
+func _step_mud() -> void:
+	if mud_walls.is_empty():
+		return
+	var keep: Array = []
+	for m in mud_walls:
+		if tick >= int(m.expire_tick):
+			map.set_tile(int(m.x), int(m.y), int(m.prev))
+		else:
+			keep.append(m)
+	mud_walls = keep
+
+## 指定タイルに生存ユニット (ゴブリン/敵/パン虫) が立っているか。
+func _unit_on_tile(p: Vector2i) -> bool:
+	for g in goblins:
+		if g.state != Goblin.State.DEAD and g.pos() == p:
+			return true
+	for e in enemies:
+		if e.hp > 0.0 and e.pos() == p:
+			return true
+	for m in mites:
+		if m.pos() == p:
+			return true
+	return false
+
+## 新しい壁を踏む経路を破棄して再計算させる (path 空 → _advance_along_path が引き直す)。
+func _invalidate_paths_through(tiles: Array) -> void:
+	var blocked := {}
+	for m in tiles:
+		blocked[Vector2i(int(m.x), int(m.y))] = true
+	for arr in [goblins, enemies, mites]:
+		for u in arr:
+			for wp in u.path:
+				if blocked.has(wp):
+					u.path = []
+					break
 
 # --- 死亡の一元化 (KI-20) ---
 func _cleanup_dead() -> void:
@@ -1229,6 +1453,27 @@ func _adjacent_enemy(p: Vector2i) -> EnemyUnit:
 	for e in enemies:
 		if max(abs(p.x - e.x), abs(p.y - e.y)) <= 1:
 			return e
+	return null
+
+## 抑えられない怒り (§4) の標的: 自分以外で最寄りの生存敵 (マンハッタン距離)。
+func _nearest_other_enemy(e: EnemyUnit) -> EnemyUnit:
+	var best: EnemyUnit = null
+	var best_d := 999999
+	for o in enemies:
+		if o.id == e.id or o.hp <= 0.0:
+			continue
+		var d := _manhattan(e.pos(), o.pos())
+		if d < best_d:
+			best_d = d
+			best = o
+	return best
+
+## 隣接 (8 近傍) の自分以外の生存敵 (同士討ちの白兵判定)。
+func _adjacent_other_enemy(e: EnemyUnit) -> EnemyUnit:
+	for o in enemies:
+		if o.id != e.id and o.hp > 0.0 \
+				and maxi(abs(o.x - e.x), abs(o.y - e.y)) <= 1:
+			return o
 	return null
 
 func _adjacent_goblin(p: Vector2i) -> Goblin:
@@ -1426,6 +1671,9 @@ func snapshot() -> Dictionary:
 		"next_big_raid_tick": next_big_raid_tick,
 		"raid_is_human": raid_is_human, "raid_start_hp": raid_start_hp,
 		"alarm_raised": alarm_raised,
+		"mud_walls": mud_walls.map(func(m):
+			return [int(m.x), int(m.y), int(m.prev), int(m.expire_tick)]),
+		"rally_point": [rally_point.x, rally_point.y],
 		"outcome": outcome, "next_goblin_id": next_goblin_id,
 		"next_enemy_id": next_enemy_id, "next_mite_id": next_mite_id,
 		"next_field_id": next_field_id,
@@ -1445,6 +1693,10 @@ func restore(d: Dictionary) -> void:
 	next_big_raid_tick = d.next_big_raid_tick
 	raid_is_human = d.raid_is_human; raid_start_hp = d.raid_start_hp
 	alarm_raised = d.alarm_raised
+	mud_walls = (d.get("mud_walls", []) as Array).map(func(m):
+		return {"x": int(m[0]), "y": int(m[1]), "prev": int(m[2]), "expire_tick": int(m[3])})
+	var rp: Array = d.get("rally_point", [-1, -1])
+	rally_point = Vector2i(int(rp[0]), int(rp[1]))
 	outcome = d.outcome; next_goblin_id = d.next_goblin_id
 	next_enemy_id = d.next_enemy_id; next_mite_id = d.next_mite_id
 	next_field_id = d.next_field_id
