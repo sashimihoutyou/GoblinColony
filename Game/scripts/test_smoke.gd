@@ -9,6 +9,7 @@ func _init() -> void:
 	var ok := true
 	ok = _test_map_integrity() and ok
 	ok = _test_hungry_arrival_does_not_spend_food() and ok
+	ok = _test_night_sleep() and ok
 	ok = _test_run_to_end() and ok
 	ok = _test_snapshot_roundtrip() and ok
 	if ok:
@@ -111,6 +112,73 @@ func _test_hungry_arrival_does_not_spend_food() -> bool:
 		return false
 	print("  hungry-food-order: OK")
 	return true
+
+## 夜トリガー睡眠 + 睡眠 > 空腹の優先順位を検証する (§5)。
+## Context を直接組んで StateMachine.step を呼ぶ (World を回さず力学だけを切り出す)。
+func _test_night_sleep() -> bool:
+	var p := SimParams.new()
+	p.sleep_rate = 0.0   # 自然蓄積を止め、夜トリガーだけを切り分ける
+	p.hunger_rate = 0.0
+
+	# (a) 昼: 欲求なしの個体は SLEEP にならない (WORK か WANDER の受け皿)。
+	var g_day := _fresh_goblin()
+	var ctx_day := StateMachine.Context.new()
+	ctx_day.is_night = false
+	StateMachine.step(g_day, ctx_day, p)
+	if g_day.state == Goblin.State.SLEEP:
+		print("  FAIL: night-sleep (a) goblin slept during day with no sleepiness")
+		return false
+
+	# (b) 夜: 欲求なし (hunger=0) でも巣全体で就寝する。
+	var g_night := _fresh_goblin()
+	var ctx_night := StateMachine.Context.new()
+	ctx_night.is_night = true
+	StateMachine.step(g_night, ctx_night, p)
+	if g_night.state != Goblin.State.SLEEP:
+		print("  FAIL: night-sleep (b) goblin did not sleep at night (state=%d)" % g_night.state)
+		return false
+
+	# (c) 夜 + 空腹限界 (latched) でも睡眠が空腹に優先する。
+	var g_hungry := _fresh_goblin()
+	g_hungry.hunger = 1.0
+	g_hungry.hunger_latched = true
+	var ctx_hn := StateMachine.Context.new()
+	ctx_hn.is_night = true
+	ctx_hn.food_in_stock = true
+	ctx_hn.food_available = true
+	StateMachine.step(g_hungry, ctx_hn, p)
+	if g_hungry.state != Goblin.State.SLEEP:
+		print("  FAIL: night-sleep (c) hunger beat sleep at night (state=%d)" % g_hungry.state)
+		return false
+
+	# (d) 夜 + 交戦中 (sleepiness 低) では夜トリガーで寝ない (防衛輪を崩さない)。
+	var g_raid := _fresh_goblin()
+	g_raid.sleepiness = 0.0
+	var ctx_raid := StateMachine.Context.new()
+	ctx_raid.is_night = true
+	ctx_raid.in_raid = true
+	StateMachine.step(g_raid, ctx_raid, p)
+	if g_raid.state == Goblin.State.SLEEP:
+		print("  FAIL: night-sleep (d) goblin slept during raid at night")
+		return false
+
+	print("  night-sleep: OK")
+	return true
+
+## 欲求・恐怖・戦闘の割り込みに掛からない健康な無役成体。
+func _fresh_goblin() -> Goblin:
+	var g := Goblin.new()
+	g.id = 1
+	g.sex = Goblin.Sex.MALE
+	g.state = Goblin.State.WANDER
+	g.role = Goblin.Role.NONE
+	g.hp = 10.0
+	g.max_hp = 10.0
+	g.hunger = 0.0
+	g.hunger_latched = false
+	g.sleepiness = 0.0
+	g.sleep_latched = false
+	return g
 
 func _test_run_to_end() -> bool:
 	var p := SimParams.new()

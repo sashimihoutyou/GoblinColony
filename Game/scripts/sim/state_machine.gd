@@ -5,7 +5,8 @@ class_name StateMachine
 ##
 ## - ステート順位は固定 (State の enum 値が小さいほど高優先)。
 ## - 緊急系 (死亡・激昂・恐怖・戦闘) は即時割り込み。
-## - 欲求系 (空腹・睡眠・仕事) は行動の切れ目で再評価。ヒステリシスで往復防止。
+## - 欲求系 (睡眠・空腹・仕事) は行動の切れ目で再評価。ヒステリシスで往復防止。
+##   睡眠は空腹に優先する (夜は巣全体で寝て、朝に食べる)。
 ## - 恐怖解除は「敵がいない連続 tick が一定数」= 安全確認ベース。
 ## - 族長(ユニーク)は恐怖を持たない盾 (§8)。
 ## - 事故死/戦闘ダメージは別レイヤー (world.gd)。ここでは状態遷移のみ。
@@ -19,7 +20,8 @@ class Context:
 	var assigned_to_combat: bool = false
 	var assigned_to_room: bool = false
 	var food_available: bool = false   # この個体がいま食べられるか (集積所 + 在庫)
-	var food_in_stock: bool = true     # 巣に在庫があるか (空腹と睡眠の優先判定)
+	var food_in_stock: bool = true     # 巣に在庫があるか (飢餓判定)
+	var is_night: bool = false         # 夜か。夜は巣全体で就寝する (§5)
 
 static func step(g: Goblin, ctx: Context, p: SimParams) -> void:
 	if g.state == Goblin.State.DEAD:
@@ -49,9 +51,11 @@ static func step(g: Goblin, ctx: Context, p: SimParams) -> void:
 		g.hunger_latched = true
 	elif g.hunger_latched and g.hunger <= p.hunger_off:
 		g.hunger_latched = false
-	if not g.sleep_latched and g.sleepiness >= p.sleep_on:
+	# 睡眠: 夜になったら巣全体で寝る (交戦中は夜でも寝ない = 防衛輪を崩さない)。
+	# 疲労限界 (sleep_on) による発火は昼・交戦中の予備経路として残す。
+	if not g.sleep_latched and ((ctx.is_night and not ctx.in_raid) or g.sleepiness >= p.sleep_on):
 		g.sleep_latched = true
-	elif g.sleep_latched and g.sleepiness <= p.sleep_off:
+	elif g.sleep_latched and not ctx.is_night and g.sleepiness <= p.sleep_off:
 		g.sleep_latched = false
 
 	var hp_frac := g.hp / g.max_hp
@@ -96,23 +100,23 @@ static func step(g: Goblin, ctx: Context, p: SimParams) -> void:
 			g.hp = min(g.max_hp, g.hp + p.hp_regen_per_tick)
 		return
 
-	# 空腹。ただし巣に食料が無く眠気も限界なら睡眠 (回復) を優先する。
-	# 食えない空腹が睡眠を永久に塞ぐと、回復経路を失い襲撃のたびに消耗だけが
-	# 積み上がる (不眠の飢餓ループ)。
-	if g.hunger_latched and (ctx.food_in_stock or not g.sleep_latched):
-		g.state = Goblin.State.HUNGRY
-		if ctx.food_available:
-			# 食事は即時: 集積所に到着した tick で満腹になる
-			# (在庫消費は world 側が一食ぶん引く)。
-			g.hunger = 0.0
-		return
-
-	# 睡眠。
+	# 睡眠は空腹に優先する (夜は空腹でも寝て、朝に食べる。食事は即時化済みなので
+	# 昼の食事時間は十分とれる)。飢餓中 (starving) は回復が止まるので、睡眠に
+	# 逃げても餓死は進行する (KI-26: 慢性飢餓へ戻らないための核心)。
 	if g.sleep_latched:
 		g.state = Goblin.State.SLEEP
 		g.sleepiness = max(0.0, g.sleepiness - p.sleep_relieve_per_tick)
 		if not starving:
 			g.hp = min(g.max_hp, g.hp + p.hp_regen_per_tick)
+		return
+
+	# 空腹 (睡眠の下位。眠気が解消されてから食べに行く)。
+	if g.hunger_latched:
+		g.state = Goblin.State.HUNGRY
+		if ctx.food_available:
+			# 食事は即時: 集積所に到着した tick で満腹になる
+			# (在庫消費は world 側が一食ぶん引く)。
+			g.hunger = 0.0
 		return
 
 	# 仕事 (役職持ち優先)。

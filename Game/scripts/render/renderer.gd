@@ -188,6 +188,15 @@ func _last_pos_of(id: int) -> Vector2:
 		return Vector2.ZERO
 	return v.pos
 
+## 個体の補間描画位置 (_gmap の pos) をワールド座標で返す。fx/fy 直読みだと
+## tick 刻みでカクつくため、カメラ追従にはこちらを使う。未登録/消滅時は
+## Vector2.INF (原点 ZERO と区別できる番兵)。
+func unit_screen_pos(id: int) -> Vector2:
+	var v: Dictionary = _gmap.get(id, {})
+	if v.is_empty():
+		return Vector2.INF
+	return v.pos
+
 func _tile_center(t: Vector2i) -> Vector2:
 	return Vector2((t.x + 0.5) * tile_size, (t.y + 0.5) * tile_size)
 

@@ -285,6 +285,7 @@ func _step_goblins() -> void:
 		var mite := _nearest_mite(g.pos(), 1)
 		ctx.food_available = (food > 0.0 and _at_storage(g.pos())) or mite != null
 		ctx.food_in_stock = food > 0.0
+		ctx.is_night = not is_day()
 		var hunger_before: float = g.hunger
 		StateMachine.step(g, ctx, params)
 		if ctx.food_available and g.state == Goblin.State.HUNGRY and g.hunger < hunger_before:
