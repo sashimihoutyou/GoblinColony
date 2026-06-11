@@ -41,8 +41,8 @@ const ROOM_TYPE_JP := {
 }
 
 # --- 選択対象の種別 (将来の奇跡ターゲティングでも再利用)。renderer の pick_any() が
-# 返す int (0=なし/1=ゴブリン/2=敵/3=部屋) をこの enum へ写像する。---
-enum SelKind { NONE, GOBLIN, ENEMY, ROOM }
+# 返す int (0=なし/1=ゴブリン/2=敵/3=部屋/4=出現物) をこの enum へ写像する。---
+enum SelKind { NONE, GOBLIN, ENEMY, ROOM, FIELD }
 
 var world: World
 var params: SimParams
@@ -83,12 +83,20 @@ var _feed: RichTextLabel
 var _outcome_label: Label
 var _speed_buttons: Array = []
 var _feed_lines: Array = []
+# 派遣パネル (§11.5: 出現物クリック → 頭数スライダー → 確定)
+var _dispatch_panel: PanelContainer
+var _dispatch_info: Label
+var _dispatch_slider: HSlider
+var _dispatch_count: Label
+var _dispatch_button: Button
+var _dispatch_field_id: int = -1  # 対象の出現物 id (-1 = パネル非表示)
 
 func _ready() -> void:
 	params = SimParams.new()
 	world = World.new()
 	world.setup(params)
 	controller = AutoController.new()
+	(controller as AutoController).auto_dispatch = false
 
 	renderer = $Renderer
 	renderer.tile_size = 16
@@ -116,6 +124,7 @@ func _process(delta: float) -> void:
 	renderer.render(world, delta, speed, clampf(_accum_ms / MS_PER_TICK, 0.0, 1.0))
 	_update_status()
 	_update_inspector()
+	_update_dispatch_panel()
 	# カメラ操作はシム停止中 (speed=0) でも独立して動く。
 	_process_keyboard_pan(delta)
 	_process_follow_camera(delta)
@@ -183,6 +192,12 @@ func _unhandled_input(event: InputEvent) -> void:
 						var picked := renderer.pick_any(world, get_global_mouse_position())
 						sel_kind = _sel_kind_from_pick(int(picked.kind))
 						sel_id = int(picked.id)
+						# 出現物 (§11.5): 選択と同時に派遣パネルを開く。
+						# それ以外をクリックしたらパネルは閉じる。
+						if sel_kind == SelKind.FIELD:
+							_open_dispatch_panel(sel_id)
+						else:
+							_close_dispatch_panel()
 			MOUSE_BUTTON_RIGHT:
 				# 右クリック: 武装中なら稲妻を解除。ゴブリンを拾えれば追従モード開始
 				# (インスペクタ選択も同期)。敵/部屋/空振りは選択のみ更新し追従は解除する。
@@ -335,6 +350,14 @@ func _push_feed_event(e: Dictionary) -> void:
 			var f := _find_goblin(int(e.get("id", -1)))
 			if f != null:
 				_push_feed("love", "%s が寝床で身ごもった。" % GobNames.of(f))
+		"field_spawn":
+			_push_feed("event", "巣の外に木の実の茂みが見つかった (%d 食ぶん)。" % e.get("amount", 0))
+		"dispatch":
+			_push_feed("event", "%d 体が恵みを取りに巣を出た。" % e.get("count", 0))
+		"field_done":
+			_push_feed("event", "茂みを取り尽くした。")
+		"field_expire":
+			_push_feed("event", "日が暮れ、外の恵みは闇に消えた。")
 		"victory":
 			_push_feed("event", "★ ラストバトルを撃退 — 勝利!")
 		"defeat":
@@ -360,12 +383,13 @@ func _find_goblin(id: int) -> Goblin:
 			return g
 	return null
 
-## renderer.pick_any() の int (0=なし/1=ゴブリン/2=敵/3=部屋) を SelKind へ写像する。
+## renderer.pick_any() の int (0=なし/1=ゴブリン/2=敵/3=部屋/4=出現物) を SelKind へ写像する。
 func _sel_kind_from_pick(kind: int) -> int:
 	match kind:
 		1: return SelKind.GOBLIN
 		2: return SelKind.ENEMY
 		3: return SelKind.ROOM
+		4: return SelKind.FIELD
 		_: return SelKind.NONE
 
 # ════ 奇跡「嘲りの稲妻」(§4 / §12) ════
@@ -472,6 +496,13 @@ func _update_inspector() -> void:
 			_update_inspector_enemy(sel_id)
 		SelKind.ROOM:
 			_update_inspector_room(sel_id)
+		SelKind.FIELD:
+			var f := world._field_by_id(sel_id)
+			if f == null:
+				_inspector.text = _INSPECTOR_HELP
+			else:
+				_inspector.text = "[b][color=#ffb454]木の実の茂み[/color][/b]\n" \
+					+ "[color=#8a7d68]巣外の恵み · のこり %d 食ぶん[/color]" % f.amount
 		_:
 			_inspector.text = _INSPECTOR_HELP
 
@@ -497,8 +528,10 @@ func _update_inspector_goblin(g: Goblin) -> void:
 		tags.append("[color=#e8a0b8]身ごもっている (あと %.1f 日)[/color]" % left)
 	if g.equipped:
 		tags.append("武装済み")
+	if g.dispatch_id >= 0:
+		tags.append("[color=#e8943a]外の恵みへ派遣中[/color]")
 	if g.carrying_food:
-		tags.append("[color=#9adb6e]キノコを運搬中[/color]")
+		tags.append("[color=#9adb6e]食料を運搬中[/color]")
 	if g.role == Goblin.Role.GUARD and g.guard_gate >= 0:
 		tags.append("[color=#e8943a]第%d巣口の番[/color]" % (g.guard_gate + 1))
 	if g.bereaved:
@@ -619,6 +652,101 @@ func _build_ui() -> void:
 	ui.add_child(bar)
 	_refresh_speed_buttons()
 	_refresh_spell_button()
+
+	# --- 派遣パネル (§11.5。中央下。出現物クリックで開く) ---
+	_dispatch_panel = PanelContainer.new()
+	_dispatch_panel.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	# 点アンカー (中央下) なので寸法はオフセットで明示する (260×102 px)。
+	_dispatch_panel.offset_left = -130.0
+	_dispatch_panel.offset_right = 130.0
+	_dispatch_panel.offset_top = -150.0
+	_dispatch_panel.offset_bottom = -48.0
+	_dispatch_panel.add_theme_stylebox_override("panel", _panel_style())
+	_dispatch_panel.visible = false
+	var dbox := VBoxContainer.new()
+	dbox.add_theme_constant_override("separation", 6)
+	_dispatch_panel.add_child(dbox)
+	dbox.add_child(_section_title("巣 外 の 恵 み"))
+	_dispatch_info = Label.new()
+	_dispatch_info.add_theme_color_override("font_color", C_INK)
+	_dispatch_info.add_theme_font_size_override("font_size", 12)
+	dbox.add_child(_dispatch_info)
+	var srow := HBoxContainer.new()
+	srow.add_theme_constant_override("separation", 8)
+	_dispatch_slider = HSlider.new()
+	_dispatch_slider.min_value = 1
+	_dispatch_slider.step = 1
+	_dispatch_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_dispatch_slider.value_changed.connect(func(v: float) -> void:
+		_dispatch_count.text = "ゴブリン %d 体" % int(v))
+	srow.add_child(_dispatch_slider)
+	_dispatch_count = Label.new()
+	_dispatch_count.add_theme_color_override("font_color", C_EMBER_BRIGHT)
+	_dispatch_count.add_theme_font_size_override("font_size", 12)
+	srow.add_child(_dispatch_count)
+	dbox.add_child(srow)
+	var brow := HBoxContainer.new()
+	brow.add_theme_constant_override("separation", 4)
+	_dispatch_button = Button.new()
+	_dispatch_button.text = "派遣する"
+	_dispatch_button.add_theme_font_size_override("font_size", 12)
+	_style_button(_dispatch_button, true)
+	_dispatch_button.pressed.connect(_confirm_dispatch)
+	brow.add_child(_dispatch_button)
+	var cancel := Button.new()
+	cancel.text = "やめる"
+	cancel.add_theme_font_size_override("font_size", 12)
+	_style_button(cancel, false)
+	cancel.pressed.connect(_close_dispatch_panel)
+	brow.add_child(cancel)
+	dbox.add_child(brow)
+	ui.add_child(_dispatch_panel)
+
+# ════ 派遣パネル (§11.5) ════
+## 出現物クリックで開く。スライダー上限は開いた時点の手すき頭数
+## (開いている間の変動は確定時に world 側が実際に送れる数へ丸める)。
+func _open_dispatch_panel(field_id: int) -> void:
+	_dispatch_field_id = field_id
+	var pool := world.dispatch_pool_count()
+	if pool > 0:
+		_dispatch_slider.max_value = pool
+		_dispatch_slider.value = clampi(2, 1, pool)  # 既定 2 体 (オートプレイと同じ)
+		_dispatch_slider.editable = true
+		_dispatch_button.disabled = false
+	else:
+		_dispatch_slider.max_value = 1
+		_dispatch_slider.value = 1
+		_dispatch_slider.editable = false
+		_dispatch_button.disabled = true
+	_dispatch_count.text = "ゴブリン %d 体" % int(_dispatch_slider.value)
+	_dispatch_panel.visible = true
+
+func _close_dispatch_panel() -> void:
+	_dispatch_field_id = -1
+	if _dispatch_panel != null:
+		_dispatch_panel.visible = false
+
+func _confirm_dispatch() -> void:
+	if _dispatch_field_id >= 0:
+		controller.queue.append({
+			"type": Controller.CommandType.DISPATCH,
+			"target": _dispatch_field_id, "count": int(_dispatch_slider.value),
+		})
+	_close_dispatch_panel()
+
+## 毎フレーム: 対象の出現物が消えたら (回収完了・日没) パネルを自動で閉じ、
+## 残量・手すき表示を追従させる (スライダー値はいじらない)。
+func _update_dispatch_panel() -> void:
+	if _dispatch_panel == null or not _dispatch_panel.visible:
+		return
+	var f := world._field_by_id(_dispatch_field_id)
+	if f == null:
+		_close_dispatch_panel()
+		return
+	if _dispatch_button.disabled:
+		_dispatch_info.text = "のこり %d 食ぶん — 手すきのゴブリンがいない" % f.amount
+	else:
+		_dispatch_info.text = "のこり %d 食ぶん" % f.amount
 
 func _refresh_speed_buttons() -> void:
 	for d in _speed_buttons:

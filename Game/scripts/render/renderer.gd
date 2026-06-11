@@ -8,7 +8,7 @@ class_name Renderer
 ## 闇に沈んだ洞窟・琥珀の信仰の炎・耳と目を持つゴブリンスプライト・粒子演出。
 
 var tile_size: int = 16
-var sel_kind: int = 0   # 0=なし / 1=ゴブリン / 2=敵 / 3=部屋 (main.gd SelKind と対応)
+var sel_kind: int = 0   # 0=なし / 1=ゴブリン / 2=敵 / 3=部屋 / 4=出現物 (main.gd SelKind と対応)
 var sel_id: int = -1
 
 var _world: World = null
@@ -179,6 +179,11 @@ func on_event(e: Dictionary) -> void:
 			_burst(Vector2(lx, ly), 14, {"speed": 60.0, "life": 0.5, "size": 2.0, "color": Color("cfe6ff")})
 			_spawn_p({"kind": "text", "txt": "⚡", "color": Color("e8e0ff"),
 				"x": lx, "y": ly - 10.0, "vy": -14.0, "life": 0.9, "size": 12.0})
+		"field_haul":
+			# 巣外の恵みを集積所へ届けた瞬間: 小さな琥珀の粒バースト (採集と同じ扱い)。
+			if _world != null:
+				_burst(_tile_center(_world.map.storage), 4,
+					{"speed": 14.0, "up": 6.0, "life": 0.6, "size": 1.1, "color": COL_EMBER})
 
 ## クリック位置 (ワールド座標) から最寄りの生存ゴブリン id を返す (-1 = なし)。
 func pick(world: World, pos: Vector2) -> int:
@@ -196,8 +201,8 @@ func pick(world: World, pos: Vector2) -> int:
 			best = g.id
 	return best
 
-## クリック位置から対象を拾う。{kind, id} を返す (kind: 0=なし/1=ゴブリン/2=敵/3=部屋)。
-## 優先: ユニット (ゴブリン→敵) を近接で拾い、外れたら部屋矩形で内包判定する。
+## クリック位置から対象を拾う。{kind, id} を返す (kind: 0=なし/1=ゴブリン/2=敵/
+## 3=部屋/4=出現物)。優先: ユニット (ゴブリン→敵) → 出現物の近接、外れたら部屋矩形。
 ## 将来の奇跡ターゲティングでも再利用する (敵を指してキャスト等)。
 func pick_any(world: World, pos: Vector2) -> Dictionary:
 	# 1) 最寄りの生存ゴブリン (既存 pick と同じ近接判定)。
@@ -219,7 +224,11 @@ func pick_any(world: World, pos: Vector2) -> Dictionary:
 			best = e.id
 	if best >= 0:
 		return {"kind": 2, "id": best}
-	# 3) 部屋矩形 (タイル座標で内包判定)。
+	# 3) 巣外の出現物 (タイル中心の近接判定。静止しているので補間不要)。
+	for f in world.field_resources:
+		if _tile_center(f.pos()).distance_to(pos) < tile_size * 1.3:
+			return {"kind": 4, "id": f.id}
+	# 4) 部屋矩形 (タイル座標で内包判定)。
 	var tx := int(floor(pos.x / tile_size))
 	var ty := int(floor(pos.y / tile_size))
 	for i in world.map.rooms.size():
@@ -428,6 +437,10 @@ func _draw() -> void:
 	# --- トーテム像 + 炎 ---
 	_draw_totem(m)
 
+	# --- 巣外の出現物 (§11.5 木の実の茂み。amount は毎 tick 変わるので直接描く) ---
+	for f in _world.field_resources:
+		_draw_field_resource(f)
+
 	# --- パン虫 (補間位置。床の上をうろつく食用ザコ) ---
 	for mu in _world.mites:
 		var vm: Dictionary = _mmap.get(mu.id, {})
@@ -491,6 +504,12 @@ func _draw() -> void:
 			if sel_id >= 0 and sel_id < _world.map.rooms.size():
 				var r: Dictionary = _world.map.rooms[sel_id]
 				draw_rect(Rect2(r.x * ts, r.y * ts, r.w * ts, r.h * ts), Color("e8dcc8", 0.85), false, 1.5)
+		4:  # 出現物: 琥珀の輪 (回収/日没で消えたら輪も消える)
+			for f in _world.field_resources:
+				if f.id == sel_id:
+					draw_arc(_tile_center(f.pos()), ts * 0.7 + sin(_t * 5.0) * 1.2, 0, TAU, 24,
+						COL_EMBER_BRIGHT, 1.2)
+					break
 
 ## ズーム下でも文字がにじまない draw_string。Camera2D の zoom はフォントの
 ## オーバーサンプリングに反映されない (Godot の既知の制約) ため、小サイズで
@@ -530,6 +549,26 @@ func _draw_decor(d: Dictionary) -> void:
 			draw_line(Vector2(d.x1, d.y1), Vector2(d.x2, d.y2), d.color, d.w)
 		"text":
 			_draw_text_crisp(Vector2(d.x, d.y), d.txt, 8, d.color)
+
+## 巣外の出現物 (§11.5): 木の実の茂み。暗い緑の塊 + 残量ぶんの琥珀の実 +
+## 気づきやすいようゆっくり明滅する淡い輪 (すべて演出。シム状態に触れない)。
+func _draw_field_resource(f: FieldResource) -> void:
+	var c := _tile_center(f.pos())
+	var ts := float(tile_size)
+	# 明滅する淡いハイライト輪 (約 3 秒周期)。
+	var pulse := 0.5 + 0.5 * sin(_t * 2.1)
+	draw_arc(c, ts * 0.75, 0, TAU, 20, Color(COL_EMBER_BRIGHT, 0.10 + 0.18 * pulse), 1.0)
+	# 茂み (3 つの塊で有機的に)。
+	draw_circle(c + Vector2(-3.0, 1.0), 4.0, Color("2e4023"))
+	draw_circle(c + Vector2(3.0, 1.0), 3.6, Color("36492a"))
+	draw_circle(c + Vector2(0.0, -2.0), 4.2, Color("3f5430"))
+	# 実: 残量ぶんの琥珀の粒 (決定的配置。摘まれると減っていく)。
+	const BERRY_OFFS := [
+		Vector2(-4.0, -1.0), Vector2(3.0, -3.0), Vector2(0.0, 2.0),
+		Vector2(-2.0, -4.0), Vector2(4.0, 0.0),
+	]
+	for i in range(mini(f.amount, BERRY_OFFS.size())):
+		draw_circle(c + BERRY_OFFS[i], 1.3, COL_EMBER_BRIGHT)
 
 func _draw_totem(m: TileMapData) -> void:
 	var c := _tile_center(m.totem)
