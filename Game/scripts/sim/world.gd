@@ -32,6 +32,7 @@ var surge: float = 0.0         # 損耗時バフ残量 (§2.5 / KI-04)
 var over_cap_ticks: int = 0
 var next_big_raid_tick: int = 0
 var raid_is_human: bool = false
+var raid_is_small: bool = false  # 現襲撃が小規模 (恵み §11/KI-05) か。捕虜報酬を控えめにする
 var raid_start_hp: float = 0.0
 var alarm_raised: bool = false   # T5: この襲撃で見張りが警報を上げ済みか (襲撃ごとにリセット)
 var outcome: int = Outcome.ONGOING
@@ -39,6 +40,15 @@ var outcome: int = Outcome.ONGOING
 var mud_walls: Array = []
 # 集合命令 (§4 基本命令)。(-1,-1) = 未発令。平時の WANDER/WORK をここへ上書きする。
 var rally_point: Vector2i = Vector2i(-1, -1)
+
+# --- 捕虜プール + 敵対度 (§2.5/§13。world.ts の捕虜・敵対度セクションの移植 KI-17/23/24) ---
+# 捕虜は性別×種族の 4 区分 (float 連続量。world.ts の cap*Goblin/cap*Human と同じ)。
+var cap_male_goblin: float = 0.0
+var cap_female_goblin: float = 0.0
+var cap_male_human: float = 0.0
+var cap_female_human: float = 0.0
+# 人間勢力の敵対度 (0..1)。残虐な仕打ち (生贄) で上昇、解放で下降 (§13)。
+var human_hostility: float = 0.0
 
 # ログ (UI / デバッグ用)。
 var deaths_total: int = 0
@@ -155,6 +165,7 @@ func tick_once() -> void:
 	_step_breeding()
 	_step_accidents()
 	_step_social()
+	_step_captives()      # §2.5/KI-17: 雄ゴブリン捕虜の平時自動加入
 	_step_forage()        # T4: キノコ床の再生長を進める (食料加算は採集者の運搬で行う)
 	_step_food()
 	_step_starvation()
@@ -176,16 +187,23 @@ func _on_day_boundary() -> void:
 	if day == params.final_day:
 		_spawn_raid(true, true)  # ラストバトル
 
-# --- 襲撃スケジュール (§3-5 / §3-7) ---
+# --- 襲撃スケジュール (§3-5 / §3-7。間隔は敵対度連動 §11/§13/KI-24) ---
+## 敵対度 → 大規模襲撃の間隔 (日) を線形写像する (world.ts raidIntervalDays と同式)。
+## 和平 (0) で big_raid_interval_peace、MAX (1) で big_raid_interval_max (最短)。
+func raid_interval_days(hostility: float) -> float:
+	var h := clampf(hostility, 0.0, 1.0)
+	return params.big_raid_interval_peace \
+		+ (params.big_raid_interval_max - params.big_raid_interval_peace) * h
+
 func _schedule_next_raid() -> void:
-	# 敵対度は α版では固定中庸 (人間加害なし)。間隔は平和寄り。
-	var interval_days := params.big_raid_interval_peace
-	next_big_raid_tick = tick + interval_days * params.ticks_per_day
+	# 次回を現在の敵対度で予約 (敵対度が高いほど短間隔 = 高難度 / KI-08)。
+	var interval_days := raid_interval_days(human_hostility)
+	next_big_raid_tick = tick + int(round(interval_days * params.ticks_per_day))
 
 func _update_raid_schedule() -> void:
-	# 大規模襲撃の発火。
+	# 大規模襲撃の発火。勢力構成は敵対度連動 (怒らせた相手が攻めてくる §13)。
 	if phase == Phase.PEACE and tick >= next_big_raid_tick and day < params.final_day:
-		_spawn_raid(false, rng.next_float() < 0.5)
+		_spawn_raid(false, rng.next_float() < human_hostility)
 		_schedule_next_raid()
 	# 小規模襲撃 (恵み): 1 日 1 回判定、平時のみ。
 	if phase == Phase.PEACE and (tick % params.ticks_per_day) == params.day_ticks / 2:
@@ -195,6 +213,7 @@ func _update_raid_schedule() -> void:
 func _spawn_raid(final_battle: bool, human: bool) -> void:
 	phase = Phase.COMBAT
 	raid_is_human = human
+	raid_is_small = false
 	raid_start_hp = _total_hp()
 	alarm_raised = false  # T5: 新しい襲撃ごとに警報フラグをリセット
 	_recall_dispatched()  # §11.5: 襲撃が来たら派遣中の個体は帰路につく
@@ -213,6 +232,7 @@ func _spawn_raid_small() -> void:
 	var gate_idx := rng.next_int(map.gates.size())
 	phase = Phase.COMBAT
 	raid_is_human = false
+	raid_is_small = true
 	raid_start_hp = _total_hp()
 	alarm_raised = false  # T5: 新しい襲撃ごとに警報フラグをリセット
 	_recall_dispatched()  # §11.5: 襲撃が来たら派遣中の個体は帰路につく
@@ -885,6 +905,22 @@ func _end_raid() -> void:
 	if lost_frac > params.surge_trigger:
 		surge = min(params.surge_max, surge + params.surge_gain * lost_frac)
 		_event({"t": "surge", "lost_frac": lost_frac})
+	# 撃退成功 (生存者あり) なら捕虜を獲得する (§2.5 襲撃撃退で捕虜 / KI-17)。
+	# 直前の襲撃の勢力構成 (raid_is_human) に従って性別×種族へ振り分ける。全滅時は獲得なし。
+	# 小規模 (恵み) は控えめな量 (world.ts captiveGainSmall。インフレ防止 KI-25)。
+	if _alive_count() > 0:
+		var total := params.small_raid_captive_gain if raid_is_small \
+				else params.big_raid_captive_gain
+		var male_frac := params.captive_male_frac_human if raid_is_human else params.captive_male_frac_goblin
+		var males := total * male_frac
+		var females := total - males
+		if raid_is_human:
+			cap_male_human += males
+			cap_female_human += females
+		else:
+			cap_male_goblin += males
+			cap_female_goblin += females
+		_event({"t": "captive_gain", "human": raid_is_human, "male": males, "female": females})
 
 # --- 増殖 (§3-6) ---
 func _step_breeding() -> void:
@@ -1110,6 +1146,22 @@ func _step_social() -> void:
 			b.quarrel_cd = params.quarrel_cooldown_ticks
 			_event({"t": "quarrel", "a": a.id, "b": b.id})
 
+# --- 捕虜の平時自動加入 (KI-17) ---
+# 投獄された雄ゴブリン捕虜は、平時に低確率で「気が向いて」群れに加わる。
+# 成体なので即戦力 (子の成長ラグなし)。雄は自前で生まれるため旨味は薄いが、
+# 急な戦力穴埋めや、生贄にするほどでもない端数の捌け口になる (world.ts §3.6 相当)。
+func _step_captives() -> void:
+	if phase != Phase.PEACE:
+		return
+	if cap_male_goblin < 1.0:
+		return
+	if rng.next_float() < params.male_captive_join_chance_per_tick:
+		cap_male_goblin -= 1.0
+		var g := _make_goblin(Goblin.Sex.MALE, Goblin.Role.NONE, Goblin.Origin.CAPTIVE_JOINED)
+		_place(g, _random_nest_floor())
+		goblins.append(g)
+		_event({"t": "captive_joined", "id": g.id})
+
 # --- キノコ採集 (T4): キノコ床の再生長 ---
 # 摘み取られたスポット (forage_regrow[i] > 0) を毎 tick デクリメントする。
 # 0 になったら再び摘み取り可。食料への加算は採集者が集積所へ運んだ時点で行う
@@ -1320,6 +1372,58 @@ func rally_clear() -> void:
 	if rally_point != Vector2i(-1, -1):
 		_event({"t": "rally_clear"})
 	rally_point = Vector2i(-1, -1)
+
+# --- 捕虜コマンド (§2.5/§13: プレイヤー入力 / Controller から呼ぶ) ---
+
+## 生贄。捕虜 1 体を信仰へ変換する (world.ts emergencyReinforce と同じ優先順位)。
+## 優先順位: 雄ゴブリン捕虜 (安い燃料・係数 0.5) → 人間雄捕虜 → 人間雌捕虜
+## → 雌ゴブリン捕虜 (最後の手段)。人間捕虜の生贄は敵対度を上げる (§13)。
+## 捕虜が 1 体も無ければ何もせず false。
+func sacrifice_captive() -> bool:
+	if outcome != Outcome.ONGOING:
+		return false
+	var gain := 0.0
+	var kind := ""
+	if cap_male_goblin >= 1.0:
+		cap_male_goblin -= 1.0
+		gain = params.sacrifice_faith * params.male_sacrifice_factor
+		kind = "male_goblin"
+	elif cap_male_human >= 1.0:
+		cap_male_human -= 1.0
+		gain = params.sacrifice_faith
+		kind = "male_human"
+		human_hostility = clampf(human_hostility + params.hostility_per_human_sacrifice, 0.0, 1.0)
+	elif cap_female_human >= 1.0:
+		cap_female_human -= 1.0
+		gain = params.sacrifice_faith
+		kind = "female_human"
+		human_hostility = clampf(human_hostility + params.hostility_per_human_sacrifice, 0.0, 1.0)
+	elif cap_female_goblin >= 1.0:
+		cap_female_goblin -= 1.0
+		gain = params.sacrifice_faith
+		kind = "female_goblin"
+	else:
+		return false
+	# 二重構造 (§3): _step_faith と同じくキャップで頭打ち、累計には満額を積む。
+	faith = min(faith_cap(), faith + gain)
+	cum_faith += gain
+	_event({"t": "sacrifice", "kind": kind, "gain": gain})
+	return true
+
+## 人間捕虜の解放。指定性別の人間捕虜を 1 体解放し、敵対度を下げる (§13)。
+## 対象の捕虜が居なければ何もせず false。
+func release_human_captive(sex: int) -> bool:
+	if outcome != Outcome.ONGOING:
+		return false
+	if sex == Goblin.Sex.MALE and cap_male_human >= 1.0:
+		cap_male_human -= 1.0
+	elif sex == Goblin.Sex.FEMALE and cap_female_human >= 1.0:
+		cap_female_human -= 1.0
+	else:
+		return false
+	human_hostility = clampf(human_hostility - params.hostility_release_drop, 0.0, 1.0)
+	_event({"t": "release_captive", "sex": sex})
+	return true
 
 # --- 奇跡の下働きヘルパ ---
 ## 泥壁の寿命処理: 尽きたタイルを元へ戻す。
@@ -1669,11 +1773,15 @@ func snapshot() -> Dictionary:
 		"faith": faith, "cum_faith": cum_faith, "food": food,
 		"surge": surge, "over_cap_ticks": over_cap_ticks,
 		"next_big_raid_tick": next_big_raid_tick,
-		"raid_is_human": raid_is_human, "raid_start_hp": raid_start_hp,
+		"raid_is_human": raid_is_human, "raid_is_small": raid_is_small,
+		"raid_start_hp": raid_start_hp,
 		"alarm_raised": alarm_raised,
 		"mud_walls": mud_walls.map(func(m):
 			return [int(m.x), int(m.y), int(m.prev), int(m.expire_tick)]),
 		"rally_point": [rally_point.x, rally_point.y],
+		"cap_male_goblin": cap_male_goblin, "cap_female_goblin": cap_female_goblin,
+		"cap_male_human": cap_male_human, "cap_female_human": cap_female_human,
+		"human_hostility": human_hostility,
 		"outcome": outcome, "next_goblin_id": next_goblin_id,
 		"next_enemy_id": next_enemy_id, "next_mite_id": next_mite_id,
 		"next_field_id": next_field_id,
@@ -1691,12 +1799,16 @@ func restore(d: Dictionary) -> void:
 	faith = d.faith; cum_faith = d.cum_faith; food = d.food
 	surge = d.surge; over_cap_ticks = d.over_cap_ticks
 	next_big_raid_tick = d.next_big_raid_tick
-	raid_is_human = d.raid_is_human; raid_start_hp = d.raid_start_hp
+	raid_is_human = d.raid_is_human; raid_is_small = d.get("raid_is_small", false)
+	raid_start_hp = d.raid_start_hp
 	alarm_raised = d.alarm_raised
 	mud_walls = (d.get("mud_walls", []) as Array).map(func(m):
 		return {"x": int(m[0]), "y": int(m[1]), "prev": int(m[2]), "expire_tick": int(m[3])})
 	var rp: Array = d.get("rally_point", [-1, -1])
 	rally_point = Vector2i(int(rp[0]), int(rp[1]))
+	cap_male_goblin = d.cap_male_goblin; cap_female_goblin = d.cap_female_goblin
+	cap_male_human = d.cap_male_human; cap_female_human = d.cap_female_human
+	human_hostility = d.human_hostility
 	outcome = d.outcome; next_goblin_id = d.next_goblin_id
 	next_enemy_id = d.next_enemy_id; next_mite_id = d.next_mite_id
 	next_field_id = d.next_field_id

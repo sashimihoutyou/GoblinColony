@@ -17,6 +17,8 @@ enum CommandType {
 	CAST_MIRACLE,   # 奇跡発動 {miracle, x, y} or {miracle, target_id}
 	BUILD_ROOM,     # 建築 {room_type, x, y}     (P2 で実装)
 	DISPATCH,       # 派遣 {count, target}  (§11.5: target = 出現物 id)
+	SACRIFICE,      # 生贄 (対象不要。優先順位は world.sacrifice_captive() 側で決定)
+	RELEASE_CAPTIVE,  # 人間捕虜の解放 {sex}
 }
 
 # 奇跡の種別 (§4)。CAST_MIRACLE コマンドの cmd.miracle に入れる。
@@ -49,6 +51,10 @@ func apply(world: World) -> void:
 				world.dispatch_to_field(cmd.target, cmd.count)
 			CommandType.CAST_MIRACLE:
 				_apply_miracle(world, cmd)
+			CommandType.SACRIFICE:
+				world.sacrifice_captive()
+			CommandType.RELEASE_CAPTIVE:
+				world.release_human_captive(cmd.sex)
 			_:
 				pass  # P2 で実装予定の干渉 (BUILD_ROOM)
 	queue.clear()

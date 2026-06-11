@@ -61,6 +61,30 @@ var big_raid_interval_max: int = 1     # 敵対度 MAX のときの間隔 (日)
 var small_raid_prob: float = 0.3       # 小規模襲撃 (恵み) の 1 日あたり発生確率
 var final_mult: float = 2.5            # ラストバトル倍率 (FINAL_MULT)
 
+# --- 捕虜プール + 敵対度 (§2.5/§13。world.ts の捕虜・敵対度セクションの移植 KI-17/23/24) ---
+# 捕虜は cap_male_goblin/cap_female_goblin/cap_male_human/cap_female_human の
+# 4 区分 (float 連続量。world.ts と同じ)。性別×種族の振り分けは下記 maleFrac で行う。
+var captive_male_frac_goblin: float = 0.7   # ゴブリン勢力からの捕虜の雄割合 (CAPTIVE_COMP.goblin)
+var captive_male_frac_human: float = 0.55   # 人間勢力からの捕虜の雄割合 (CAPTIVE_COMP.human)
+# 撃退報酬の捕虜獲得数 (1 回の戦闘終了あたり総数。即時量なので _init() の
+# per-tick 変換は通さない = KI-02 の対象外。world.ts BIG_RAID_CAPTIVE_GAIN)。
+var big_raid_captive_gain: float = 2.0
+# 小規模襲撃 (恵み §11/KI-05) の捕虜報酬は控えめ (world.ts captiveGainSmall)。
+# 大規模と同量にすると恵み側の報酬がインフレし KI-25 の前提が崩れる。
+var small_raid_captive_gain: float = 1.0
+# 生贄 (§2.5): 捕虜 1 体 → 信仰へ変換。即時量なので変換不要 (world.ts SACRIFICE_FAITH)。
+var sacrifice_faith: float = 15.0
+var male_sacrifice_factor: float = 0.5      # 雄捕虜の生贄は雌の半分 (安い燃料 / world.ts と同値)
+# 敵対度 (§13): 残虐な仕打ちで上昇し、解放で下降。0..1 にクランプして
+# raid_interval_days() が大規模襲撃間隔へ写像する (KI-08)。即時量なので変換不要。
+var hostility_per_human_sacrifice: float = 0.05  # 人間捕虜 1 体の生贄あたり上昇
+var hostility_release_drop: float = 0.04         # 人間捕虜 1 体の解放での下降 (控えめ)
+# 雄ゴブリン捕虜の平時自動加入 (KI-17)。日次レートを _init() で per-tick へ変換 (KI-02)。
+# world.ts の maleCaptiveJoinChancePerTick (基準解像度 10tick/日で 0.02) は
+# 日次換算 0.2 (= 0.02 / (tpd/10) = 0.2/tpd) に相当する。
+var male_captive_join_chance_per_day: float = 0.2
+var male_captive_join_chance_per_tick: float
+
 # --- トーテムランク (§3 / P3-04) ---
 # 累計信仰 (cum_faith) がしきい値を超えるとランクが上がる (減らない)。残高キャップ・
 # シャーマン任命枠・奇跡の性能/消費が連動する。しきい値は cycle.ts の RANK_THRESHOLDS
@@ -201,3 +225,4 @@ func _init() -> void:
 	forage_regrow_ticks = int(1.5 * tpd)
 	mud_wall_ticks = int(0.25 * tpd)
 	rage_ticks = int(0.15 * tpd)
+	male_captive_join_chance_per_tick = male_captive_join_chance_per_day / tpd

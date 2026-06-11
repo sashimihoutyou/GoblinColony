@@ -386,6 +386,23 @@ func _push_feed_event(e: Dictionary) -> void:
 		"defeat":
 			var reason: String = "トーテムが砕かれた" if e.get("reason", "") == "totem" else "群れは全滅した"
 			_push_feed("raid", "✖ %s — 敗北……" % reason)
+		"captive_gain":
+			var who: String = "人間" if e.get("human", false) else "ゴブリン"
+			_push_feed("event", "撃退の戦果として%sの捕虜を得た。" % who)
+		"captive_joined":
+			_push_feed("event", "捕らわれていた%s が群れに加わった。" \
+				% GobNames.name_of(int(e.get("id", -1)), Goblin.Sex.MALE))
+		"sacrifice":
+			var kind_txt: String = {
+				"male_goblin": "ゴブリンの雄捕虜",
+				"female_goblin": "ゴブリンの雌捕虜",
+				"male_human": "人間の雄捕虜",
+				"female_human": "人間の雌捕虜",
+			}.get(e.get("kind", ""), "捕虜")
+			_push_feed("event", "%sを生贄に捧げ、信仰が高まった。" % kind_txt)
+		"release_captive":
+			var sex_txt: String = "雄" if int(e.get("sex", 0)) == Goblin.Sex.MALE else "雌"
+			_push_feed("event", "人間の%s捕虜を解放した。敵対度が和らいだ。" % sex_txt)
 
 const FEED_COLORS := {
 	"raid": "e06a50", "event": "e8943a", "birth": "9adb6e",
@@ -539,10 +556,15 @@ func _update_status() -> void:
 	var totem_txt := ""
 	if world.totem_hp < params.totem_hp_max:
 		totem_txt = "  ⚠トーテム %.0f/%.0f" % [world.totem_hp, params.totem_hp_max]
-	_status_label.text = "第 %d 日 %s %s · %s   頭数 %d/%d (子%d)  食料 %.0f  信仰 %.0f/%.0f ランク%d  surge %.1f%s" % [
+	var captive_txt := ""
+	var captive_total := world.cap_male_goblin + world.cap_female_goblin \
+		+ world.cap_male_human + world.cap_female_human
+	if captive_total >= 1.0 or world.human_hostility > 0.0:
+		captive_txt = "  捕虜%d 敵対度%.0f%%" % [int(captive_total), world.human_hostility * 100.0]
+	_status_label.text = "第 %d 日 %s %s · %s   頭数 %d/%d (子%d)  食料 %.0f  信仰 %.0f/%.0f ランク%d  surge %.1f%s%s" % [
 		world.day, bar, time_txt, phase_txt,
 		world._alive_count(), params.cap_pop, _child_count(),
-		world.food, world.faith, world.faith_cap(), world.rank(), world.surge, totem_txt,
+		world.food, world.faith, world.faith_cap(), world.rank(), world.surge, totem_txt, captive_txt,
 	]
 	var armed_def := _armed_def()
 	if not armed_def.is_empty():
