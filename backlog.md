@@ -45,10 +45,12 @@
 - [x] **B1. 3 勢力外交の Godot 移植** — 完了（`test_factions.gd` = FACTIONS_OK。
   メーター 2 本 + ドリフト + 朝貢 + TRIBUTE コマンド + 勢力抽選 + max 間隔 +
   HUD の最怒勢力表示。タップで 3 勢力詳細パネルは B7 に残置）
-- [ ] **B2. 捕虜系 第二増分（Godot）**: 苗床（人間母体 ×2 倍 + `hostilityPerHumanNurseryBirth`、
-  苗床部屋 `RoomType.NURSERY` の配線 / spec 3-19 の `assignedCaptives` カウント方式）、
-  奴隷妻 + 自然つがい化 + 承認/引き離し UI（TS の takeConcubine/approveBond/tearApartBond 移植）、
-  捕虜操作 UI（生贄/解放/朝貢ボタン。`SACRIFICE`/`RELEASE_CAPTIVE` コマンドは配線済み）
+- [x] **B2. 捕虜系 第二増分（Godot）** — 完了（test_captives.gd 拡張 = CAPTIVES_OK。
+  苗床確定生産（NURSERY 部屋必須・人間母体 ×2 + 敵対度上乗せ・母体消耗）、
+  take_concubine/pending_bond/approve_bond/tear_apart_bond、捕虜パネル UI
+  （生贄/解放/側室/朝貢 3 勢力）+ つがい承認バナー。A1 の建築と接続済み =
+  苗床部屋を建てると稼働。副産物: 泥壁/トーテム破壊時の床キャッシュ未再構築
+  という潜在 KI-09 バグを発見・修正（test_miracles の復元後決定性で検出））
 - [ ] **B3. 食料従属**（§2.5・P3-03）: TS は `foodAvailable=true` 固定の接続から。
   食料不足→妊娠率低下・流産、過剰→増殖バフ。Godot は飢餓→HP のみなので増殖への接続を追加。
   KI-26（食料経済）と KI-22（増殖）の相互作用に注意 = 多シードで検証してから確定
