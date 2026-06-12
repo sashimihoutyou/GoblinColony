@@ -10,6 +10,8 @@ class_name Renderer
 var tile_size: int = 16
 var sel_kind: int = 0   # 0=なし / 1=ゴブリン / 2=敵 / 3=部屋 / 4=出現物 (main.gd SelKind と対応)
 var sel_id: int = -1
+# 建築ゴースト (§3-15)。main.gd が毎フレーム設定する {x,y,w,h,ok} (空 = 非建築モード)。
+var build_ghost: Dictionary = {}
 
 var _world: World = null
 var _font: Font
@@ -314,6 +316,8 @@ func _update_decor() -> void:
 	var h := 0
 	for v in _world.map.terrain:
 		h = ((h * 31) + int(v)) & 0x7FFFFFFF
+	# 建築完了 (§3-15) は地形を変えずに部屋を増やすので、部屋数もキーに含める。
+	h = ((h * 31) + _world.map.rooms.size()) & 0x7FFFFFFF
 	if h == _terrain_hash and not _decor.is_empty():
 		return
 	_terrain_hash = h
@@ -345,6 +349,11 @@ func _update_decor() -> void:
 					_decor.append({"kind": "circle", "x": px, "y": py, "r": ts * 0.34, "color": COL_ROCK})
 					_decor.append({"kind": "rect", "x": px - 2, "y": py - 2, "w": 2.0, "h": 2.0, "color": Color("e8c060")})
 					_decor.append({"kind": "rect", "x": px + 2, "y": py + 1, "w": 1.5, "h": 1.5, "color": Color("e8c060")})
+				TileMapData.TileType.EXHAUSTED:
+					# 掘り尽くした跡: きらめきのない砕けた岩屑。
+					_decor.append({"kind": "circle", "x": px - 2.0, "y": py + 1.0, "r": 2.2, "color": COL_ROCK})
+					_decor.append({"kind": "circle", "x": px + 2.5, "y": py - 1.5, "r": 1.6, "color": COL_ROCK})
+					_decor.append({"kind": "circle", "x": px + 1.0, "y": py + 3.0, "r": 1.2, "color": COL_ROCK})
 				TileMapData.TileType.STORAGE:
 					# キノコと骨の備蓄。
 					for k in range(3):
@@ -384,6 +393,16 @@ func _update_decor() -> void:
 				_decor.append({"kind": "ellipse", "x": ratx, "y": raty, "rx": 2.6, "ry": 1.6, "color": Color("4a3b2a")})
 				_decor.append({"kind": "line", "x1": ratx + 2.4, "y1": raty, "x2": ratx + 5.0, "y2": raty - 1.0, "w": 0.7, "color": Color("4a3b2a")})
 			_decor.append({"kind": "text", "x": cx, "y": ry0 * ts - 2.0, "txt": "ネズミ牧場", "color": COL_INK_FAINT})
+		else:
+			# 建築で増える部屋 (§3-15): 名札のみ (固有の装飾は各機能の実装時に)。
+			var jp: String = {
+				TileMapData.RoomType.MUSHROOM: "キノコ農園",
+				TileMapData.RoomType.SMITHY: "泥鍛冶屋",
+				TileMapData.RoomType.NURSERY: "苗床",
+				TileMapData.RoomType.WITCH: "まじない医",
+			}.get(r.room_type, "")
+			if jp != "":
+				_decor.append({"kind": "text", "x": cx, "y": ry0 * ts - 2.0, "txt": jp, "color": COL_INK_FAINT})
 	# 名札: 集積所・トーテム。
 	_decor.append({"kind": "text", "x": (m.storage.x + 0.5) * ts, "y": (m.storage.y as float) * ts - 2.0, "txt": "食料庫", "color": COL_INK_FAINT})
 	_decor.append({"kind": "text", "x": (m.totem.x + 0.5) * ts, "y": (m.totem.y - 1.2) * ts, "txt": "トーテム", "color": COL_INK_FAINT})
@@ -433,6 +452,15 @@ func _draw() -> void:
 	for i in range(m.forage_spots.size()):
 		var grown: bool = (i < m.forage_regrow.size()) and m.forage_regrow[i] == 0
 		_draw_forage(_tile_center(m.forage_spots[i] as Vector2i), i, grown)
+
+	# --- ジョブ指示 (§3-12) + 建築ゴースト (§3-15)。動的状態なので直接描く ---
+	_draw_jobs(ts)
+	if not build_ghost.is_empty():
+		var gr := Rect2(float(build_ghost.x) * ts, float(build_ghost.y) * ts,
+				float(build_ghost.w) * ts, float(build_ghost.h) * ts)
+		var okc := Color(0.55, 0.85, 0.45, 0.22) if bool(build_ghost.ok) else Color(0.85, 0.30, 0.20, 0.20)
+		draw_rect(gr, okc, true)
+		draw_rect(gr, Color(okc.r, okc.g, okc.b, 0.8), false, 2.0)
 
 	# --- トーテム像 + 炎 ---
 	_draw_totem(m)
@@ -516,6 +544,27 @@ func _draw() -> void:
 ## ラスタライズされたグリフが拡大されてガタつく。ズーム倍率をフォントサイズへ
 ## 織り込んで実効ピクセルサイズでラスタライズし、逆スケールで見た目のサイズへ
 ## 戻す (システムフォールバック由来のカナにも効く)。
+## ジョブ指示の印 (§3-12)。採掘=琥珀の脈動枠 / 建設=予定地の枠 + 進捗バー /
+## 修復=青白い脈動枠。プレイヤーの指示が画面に残っていることを示す。
+func _draw_jobs(ts: float) -> void:
+	var pulse := 0.45 + 0.25 * sin(_t * 3.0)
+	for j in _world.jobs:
+		match int(j.type):
+			World.JobType.MINE:
+				var r := Rect2(float(j.x) * ts + 1.0, float(j.y) * ts + 1.0, ts - 2.0, ts - 2.0)
+				draw_rect(r, Color(0.95, 0.75, 0.30, pulse), false, 1.5)
+			World.JobType.BUILD:
+				var br := Rect2(float(j.x) * ts, float(j.y) * ts,
+						float(j.w) * ts, float(j.h) * ts)
+				draw_rect(br, Color(0.85, 0.70, 0.40, 0.08), true)
+				draw_rect(br, Color(0.85, 0.70, 0.40, 0.55), false, 1.5)
+				var pw := br.size.x * clampf(float(j.progress), 0.0, 1.0)
+				draw_rect(Rect2(br.position.x, br.position.y - 4.0, br.size.x, 3.0), Color(0, 0, 0, 0.5), true)
+				draw_rect(Rect2(br.position.x, br.position.y - 4.0, pw, 3.0), COL_EMBER, true)
+			World.JobType.REPAIR:
+				var rr := Rect2(float(j.x) * ts + 2.0, float(j.y) * ts + 2.0, ts - 4.0, ts - 4.0)
+				draw_rect(rr, Color(0.60, 0.85, 0.95, pulse * 0.8), false, 1.5)
+
 func _draw_text_crisp(at: Vector2, txt: String, size: float, color: Color,
 		align: HorizontalAlignment = HORIZONTAL_ALIGNMENT_CENTER, width: float = 60.0) -> void:
 	if _font == null:

@@ -59,6 +59,20 @@ var _forage_feed_count: int = 0  # T4: 採集フィードの間引き (4 回に 
 # 左クリックが選択でなく対象指定になる。Esc/右クリック/残高切れで解除。
 var _armed: int = -1
 var _miracle_buttons: Array = []  # Array[Dictionary] {btn: Button, def: Dictionary}
+# 建築モード (§3-15。演出/入力ローカル)。_armed_build = 武装中の部屋タイプ
+# (TileMapData.RoomType / -1 = 非武装)。武装中はゴーストがカーソルに追従し、
+# クリックで確定 (= 2 タップ目)。奇跡の武装とは排他。
+var _armed_build: int = -1
+var _build_buttons: Array = []  # Array[Dictionary] {btn: Button, rt: int}
+
+# 建築できる部屋 (spec 3-15 の 5 種)。
+const BUILD_TYPES := [
+	TileMapData.RoomType.RAT_RANCH,
+	TileMapData.RoomType.MUSHROOM,
+	TileMapData.RoomType.SMITHY,
+	TileMapData.RoomType.NURSERY,
+	TileMapData.RoomType.WITCH,
+]
 
 # 奇跡の操作定義 (§4)。target: 0=即時 (武装不要) / 1=敵クリック / 2=ゴブリンクリック /
 # 3=タイルクリック。cost_key は SimParams のコスト変数名 ("" = 無料の基本命令)。
@@ -141,6 +155,15 @@ func _process(delta: float) -> void:
 	# α = 次 tick までの端数 (固定タイムステップ補間。停止中は固定され静止)。
 	renderer.sel_kind = sel_kind
 	renderer.sel_id = sel_id
+	# 建築ゴースト (§3-15): カーソル追従。置けるかの判定もここで渡す (演出ローカル)。
+	if _armed_build >= 0:
+		var tl := _ghost_topleft(get_global_mouse_position())
+		var size: Vector2i = SimParams.ROOM_BUILD_SIZE[_armed_build]
+		renderer.build_ghost = {"x": tl.x, "y": tl.y, "w": size.x, "h": size.y,
+				"ok": world.can_place_room(_armed_build, tl.x, tl.y)
+					and world.mud >= float(SimParams.ROOM_BUILD_COST[_armed_build])}
+	else:
+		renderer.build_ghost = {}
 	renderer.render(world, delta, speed, clampf(_accum_ms / MS_PER_TICK, 0.0, 1.0))
 	_update_status()
 	_update_inspector()
@@ -204,10 +227,13 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		match event.button_index:
 			MOUSE_BUTTON_LEFT:
-				# 左クリック: 武装中は奇跡の対象指定、そうでなければ個体/敵/部屋を選択。
+				# 左クリック: 武装中は奇跡/建築の対象指定、そうでなければ個体/敵/部屋を
+				# 選択。空振りはタイル指示 (採掘指定・壁修復) を試す。
 				if event.pressed:
 					if _armed >= 0:
 						_try_cast(get_global_mouse_position())
+					elif _armed_build >= 0:
+						_try_place_build(get_global_mouse_position())
 					else:
 						var picked := renderer.pick_any(world, get_global_mouse_position())
 						sel_kind = _sel_kind_from_pick(int(picked.kind))
@@ -218,10 +244,12 @@ func _unhandled_input(event: InputEvent) -> void:
 							_open_dispatch_panel(sel_id)
 						else:
 							_close_dispatch_panel()
+						if sel_kind == SelKind.NONE:
+							_try_tile_order(get_global_mouse_position())
 			MOUSE_BUTTON_RIGHT:
-				# 右クリック: 武装中なら奇跡を解除。ゴブリンを拾えれば追従モード開始
+				# 右クリック: 武装中なら奇跡/建築を解除。ゴブリンを拾えれば追従モード開始
 				# (インスペクタ選択も同期)。敵/部屋/空振りは選択のみ更新し追従は解除する。
-				if event.pressed and _armed >= 0:
+				if event.pressed and (_armed >= 0 or _armed_build >= 0):
 					_disarm()
 				elif event.pressed:
 					var picked2 := renderer.pick_any(world, get_global_mouse_position())
@@ -252,7 +280,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			_clamp_camera(cam)
 	elif event is InputEventKey and event.pressed and not event.echo:
 		# 奇跡のショートカット (MIRACLE_DEFS の key)。Esc: 武装解除。
-		if event.keycode == KEY_ESCAPE and _armed >= 0:
+		if event.keycode == KEY_ESCAPE and (_armed >= 0 or _armed_build >= 0):
 			_disarm()
 		else:
 			for def in MIRACLE_DEFS:
@@ -376,6 +404,22 @@ func _push_feed_event(e: Dictionary) -> void:
 			_push_feed("event", "巣の外に木の実の茂みが見つかった (%d 食ぶん)。" % e.get("amount", 0))
 		"dispatch":
 			_push_feed("event", "%d 体が恵みを取りに巣を出た。" % e.get("count", 0))
+		"mine_done":
+			var miner := _find_goblin(int(e.id))
+			var miner_name: String = GobNames.of(miner) if miner != null else "誰か"
+			if e.get("gem", false):
+				_push_feed("birth", "%s が岩塊を掘り崩した。崩れた奥から宝石が転がり出た!" % miner_name, int(e.id))
+			else:
+				_push_feed("event", "%s が岩塊を掘り崩し、建材を積み上げた。" % miner_name, int(e.id))
+		"build_start":
+			_push_feed("event", "%sの建設が始まった。地面に骨と泥で印が引かれる。"
+					% ROOM_TYPE_JP.get(int(e.room_type), "部屋"))
+		"build_done":
+			_push_feed("birth", "%sが完成した!" % ROOM_TYPE_JP.get(int(e.room_type), "部屋"), int(e.id))
+		"repair_done":
+			var fixer := _find_goblin(int(e.id))
+			_push_feed("event", "%s が壁のひびを泥で塗り固めた。"
+					% (GobNames.of(fixer) if fixer != null else "誰か"), int(e.id))
 		"field_done":
 			_push_feed("event", "茂みを取り尽くした。")
 		"field_expire":
@@ -479,17 +523,83 @@ func _press_miracle(def: Dictionary) -> void:
 		_refresh_miracle_buttons()
 		return
 	_armed = -1 if _armed == int(def.m) else int(def.m)
+	_armed_build = -1  # 建築モードとは排他
+	_refresh_build_buttons()
 	_refresh_miracle_buttons()
 
 func _disarm() -> void:
 	_armed = -1
+	_armed_build = -1
 	_refresh_miracle_buttons()
+	_refresh_build_buttons()
 
 func _armed_def() -> Dictionary:
 	for def in MIRACLE_DEFS:
 		if int(def.m) == _armed:
 			return def
 	return {}
+
+# ════ 建築モード (§3-15) ════
+func _press_build(rt: int) -> void:
+	_armed = -1  # 奇跡の武装とは排他
+	_armed_build = -1 if _armed_build == rt else rt
+	_refresh_miracle_buttons()
+	_refresh_build_buttons()
+
+func _refresh_build_buttons() -> void:
+	for bb in _build_buttons:
+		var rt: int = bb.rt
+		var cost: float = SimParams.ROOM_BUILD_COST[rt]
+		(bb.btn as Button).text = "%s %.0f" % [ROOM_TYPE_JP[rt], cost]
+		_style_button(bb.btn as Button, _armed_build == rt)
+		(bb.btn as Button).disabled = (_armed_build != rt) and world.mud < cost
+
+## カーソル位置を中心にしたゴーストの左上角タイル。
+func _ghost_topleft(pos: Vector2) -> Vector2i:
+	var size: Vector2i = SimParams.ROOM_BUILD_SIZE[_armed_build]
+	var tp := Vector2i(int(pos.x / renderer.tile_size), int(pos.y / renderer.tile_size))
+	return tp - Vector2i(size.x / 2, size.y / 2)
+
+## 建築モードの左クリック = 2 タップ目の確定。検証はシム側 can_place_room に委ね、
+## ここでは結果に応じたフィードバックだけ出す。
+func _try_place_build(pos: Vector2) -> void:
+	var rt := _armed_build
+	var tl := _ghost_topleft(pos)
+	if not world.can_place_room(rt, tl.x, tl.y):
+		_push_feed("event", "そこには%sを建てられない (巣内の空いた床が要る)。" % ROOM_TYPE_JP[rt])
+		return
+	var cost: float = SimParams.ROOM_BUILD_COST[rt]
+	if world.mud < cost:
+		_push_feed("event", "建材が足りない (必要 %.0f)。岩を掘らせよう。" % cost)
+		return
+	controller.queue.append({
+		"type": Controller.CommandType.BUILD_ROOM,
+		"room_type": rt, "x": tl.x, "y": tl.y,
+	})
+	_disarm()  # 2 タップ確定で建築モードを抜ける
+
+## 空振りクリックのタイル指示: 採掘ノード → 指定/解除トグル、損傷壁 → 修復発注。
+func _try_tile_order(pos: Vector2) -> void:
+	var tp := Vector2i(int(pos.x / renderer.tile_size), int(pos.y / renderer.tile_size))
+	var t := world.map.get_tile(tp.x, tp.y)
+	if t == TileMapData.TileType.RESOURCE_NODE:
+		var had := false
+		for j in world.jobs:
+			if j.type == World.JobType.MINE and j.x == tp.x and j.y == tp.y:
+				had = true
+		controller.queue.append({
+			"type": Controller.CommandType.DESIGNATE_MINE, "x": tp.x, "y": tp.y,
+		})
+		_push_feed("event", "採掘の指示を取り消した。" if had else "岩塊に採掘の印を付けた。")
+	elif t == TileMapData.TileType.WALL \
+			and world.map.wall_hp[world.map.idx(tp.x, tp.y)] < MapTemplate.WALL_HP:
+		if world.mud < world.params.wall_repair_cost:
+			_push_feed("event", "壁を直す建材がない (必要 %.0f)。" % world.params.wall_repair_cost)
+			return
+		controller.queue.append({
+			"type": Controller.CommandType.REPAIR_WALL, "x": tp.x, "y": tp.y,
+		})
+		_push_feed("event", "ひび割れた壁に修復の印を付けた。")
 
 ## 武装中の左クリック: 対象 (敵/ゴブリン/タイル) を指定して発動する。対象外クリックは
 ## 無視 (武装維持)。発動後も武装を保って連射でき、残高が尽きると自動解除する。
@@ -577,6 +687,9 @@ func _update_status() -> void:
 	var totem_txt := ""
 	if world.totem_hp < params.totem_hp_max:
 		totem_txt = "  ⚠トーテム %.0f/%.0f" % [world.totem_hp, params.totem_hp_max]
+	var res_txt := "  建材 %.0f" % world.mud
+	if world.gems > 0.0:
+		res_txt += "  宝石 %.0f" % world.gems
 	var captive_txt := ""
 	var captive_total := world.cap_male_goblin + world.cap_female_goblin \
 		+ world.cap_male_human + world.cap_female_human
@@ -594,10 +707,10 @@ func _update_status() -> void:
 			angriest = h
 	if angriest[1] > 0.0:
 		captive_txt += "  敵対 %s %.0f%%" % [angriest[0], float(angriest[1]) * 100.0]
-	_status_label.text = "第 %d 日 %s %s · %s   頭数 %d/%d (子%d)  食料 %.0f  信仰 %.0f/%.0f ランク%d  surge %.1f%s%s" % [
+	_status_label.text = "第 %d 日 %s %s · %s   頭数 %d/%d (子%d)  食料 %.0f%s  信仰 %.0f/%.0f ランク%d  surge %.1f%s%s" % [
 		world.day, bar, time_txt, phase_txt,
 		world._alive_count(), params.cap_pop, _child_count(),
-		world.food, world.faith, world.faith_cap(), world.rank(), world.surge, totem_txt, captive_txt,
+		world.food, res_txt, world.faith, world.faith_cap(), world.rank(), world.surge, totem_txt, captive_txt,
 	]
 	var armed_def := _armed_def()
 	if not armed_def.is_empty():
@@ -810,8 +923,28 @@ func _build_ui() -> void:
 		bar.add_child(mb)
 		_miracle_buttons.append({"btn": mb, "def": def})
 	ui.add_child(bar)
+	# 建築バー (§3-15)。速度バーの上段。押下で建築モード (ゴースト追従 → クリック確定)。
+	var build_bar := HBoxContainer.new()
+	build_bar.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	build_bar.offset_top = -76.0
+	build_bar.offset_left = 8.0
+	build_bar.add_theme_constant_override("separation", 4)
+	var build_label := Label.new()
+	build_label.text = "⚒建築:"
+	build_label.add_theme_color_override("font_color", C_INK_FAINT)
+	build_label.add_theme_font_size_override("font_size", 12)
+	build_bar.add_child(build_label)
+	for rt in BUILD_TYPES:
+		var btn := Button.new()
+		btn.add_theme_font_size_override("font_size", 12)
+		var rt_v: int = rt
+		btn.pressed.connect(func() -> void: _press_build(rt_v))
+		build_bar.add_child(btn)
+		_build_buttons.append({"btn": btn, "rt": rt_v})
+	ui.add_child(build_bar)
 	_refresh_speed_buttons()
 	_refresh_miracle_buttons()
+	_refresh_build_buttons()
 
 	# --- 派遣パネル (§11.5。中央下。出現物クリックで開く) ---
 	_dispatch_panel = PanelContainer.new()
