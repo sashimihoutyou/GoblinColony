@@ -54,10 +54,30 @@ var _accum_ms: float = 0.0
 var sel_kind: int = SelKind.NONE
 var sel_id: int = -1   # GOBLIN/ENEMY: ユニット id。ROOM: world.map.rooms のインデックス
 var _forage_feed_count: int = 0  # T4: 採集フィードの間引き (4 回に 1 回だけ流す)
-# 奇跡「嘲りの稲妻」のターゲティング中か (演出/入力ローカル。シム・セーブに含めない)。
-# 武装中は左クリックが選択でなく敵への発動になる。Esc/右クリックで解除。
-var _casting: bool = false
-var _spell_button: Button
+# 奇跡のターゲティング (演出/入力ローカル。シム・セーブに含めない)。
+# _armed = 武装中の奇跡 (Controller.Miracle の値 / -1 = 非武装)。武装中は
+# 左クリックが選択でなく対象指定になる。Esc/右クリック/残高切れで解除。
+var _armed: int = -1
+var _miracle_buttons: Array = []  # Array[Dictionary] {btn: Button, def: Dictionary}
+
+# 奇跡の操作定義 (§4)。target: 0=即時 (武装不要) / 1=敵クリック / 2=ゴブリンクリック /
+# 3=タイルクリック。cost_key は SimParams のコスト変数名 ("" = 無料の基本命令)。
+const MIRACLE_DEFS := [
+	{"m": Controller.Miracle.LIGHTNING, "key": KEY_Q, "name": "⚡稲妻",
+		"cost_key": "lightning_cost", "target": 1, "hint": "敵をクリックで発動"},
+	{"m": Controller.Miracle.MITES, "key": KEY_W, "name": "パン虫",
+		"cost_key": "mites_cost", "target": 0, "hint": ""},
+	{"m": Controller.Miracle.HONOR, "key": KEY_E, "name": "名誉",
+		"cost_key": "honor_cost", "target": 2, "hint": "ゴブリンをクリックで激昂させる"},
+	{"m": Controller.Miracle.MUD, "key": KEY_R, "name": "泥壁",
+		"cost_key": "mud_cost", "target": 3, "hint": "塞ぎたい地点をクリック (十字に壁化)"},
+	{"m": Controller.Miracle.RAGE, "key": KEY_T, "name": "怒り",
+		"cost_key": "rage_cost", "target": 3, "hint": "敵の只中をクリックで同士討ち"},
+	{"m": Controller.Miracle.SUMMON, "key": KEY_Y, "name": "召喚",
+		"cost_key": "summon_cost", "target": 3, "hint": "出現させたい地点をクリック"},
+	{"m": Controller.Miracle.RALLY, "key": KEY_G, "name": "集合",
+		"cost_key": "", "target": 3, "hint": "集めたい地点をクリック (再押下で解除)"},
+]
 
 # --- カメラ操作 (演出層ローカル状態。シムには触れない) ---
 const ZOOM_MIN := 1.0         # フィット倍率 (全体表示)
@@ -184,9 +204,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		match event.button_index:
 			MOUSE_BUTTON_LEFT:
-				# 左クリック: 武装中は敵へ稲妻を発動、そうでなければ個体/敵/部屋を選択。
+				# 左クリック: 武装中は奇跡の対象指定、そうでなければ個体/敵/部屋を選択。
 				if event.pressed:
-					if _casting:
+					if _armed >= 0:
 						_try_cast(get_global_mouse_position())
 					else:
 						var picked := renderer.pick_any(world, get_global_mouse_position())
@@ -199,10 +219,10 @@ func _unhandled_input(event: InputEvent) -> void:
 						else:
 							_close_dispatch_panel()
 			MOUSE_BUTTON_RIGHT:
-				# 右クリック: 武装中なら稲妻を解除。ゴブリンを拾えれば追従モード開始
+				# 右クリック: 武装中なら奇跡を解除。ゴブリンを拾えれば追従モード開始
 				# (インスペクタ選択も同期)。敵/部屋/空振りは選択のみ更新し追従は解除する。
-				if event.pressed and _casting:
-					_set_casting(false)
+				if event.pressed and _armed >= 0:
+					_disarm()
 				elif event.pressed:
 					var picked2 := renderer.pick_any(world, get_global_mouse_position())
 					var kind2 := _sel_kind_from_pick(int(picked2.kind))
@@ -231,11 +251,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			_manual_camera = true
 			_clamp_camera(cam)
 	elif event is InputEventKey and event.pressed and not event.echo:
-		# Q: 稲妻の武装トグル。Esc: 武装解除。
-		if event.keycode == KEY_Q:
-			_set_casting(not _casting)
-		elif event.keycode == KEY_ESCAPE and _casting:
-			_set_casting(false)
+		# 奇跡のショートカット (MIRACLE_DEFS の key)。Esc: 武装解除。
+		if event.keycode == KEY_ESCAPE and _armed >= 0:
+			_disarm()
+		else:
+			for def in MIRACLE_DEFS:
+				if event.keycode == def.key:
+					_press_miracle(def)
+					break
 
 ## ホイールズーム: カーソル位置をアンカーに倍率を変える (factor は 1.0〜8.0)。
 func _apply_zoom(new_factor: float) -> void:
@@ -363,6 +386,23 @@ func _push_feed_event(e: Dictionary) -> void:
 		"defeat":
 			var reason: String = "トーテムが砕かれた" if e.get("reason", "") == "totem" else "群れは全滅した"
 			_push_feed("raid", "✖ %s — 敗北……" % reason)
+		"captive_gain":
+			var who: String = "人間" if e.get("human", false) else "ゴブリン"
+			_push_feed("event", "撃退の戦果として%sの捕虜を得た。" % who)
+		"captive_joined":
+			_push_feed("event", "捕らわれていた%s が群れに加わった。" \
+				% GobNames.name_of(int(e.get("id", -1)), Goblin.Sex.MALE))
+		"sacrifice":
+			var kind_txt: String = {
+				"male_goblin": "ゴブリンの雄捕虜",
+				"female_goblin": "ゴブリンの雌捕虜",
+				"male_human": "人間の雄捕虜",
+				"female_human": "人間の雌捕虜",
+			}.get(e.get("kind", ""), "捕虜")
+			_push_feed("event", "%sを生贄に捧げ、信仰が高まった。" % kind_txt)
+		"release_captive":
+			var sex_txt: String = "雄" if int(e.get("sex", 0)) == Goblin.Sex.MALE else "雌"
+			_push_feed("event", "人間の%s捕虜を解放した。敵対度が和らいだ。" % sex_txt)
 
 const FEED_COLORS := {
 	"raid": "e06a50", "event": "e8943a", "birth": "9adb6e",
@@ -392,44 +432,118 @@ func _sel_kind_from_pick(kind: int) -> int:
 		4: return SelKind.FIELD
 		_: return SelKind.NONE
 
-# ════ 奇跡「嘲りの稲妻」(§4 / §12) ════
-## 武装状態を切り替える。武装しようとして残高不足なら弾く。
-func _set_casting(on: bool) -> void:
-	if on and world.faith < params.lightning_cost:
-		_push_feed("event", "信仰が足りない (必要 %.0f)。" % params.lightning_cost)
-		on = false
-	_casting = on
-	_refresh_spell_button()
+# ════ 奇跡 (§4) ════
+## 奇跡の現在コスト (ランク連動 §3。無料の基本命令は 0)。
+func _miracle_cost(def: Dictionary) -> float:
+	if def.cost_key == "":
+		return 0.0
+	return float(params.get(def.cost_key)) * world.miracle_mult()
 
-## 武装中の左クリック: クリック位置の敵に稲妻を発動する。敵以外は無視 (武装維持)。
-## 発動後も武装は維持し連射でき、残高が尽きると自動解除する。
+## ボタン押下/ショートカット: 即時系はその場で発動、対象系は武装をトグルする。
+func _press_miracle(def: Dictionary) -> void:
+	var cost := _miracle_cost(def)
+	# 集合は特別: 発令中なら押下 = 解除。
+	if def.m == Controller.Miracle.RALLY and world.rally_point != Vector2i(-1, -1):
+		world.rally_clear()
+		_push_feed("event", "集合を解いた。みなが持ち場へ戻っていく。")
+		_disarm()
+		return
+	if world.faith < cost:
+		_push_feed("event", "信仰が足りない (必要 %.0f)。" % cost)
+		return
+	if int(def.target) == 0:
+		# 即時系 (恵みのパン虫): 武装不要でその場で発動。
+		if def.m == Controller.Miracle.MITES and world.cast_mites():
+			_push_feed("event", "恵みのパン虫! 巣のあちこちで丸い影がもぞもぞ湧いた。(信仰 -%.0f)" % cost)
+		_refresh_miracle_buttons()
+		return
+	_armed = -1 if _armed == int(def.m) else int(def.m)
+	_refresh_miracle_buttons()
+
+func _disarm() -> void:
+	_armed = -1
+	_refresh_miracle_buttons()
+
+func _armed_def() -> Dictionary:
+	for def in MIRACLE_DEFS:
+		if int(def.m) == _armed:
+			return def
+	return {}
+
+## 武装中の左クリック: 対象 (敵/ゴブリン/タイル) を指定して発動する。対象外クリックは
+## 無視 (武装維持)。発動後も武装を保って連射でき、残高が尽きると自動解除する。
 func _try_cast(pos: Vector2) -> void:
-	var picked := renderer.pick_any(world, pos)
-	if int(picked.kind) != 2:  # 2 = 敵 (renderer.pick_any の kind)
+	var def := _armed_def()
+	if def.is_empty():
 		return
-	var eid := int(picked.id)
-	var fx := 0.0
-	var fy := 0.0
-	for e in world.enemies:
-		if e.id == eid:
-			fx = (e.fx + 0.5) * renderer.tile_size
-			fy = (e.fy + 0.5) * renderer.tile_size
-			break
-	if world.cast_lightning(eid):
-		renderer.on_event({"t": "lightning", "x": fx, "y": fy})
-		_push_feed("raid", "嘲りの稲妻が敵を撃った! (信仰 -%.0f)" % params.lightning_cost)
-		if world.faith < params.lightning_cost:
-			_set_casting(false)  # 残高が尽きたら自動解除
-	else:
-		_set_casting(false)
-	_refresh_spell_button()
+	var done := false
+	match int(def.target):
+		1:  # 敵クリック (稲妻)
+			var picked := renderer.pick_any(world, pos)
+			if int(picked.kind) != 2:
+				return
+			var eid := int(picked.id)
+			var fx := 0.0
+			var fy := 0.0
+			for e in world.enemies:
+				if e.id == eid:
+					fx = (e.fx + 0.5) * renderer.tile_size
+					fy = (e.fy + 0.5) * renderer.tile_size
+					break
+			if world.cast_lightning(eid):
+				renderer.on_event({"t": "lightning", "x": fx, "y": fy})
+				_push_feed("raid", "嘲りの稲妻が敵を撃った! (信仰 -%.0f)" % _miracle_cost(def))
+				done = true
+		2:  # ゴブリンクリック (名誉ある死)
+			var picked2 := renderer.pick_any(world, pos)
+			if int(picked2.kind) != 1:
+				return
+			if world.cast_honor(int(picked2.id)):
+				var g := _find_goblin(int(picked2.id))
+				_push_feed("raid", "%s が名誉ある死を授かり、激昂した! (信仰 -%.0f)"
+						% [GobNames.of(g) if g != null else "誰か", _miracle_cost(def)])
+				done = true
+			else:
+				_push_feed("event", "その者には授けられない (族長と子は対象外)。")
+		3:  # タイルクリック (泥壁/怒り/召喚/集合)
+			var tp := Vector2i(int(pos.x / renderer.tile_size), int(pos.y / renderer.tile_size))
+			match int(def.m):
+				Controller.Miracle.MUD:
+					if world.cast_mud(tp.x, tp.y):
+						_push_feed("raid", "泥の抱擁が大地を盛り上げ、道を塞いだ。(信仰 -%.0f)" % _miracle_cost(def))
+						done = true
+				Controller.Miracle.RAGE:
+					if world.cast_rage(tp.x, tp.y):
+						_push_feed("raid", "抑えられない怒りが敵中に弾け、同士討ちが始まった! (信仰 -%.0f)" % _miracle_cost(def))
+						done = true
+					else:
+						_push_feed("event", "範囲に敵がいない。")
+				Controller.Miracle.SUMMON:
+					if world.cast_summon(tp.x, tp.y):
+						_push_feed("birth", "下僕が泥の中から這い出てきた。(信仰 -%.0f)" % _miracle_cost(def))
+						done = true
+				Controller.Miracle.RALLY:
+					if world.cast_rally(tp.x, tp.y):
+						_push_feed("event", "集合の声! 手すきの者がぞろぞろ集まってくる。")
+						_disarm()  # 集合は一発で武装解除 (解除はボタン再押下)
+						return
+	if done and world.faith < _miracle_cost(def):
+		_disarm()  # 残高が尽きたら自動解除
+	_refresh_miracle_buttons()
 
-func _refresh_spell_button() -> void:
-	if _spell_button == null:
-		return
-	_spell_button.text = "⚡ 稲妻 解除" if _casting else "⚡ 稲妻 %.0f" % params.lightning_cost
-	_style_button(_spell_button, _casting)
-	_spell_button.disabled = (not _casting) and world.faith < params.lightning_cost
+func _refresh_miracle_buttons() -> void:
+	for mb in _miracle_buttons:
+		var def: Dictionary = mb.def
+		var btn: Button = mb.btn
+		var armed: bool = _armed == int(def.m)
+		if def.m == Controller.Miracle.RALLY and world.rally_point != Vector2i(-1, -1):
+			btn.text = "%s解除" % def.name
+		elif def.cost_key == "":
+			btn.text = String(def.name)
+		else:
+			btn.text = "%s %.0f" % [def.name, _miracle_cost(def)]
+		_style_button(btn, armed)
+		btn.disabled = (not armed) and world.faith < _miracle_cost(def)
 
 # ════ HUD ════
 func _update_status() -> void:
@@ -442,14 +556,20 @@ func _update_status() -> void:
 	var totem_txt := ""
 	if world.totem_hp < params.totem_hp_max:
 		totem_txt = "  ⚠トーテム %.0f/%.0f" % [world.totem_hp, params.totem_hp_max]
-	_status_label.text = "第 %d 日 %s %s · %s   頭数 %d/%d (子%d)  食料 %.0f  信仰 %.0f  surge %.1f%s" % [
+	var captive_txt := ""
+	var captive_total := world.cap_male_goblin + world.cap_female_goblin \
+		+ world.cap_male_human + world.cap_female_human
+	if captive_total >= 1.0 or world.human_hostility > 0.0:
+		captive_txt = "  捕虜%d 敵対度%.0f%%" % [int(captive_total), world.human_hostility * 100.0]
+	_status_label.text = "第 %d 日 %s %s · %s   頭数 %d/%d (子%d)  食料 %.0f  信仰 %.0f/%.0f ランク%d  surge %.1f%s%s" % [
 		world.day, bar, time_txt, phase_txt,
 		world._alive_count(), params.cap_pop, _child_count(),
-		world.food, world.faith, world.surge, totem_txt,
+		world.food, world.faith, world.faith_cap(), world.rank(), world.surge, totem_txt, captive_txt,
 	]
-	if _casting:
-		# 武装中は ETA 行を稲妻ヒントに差し替える (発動は交戦中=平時以外が主)。
-		_eta_label.text = "⚡ 稲妻: 敵をクリックで発動 (Esc/右クリックで解除)"
+	var armed_def := _armed_def()
+	if not armed_def.is_empty():
+		# 武装中は ETA 行を奇跡のヒントに差し替える。
+		_eta_label.text = "%s: %s (Esc/右クリックで解除)" % [armed_def.name, armed_def.hint]
 		_eta_label.add_theme_color_override("font_color", C_EMBER_BRIGHT)
 	elif world.outcome == World.Outcome.ONGOING and world.phase == World.Phase.PEACE:
 		var days_left := float(world.next_big_raid_tick - world.tick) / float(params.ticks_per_day)
@@ -459,8 +579,9 @@ func _update_status() -> void:
 		_eta_label.text = ""
 	# 残高は時間で増えるので、ボタンの有効/無効だけ毎フレーム追従させる
 	# (再スタイルは武装トグル時のみ。毎フレームの StyleBox 生成を避ける)。
-	if _spell_button != null:
-		_spell_button.disabled = (not _casting) and world.faith < params.lightning_cost
+	for mb in _miracle_buttons:
+		var mdef: Dictionary = mb.def
+		(mb.btn as Button).disabled = (_armed != int(mdef.m)) and world.faith < _miracle_cost(mdef)
 	# 勝敗バナー。
 	if world.outcome == World.Outcome.VICTORY:
 		_outcome_label.text = "★ 勝利 — 規定日数を生き延びた!"
@@ -644,14 +765,18 @@ func _build_ui() -> void:
 			_refresh_speed_buttons())
 		bar.add_child(b)
 		_speed_buttons.append({"btn": b, "speed": sp})
-	# 奇跡ボタン (嘲りの稲妻)。武装中は強調表示、残高不足で無効化 (§4 / §12)。
-	_spell_button = Button.new()
-	_spell_button.add_theme_font_size_override("font_size", 12)
-	_spell_button.pressed.connect(func() -> void: _set_casting(not _casting))
-	bar.add_child(_spell_button)
+	# 奇跡バー (§4)。武装中は強調表示、残高不足で無効化。コストはランク連動で
+	# ラベルに常時表示する (_refresh_miracle_buttons)。
+	for def in MIRACLE_DEFS:
+		var mb := Button.new()
+		mb.add_theme_font_size_override("font_size", 12)
+		var d: Dictionary = def
+		mb.pressed.connect(func() -> void: _press_miracle(d))
+		bar.add_child(mb)
+		_miracle_buttons.append({"btn": mb, "def": def})
 	ui.add_child(bar)
 	_refresh_speed_buttons()
-	_refresh_spell_button()
+	_refresh_miracle_buttons()
 
 	# --- 派遣パネル (§11.5。中央下。出現物クリックで開く) ---
 	_dispatch_panel = PanelContainer.new()

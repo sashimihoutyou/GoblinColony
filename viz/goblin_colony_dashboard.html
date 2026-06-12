@@ -146,6 +146,19 @@
   .bond-banner .msg { flex: 1; min-width: 220px; color: var(--ink); }
   .bond-banner .msg b { color: #c79be0; }
 
+  /* ── 捕虜の処遇 (GDD §10 プレイヤー動詞: 解放/側室) ── */
+  .captive-counts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; margin-bottom: 12px; }
+  .captive-row { display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 11px; color: var(--ink-dim); border-bottom: 1px solid var(--rock-line); padding-bottom: 3px; }
+  .captive-row .n { font-family: var(--font-display); font-size: 15px; color: var(--bone); }
+  .captive-actions { display: flex; flex-direction: column; gap: 6px; }
+  .captive-actions .group-label { font-size: 10px; color: var(--ink-faint);
+    letter-spacing: 0.12em; margin-top: 4px; }
+  .captive-actions .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .captive-actions button { flex: 1; min-width: 0; font-size: 11px; padding: 6px 8px; }
+  .captive-actions button:disabled { opacity: 0.35; cursor: not-allowed; }
+  .captive-actions button:disabled:hover { background: var(--rock); border-color: var(--rock-line); color: var(--ink); }
+
   /* ── メーター ── */
   .meters { display: flex; flex-direction: column; gap: 14px; }
   .meter-head { display: flex; justify-content: space-between; align-items: baseline;
@@ -265,6 +278,11 @@
       <div class="panel">
         <div class="panel-title">資源</div>
         <div class="meters" id="meters"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">捕虜の処遇</div>
+        <div class="captive-counts" id="captive-counts"></div>
+        <div class="captive-actions" id="captive-actions"></div>
       </div>
       <div class="panel">
         <div class="panel-title">ステート分布</div>
@@ -681,6 +699,13 @@
       hostilityReleaseDrop: 0.04,
       raidIntervalDaysAtPeace: 5,
       raidIntervalDaysAtMax: 1,
+      // 3 勢力分離 (§13): 常時の業は日次定義 → per-tick 変換 (KI-02)。30 日放置で
+      // 苦魚 +0.36 / ブン・タ＝タ +0.06 ほど。朝貢は解放 (0.04) より大きく下げる
+      // (能動的な外交手段の手応え)。最終値は §15。
+      hostilityDriftPerTickBunta: 2e-3 / ticksPerDay,
+      hostilityDriftPerTickKugyo: 0.012 / ticksPerDay,
+      hostilityTributeDrop: 0.1,
+      kugyoBaseRaidShare: 0.7,
       // 自動襲撃スケジューラ: 既定はオフ。規模式は cycle.ts と同一の出所 (KI-01)。
       autoRaidEnabled: false,
       baseEnemies: b.BASE_ENEMIES,
@@ -797,6 +822,10 @@
       capPop: opts.capPop,
       humanHostility: 0,
       // §13 敵対度: 開始時は和平 (人間への加害なし)
+      // ゴブリン 2 部族も和平から始まるが、常時の業 (自然ドリフト §13) で
+      // 放置でもじわじわ悪化していく (苦魚族が最速)。
+      buntaHostility: 0,
+      kugyoHostility: 0,
       rng: rng.snapshot(),
       capMaleGoblin: 0,
       // 初期捕虜は「すでに巣にいる産み手候補」とみなし雌ゴブリン扱い (苗床の種)。
@@ -818,7 +847,9 @@
       raidStartPop: 0,
       raidStartHp: 0,
       raidIsHuman: false,
-      raidMaleFrac: 0.7
+      raidMaleFrac: 0.7,
+      raidFaction: "kugyo"
+      // 既定の侵攻側 (同種に容赦ない §13)。襲撃ごとに抽選で上書き
     };
   }
   function livePop(w) {
@@ -831,7 +862,7 @@
     for (const g of w.goblins) if (g.state !== 0 /* Dead */) h += g.hp;
     return h;
   }
-  function beginRaid(w, enemies, comp = CAPTIVE_COMP.goblin) {
+  function beginRaid(w, enemies, comp = CAPTIVE_COMP.goblin, faction) {
     const s = cloneWorld(w);
     s.phase = "combat";
     s.enemiesRemaining = enemies;
@@ -840,6 +871,7 @@
     s.raidLossThisFight = 0;
     s.raidIsHuman = comp.isHuman;
     s.raidMaleFrac = comp.maleFrac;
+    s.raidFaction = faction ?? (comp.isHuman ? "human" : "kugyo");
     return s;
   }
   function stepWorld(prev, p) {
@@ -921,10 +953,19 @@
         }
       }
     }
+    w.buntaHostility = clamp012(w.buntaHostility + p.hostilityDriftPerTickBunta);
+    w.kugyoHostility = clamp012(w.kugyoHostility + p.hostilityDriftPerTickKugyo);
     if (p.autoRaidEnabled && w.phase === "peace" && w.tick >= w.nextBigRaidTick) {
       const rank = rankFromCumulative(w.cum, p.rankThresholds);
       const enemies = p.baseEnemies + w.day * p.enemySlope + p.enemyPerRank * rank;
-      const comp = rng.nextFloat() < w.humanHostility ? CAPTIVE_COMP.human : CAPTIVE_COMP.goblin;
+      const faction = pickRaidFaction(
+        w.humanHostility,
+        w.buntaHostility,
+        w.kugyoHostility,
+        p.kugyoBaseRaidShare,
+        rng.nextFloat()
+      );
+      const comp = faction === "human" ? CAPTIVE_COMP.human : CAPTIVE_COMP.goblin;
       w.phase = "combat";
       w.enemiesRemaining = enemies;
       w.raidStartPop = livePop(w);
@@ -932,7 +973,8 @@
       w.raidLossThisFight = 0;
       w.raidIsHuman = comp.isHuman;
       w.raidMaleFrac = comp.maleFrac;
-      const gapTicks = Math.max(1, Math.round(raidIntervalDays(w.humanHostility, p) * p.ticksPerDay));
+      w.raidFaction = faction;
+      const gapTicks = Math.max(1, Math.round(raidIntervalDays(maxHostility(w), p) * p.ticksPerDay));
       w.nextBigRaidTick = w.tick + gapTicks;
     }
     w.rng = rng.snapshot();
@@ -1465,6 +1507,35 @@
     w.humanHostility = clamp012(w.humanHostility - p.hostilityReleaseDrop);
     return w;
   }
+  function tributeCaptive(prev, p, faction) {
+    const w = cloneWorld(prev);
+    if (faction === "human") {
+      if (w.capMaleHuman >= 1) w.capMaleHuman -= 1;
+      else if (w.capFemaleHuman >= 1) w.capFemaleHuman -= 1;
+      else return prev;
+      w.humanHostility = clamp012(w.humanHostility - p.hostilityTributeDrop);
+    } else {
+      if (w.capMaleGoblin >= 1) w.capMaleGoblin -= 1;
+      else if (w.capFemaleGoblin >= 1) w.capFemaleGoblin -= 1;
+      else return prev;
+      if (faction === "bunta") {
+        w.buntaHostility = clamp012(w.buntaHostility - p.hostilityTributeDrop);
+      } else {
+        w.kugyoHostility = clamp012(w.kugyoHostility - p.hostilityTributeDrop);
+      }
+    }
+    return w;
+  }
+  function maxHostility(w) {
+    return Math.max(w.humanHostility, w.buntaHostility, w.kugyoHostility);
+  }
+  function pickRaidFaction(human, bunta, kugyo, kugyoBaseShare, r) {
+    if (r < human) return "human";
+    const u = human >= 1 ? 0 : (r - human) / (1 - human);
+    const wKugyo = kugyoBaseShare + kugyo;
+    const wBunta = 1 - kugyoBaseShare + bunta;
+    return u < wKugyo / (wKugyo + wBunta) ? "kugyo" : "bunta";
+  }
   function raidIntervalDays(hostility, p) {
     const h = clamp012(hostility);
     return p.raidIntervalDaysAtPeace + (p.raidIntervalDaysAtMax - p.raidIntervalDaysAtPeace) * h;
@@ -1579,6 +1650,8 @@
     approveBond,
     tearApartBond,
     releaseHumanCaptive,
+    tributeCaptive,
+    maxHostility,
     raidIntervalDays,
     livePop,
     totalHp,
@@ -2504,11 +2577,11 @@
   /* ════ 右ペイン: メーター・分布 ════ */
   function renderMeters() {
     const pop = GS.livePop(w);
-    const captives = w.capMaleGoblin + w.capFemaleGoblin + w.capMaleHuman + w.capFemaleHuman;
     const rows = [
       { name: "信仰", val: w.faith, max: p.faithCap, color: "var(--ember)", fmt: v=>v.toFixed(0) },
-      { name: "捕虜", val: captives, max: 20, color: "var(--bone)", fmt: v=>v.toFixed(1) },
       { name: "人間の敵対度", val: w.humanHostility, max: 1, color: "var(--blood)", fmt: v=>(v*100).toFixed(0)+"%" },
+      { name: "苦魚族の敵対度", val: w.kugyoHostility, max: 1, color: "var(--blood)", fmt: v=>(v*100).toFixed(0)+"%" },
+      { name: "ブン・タ＝タの敵対度", val: w.buntaHostility, max: 1, color: "var(--blood)", fmt: v=>(v*100).toFixed(0)+"%" },
       { name: "損耗バフ (surge)", val: w.surge, max: p.surgeMax, color: "var(--blood)", fmt: v=>v.toFixed(2) },
       { name: "食料バフ", val: w.foodBuff, max: p.foodBuffMax, color: "var(--moss)", fmt: v=>v.toFixed(2) },
       { name: "頭数 / 上限", val: pop, max: w.capPop, color: "var(--moss)", fmt: ()=>String(pop) },
@@ -2524,6 +2597,110 @@
       </div>`;
     }).join("");
   }
+
+  /* ════ 捕虜パネル (GDD §10: 解放/側室) ════
+     操作はすべて GoblinSim の関数経由 (KI-09)。演出層からシム状態を直書きしない。 */
+  // takeConcubine の suitorId 探索: 捕虜と異性で、生存中・成体・つがい未定の個体を
+  // 先頭から1体選ぶ (決定的: goblins 配列順)。見つからなければ娶れない (ボタン無効化)。
+  function findSuitor(captiveSex) {
+    const wantSex = captiveSex === GS.Sex.Female ? GS.Sex.Male : GS.Sex.Female;
+    return w.goblins.find((g) =>
+      g.sex === wantSex &&
+      GS.stateName(g.state) !== "Dead" &&
+      g.childBornTick === null &&
+      g.role !== GS.Role.Concubine &&
+      g.mateId === null
+    ) || null;
+  }
+
+  // 側室に娶れる捕虜区分 (data-idx がこの配列の添字)。
+  const CONCUBINE_TARGETS = [
+    { sex: () => GS.Sex.Male, human: false, label: "雄ゴブリンを側室に", n: () => w.capMaleGoblin },
+    { sex: () => GS.Sex.Female, human: false, label: "雌ゴブリンを側室に", n: () => w.capFemaleGoblin },
+    { sex: () => GS.Sex.Male, human: true, label: "雄人間を側室に", n: () => w.capMaleHuman },
+    { sex: () => GS.Sex.Female, human: true, label: "雌人間を側室に", n: () => w.capFemaleHuman },
+  ];
+
+  // renderHUD は毎フレーム呼ばれる。innerHTML を毎回書き換えるとクリックの瞬間に
+  // ボタンが差し替わって click が落ちるため、マークアップが変わったときだけ書き、
+  // クリックはコンテナへの委譲リスナー 1 本 (起動時登録) で受ける (bond バナーと同じ規律)。
+  let lastCaptiveHtml = "";
+
+  function renderCaptivePanel() {
+    const counts = [
+      { label: "雄ゴブリン", n: w.capMaleGoblin },
+      { label: "雌ゴブリン", n: w.capFemaleGoblin },
+      { label: "雄人間", n: w.capMaleHuman },
+      { label: "雌人間", n: w.capFemaleHuman },
+    ];
+    const countsHtml = counts.map(c =>
+      `<div class="captive-row"><span>${c.label}</span><span class="n">${c.n.toFixed(1)}</span></div>`
+    ).join("");
+
+    const concubineButtons = CONCUBINE_TARGETS.map((t, i) => {
+      const disabled = (t.n() < 1 || !findSuitor(t.sex())) ? "disabled" : "";
+      return `<button data-act="concubine" data-idx="${i}" ${disabled}>${t.label}</button>`;
+    }).join("");
+    const releaseButtons = `
+      <button data-act="release" data-sex="male" ${w.capMaleHuman < 1 ? "disabled" : ""}>雄人間捕虜を解放</button>
+      <button data-act="release" data-sex="female" ${w.capFemaleHuman < 1 ? "disabled" : ""}>雌人間捕虜を解放</button>`;
+    // 朝貢 (§13 双方向化): 種族の合う捕虜 1 体を返して該当勢力の敵対度を下げる。
+    const goblinCaptives = w.capMaleGoblin + w.capFemaleGoblin;
+    const humanCaptives = w.capMaleHuman + w.capFemaleHuman;
+    const tributeButtons = `
+      <button data-act="tribute" data-faction="human" ${humanCaptives < 1 ? "disabled" : ""}>人間へ朝貢</button>
+      <button data-act="tribute" data-faction="kugyo" ${goblinCaptives < 1 ? "disabled" : ""}>苦魚族へ朝貢</button>
+      <button data-act="tribute" data-faction="bunta" ${goblinCaptives < 1 ? "disabled" : ""}>ブン・タ＝タへ朝貢</button>`;
+    const actionsHtml = `
+      <div class="group-label">側室に娶る — 異性の空いた個体に捕虜を添わせる</div>
+      <div class="row">${concubineButtons}</div>
+      <div class="group-label">解放 — 人間の敵対度をわずかに下げる</div>
+      <div class="row">${releaseButtons}</div>
+      <div class="group-label">朝貢 — 捕虜を返して相手勢力の敵対度を大きく下げる</div>
+      <div class="row">${tributeButtons}</div>`;
+
+    const html = countsHtml + " " + actionsHtml;
+    if (html === lastCaptiveHtml) return;
+    lastCaptiveHtml = html;
+    document.getElementById("captive-counts").innerHTML = countsHtml;
+    document.getElementById("captive-actions").innerHTML = actionsHtml;
+  }
+
+  // 委譲リスナー (起動時に 1 回だけ登録。innerHTML 書き換え後も生きる)。
+  document.getElementById("captive-actions").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-act]");
+    if (!btn || btn.disabled) return;
+    if (btn.dataset.act === "concubine") {
+      const t = CONCUBINE_TARGETS[Number(btn.dataset.idx)];
+      const suitor = findSuitor(t.sex());
+      if (!suitor) return;
+      const r = GS.takeConcubine(w, p, suitor.id, t.sex(), t.human);
+      if (r.ok) {
+        w = r.state;
+        const concubine = w.goblins[w.goblins.length - 1];
+        pushLog("love", `${nameOf(suitor)} が捕虜 ${nameOf(concubine)} を側室に迎えた。`);
+        prevSnap = snapshotForDiff(w);
+      } else {
+        pushLog("event", "側室に迎えることができなかった。");
+      }
+    } else if (btn.dataset.act === "release") {
+      const sex = btn.dataset.sex === "male" ? GS.Sex.Male : GS.Sex.Female;
+      const before = w.humanHostility;
+      w = GS.releaseHumanCaptive(w, p, sex);
+      if (w.humanHostility < before - 1e-9) {
+        pushLog("event", `${btn.dataset.sex === "male" ? "雄" : "雌"}の人間捕虜を解放した。人間の敵対度がわずかに和らいだ。`);
+      }
+    } else if (btn.dataset.act === "tribute") {
+      const faction = btn.dataset.faction;
+      const before = GS.maxHostility(w);
+      const sumBefore = w.humanHostility + w.buntaHostility + w.kugyoHostility;
+      w = GS.tributeCaptive(w, p, faction);
+      if (w.humanHostility + w.buntaHostility + w.kugyoHostility < sumBefore - 1e-9) {
+        const names = { human: "人間", kugyo: "苦魚族", bunta: "ブン・タ＝タ族" };
+        pushLog("event", `${names[faction]}へ捕虜を差し出し、機嫌を取り結んだ。敵対度が和らいだ。`);
+      }
+    }
+  });
 
   function renderStates() {
     const counts = {};
@@ -2633,7 +2810,7 @@
     document.getElementById("s-dead").textContent = deaths;
     document.getElementById("s-fledge").textContent = fledges;
     document.getElementById("s-cap").textContent = Math.round(w.capPop);
-    renderMeters(); renderStates(); renderBondBanner();
+    renderMeters(); renderStates(); renderBondBanner(); renderCaptivePanel();
   }
 
   /* ════ tick 前進と差分検出 ════ */

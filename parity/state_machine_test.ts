@@ -7,12 +7,12 @@ import {
   Role,
   makeGoblin,
   neutralPersonality,
+  type Goblin as GoblinExt,
 } from "../src/sim/goblin.ts";
 import {
   stepGoblin,
   defaultStateMachineParams as P,
   type GoblinContext,
-  type GoblinExt,
 } from "../src/sim/state_machine.ts";
 
 let failures = 0;

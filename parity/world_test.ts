@@ -17,6 +17,9 @@ import {
   approveBond,
   tearApartBond,
   releaseHumanCaptive,
+  tributeCaptive,
+  maxHostility,
+  pickRaidFaction,
   raidIntervalDays,
   livePop,
   cloneWorld,
@@ -570,6 +573,69 @@ const p = makeWorldParams(10);
     const remaining = wt.goblins.filter((g) => g.pendingBond && g.state !== GoblinState.Dead).length;
     check("引き離しで両方が処刑される (片方残らない)", executions === 2 && remaining === 0, `処刑${executions} 残${remaining}`);
   }
+}
+
+// --- §13 3 勢力分離 + 朝貢 + 常時の業 (KI-24 残り) ---
+{
+  const p = makeWorldParams(10);
+  let w = initWorld(2024, { startGoblins: 12, capPop: 20 });
+
+  // 常時の業: 平時放置でゴブリン 2 部族はじわじわ悪化し、苦魚族が最速。
+  // 人間メーターは加害でのみ動く (中立ルート保護 §14.5.7) のでドリフトしない。
+  for (let d = 0; d < 10; d++) for (let i = 0; i < p.ticksPerDay; i++) w = stepWorld(w, p);
+  check("常時の業でゴブリン部族の敵対度が自然悪化する (§13)",
+    w.buntaHostility > 0 && w.kugyoHostility > 0,
+    `bunta=${w.buntaHostility.toFixed(3)} kugyo=${w.kugyoHostility.toFixed(3)}`);
+  check("苦魚族の自然悪化はブン・タ＝タより速い (§13)",
+    w.kugyoHostility > w.buntaHostility, "");
+  check("人間の敵対度はドリフトしない (加害でのみ動く = 中立ルート保護 §14.5.7)",
+    w.humanHostility === 0, `human=${w.humanHostility}`);
+
+  // 朝貢: 種族の合う捕虜 1 体を消費して該当勢力だけ下がる (解放より大きい)。
+  w.capMaleGoblin = 2;
+  w.capMaleHuman = 1;
+  w.humanHostility = 0.5;
+  const kugyoBefore = w.kugyoHostility;
+  const buntaBefore = w.buntaHostility;
+  const wt = tributeCaptive(w, p, "kugyo");
+  check("朝貢で苦魚族の敵対度が下がり捕虜を 1 体消費する (§13)",
+    wt.kugyoHostility < kugyoBefore && wt.capMaleGoblin === 1,
+    `${kugyoBefore.toFixed(2)} → ${wt.kugyoHostility.toFixed(2)}`);
+  check("朝貢は対象勢力のみ下げる (ブン・タ＝タは不変)",
+    wt.buntaHostility === buntaBefore, "");
+  check("朝貢の低下量は解放より大きい (能動的外交の手応え §13)",
+    p.hostilityTributeDrop > p.hostilityReleaseDrop, "");
+  const wth = tributeCaptive(wt, p, "human");
+  check("人間勢力への朝貢は人間捕虜を消費する", wth.capMaleHuman === 0 && wth.humanHostility < 0.5,
+    `human=${wth.humanHostility.toFixed(2)}`);
+  const wempty = tributeCaptive(wth, p, "human");
+  check("捕虜が無ければ朝貢できない (no-op)", wempty.humanHostility === wth.humanHostility, "");
+
+  // 勢力抽選: 人間判定は従来式 (r < human) を維持し、残りを部族の重みで割る。
+  check("人間敵対度が高いほど人間勢力が来る (従来式の維持)",
+    pickRaidFaction(0.8, 0, 0, p.kugyoBaseRaidShare, 0.5) === "human" &&
+    pickRaidFaction(0.2, 0, 0, p.kugyoBaseRaidShare, 0.5) !== "human", "");
+  check("ブン・タ＝タの敵対度を上げると同部族が来やすくなる (§13)",
+    pickRaidFaction(0, 5.0, 0, p.kugyoBaseRaidShare, 0.9) === "bunta" &&
+    pickRaidFaction(0, 0, 5.0, p.kugyoBaseRaidShare, 0.9) === "kugyo", "");
+
+  // 間隔は「最も怒っている勢力」で決まる。
+  const wmax = cloneWorld(w);
+  wmax.humanHostility = 0;
+  wmax.kugyoHostility = 1;
+  check("襲撃間隔は max(3 勢力) の敵対度で決まる (§11/KI-08)",
+    raidIntervalDays(maxHostility(wmax), p) === p.raidIntervalDaysAtMax, "");
+
+  // 自動スケジューラが raidFaction を記録する (部族の色付け §13)。
+  const pAuto = { ...makeWorldParams(10), autoRaidEnabled: true };
+  let wa = initWorld(7, { startGoblins: 14, capPop: 24 });
+  wa.kugyoHostility = 1; // 苦魚族を激怒させる → 苦魚族の襲撃がすぐ来る
+  let sawKugyoRaid = false;
+  for (let i = 0; i < pAuto.ticksPerDay * 8 && !sawKugyoRaid; i++) {
+    wa = stepWorld(wa, pAuto);
+    if (wa.phase === "combat" && wa.raidFaction === "kugyo") sawKugyoRaid = true;
+  }
+  check("自動スケジューラが襲撃勢力 (raidFaction) を記録する", sawKugyoRaid, "");
 }
 
 console.log(failures === 0 ? "WORLD_OK" : `WORLD_FAIL(${failures})`);

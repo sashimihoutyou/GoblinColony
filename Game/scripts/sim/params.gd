@@ -61,12 +61,56 @@ var big_raid_interval_max: int = 1     # 敵対度 MAX のときの間隔 (日)
 var small_raid_prob: float = 0.3       # 小規模襲撃 (恵み) の 1 日あたり発生確率
 var final_mult: float = 2.5            # ラストバトル倍率 (FINAL_MULT)
 
-# --- 奇跡 (§4 / §12 縮小版: 嘲りの稲妻 1 種のみ) ---
-# 信仰残高を消費して指定した敵に固定ダメージ。三者カーブ (信仰供給・奇跡コスト・
-# 襲撃強度) の辛勝バランス検証用で、コスト/ダメージとも固定値 (§15 調整対象)。
+# --- 捕虜プール + 敵対度 (§2.5/§13。world.ts の捕虜・敵対度セクションの移植 KI-17/23/24) ---
+# 捕虜は cap_male_goblin/cap_female_goblin/cap_male_human/cap_female_human の
+# 4 区分 (float 連続量。world.ts と同じ)。性別×種族の振り分けは下記 maleFrac で行う。
+var captive_male_frac_goblin: float = 0.7   # ゴブリン勢力からの捕虜の雄割合 (CAPTIVE_COMP.goblin)
+var captive_male_frac_human: float = 0.55   # 人間勢力からの捕虜の雄割合 (CAPTIVE_COMP.human)
+# 撃退報酬の捕虜獲得数 (1 回の戦闘終了あたり総数。即時量なので _init() の
+# per-tick 変換は通さない = KI-02 の対象外。world.ts BIG_RAID_CAPTIVE_GAIN)。
+var big_raid_captive_gain: float = 2.0
+# 小規模襲撃 (恵み §11/KI-05) の捕虜報酬は控えめ (world.ts captiveGainSmall)。
+# 大規模と同量にすると恵み側の報酬がインフレし KI-25 の前提が崩れる。
+var small_raid_captive_gain: float = 1.0
+# 生贄 (§2.5): 捕虜 1 体 → 信仰へ変換。即時量なので変換不要 (world.ts SACRIFICE_FAITH)。
+var sacrifice_faith: float = 15.0
+var male_sacrifice_factor: float = 0.5      # 雄捕虜の生贄は雌の半分 (安い燃料 / world.ts と同値)
+# 敵対度 (§13): 残虐な仕打ちで上昇し、解放で下降。0..1 にクランプして
+# raid_interval_days() が大規模襲撃間隔へ写像する (KI-08)。即時量なので変換不要。
+var hostility_per_human_sacrifice: float = 0.05  # 人間捕虜 1 体の生贄あたり上昇
+var hostility_release_drop: float = 0.04         # 人間捕虜 1 体の解放での下降 (控えめ)
+# 雄ゴブリン捕虜の平時自動加入 (KI-17)。日次レートを _init() で per-tick へ変換 (KI-02)。
+# world.ts の maleCaptiveJoinChancePerTick (基準解像度 10tick/日で 0.02) は
+# 日次換算 0.2 (= 0.02 / (tpd/10) = 0.2/tpd) に相当する。
+var male_captive_join_chance_per_day: float = 0.2
+var male_captive_join_chance_per_tick: float
+
+# --- トーテムランク (§3 / P3-04) ---
+# 累計信仰 (cum_faith) がしきい値を超えるとランクが上がる (減らない)。残高キャップ・
+# シャーマン任命枠・奇跡の性能/消費が連動する。しきい値は cycle.ts の RANK_THRESHOLDS
+# を Godot の信仰経済規模 (faith_per_shaman=2.0/日) へ縮尺した暫定値 (§NUMBERS)。
+var rank_thresholds: Array = [30.0, 80.0, 160.0, 280.0]
+var faith_base_cap: float = 12.0       # 信仰残高キャップ (ランク 0)。超過は累計のみ積む (§3)
+var faith_cap_per_rank: float = 8.0    # ランクごとのキャップ上積み
+var shaman_base_slots: int = 1         # シャーマン任命枠 = base + rank (上限であって強制でない KI-03)
+var miracle_rank_gain: float = 0.25    # 奇跡の性能/消費の一律ランクアップ率 (§4)
+
+# --- 奇跡 (§4) ---
+# 信仰残高を消費する即時介入。コスト/効果は固定値 × miracle_mult (ランク連動) で、
 # レートではなく即時量なので _init() の per-tick 変換は通さない (KI-02 の対象外)。
-var lightning_cost: float = 4.0        # 1 回の発動コスト (信仰残高)
+# 持続時間だけは日数で定義し _init() で tick へ変換する。数値は §NUMBERS 暫定。
+var lightning_cost: float = 4.0        # 嘲りの稲妻: 1 回の発動コスト (信仰残高)
 var lightning_damage: float = 8.0      # 命中した敵への固定ダメージ (enemy_hp=6 を一掃)
+var mites_cost: float = 3.0            # 恵みのパン虫: 平時の食料補給 (面的・維持系)
+var mite_blessing_count: int = 4       # 1 回で湧くパン虫の頭数 (ランクで増える)
+var honor_cost: float = 5.0            # 名誉ある死: 対象 1 体を激昂させる (博打・捨て身)
+var honor_attack_mult: float = 1.5     # 激昂中の攻撃倍率 (恐怖なし・死ぬまで戦う)
+var mud_cost: float = 6.0              # 泥の抱擁: 一時的な泥壁で侵入経路を塞ぐ (防御)
+var mud_wall_ticks: int                # 泥壁の寿命 (0.25 日を変換。ランクで延びる)
+var rage_cost: float = 8.0             # 抑えられない怒り: 範囲の敵を同士討ちさせる (間接)
+var rage_radius: int = 4               # 範囲 (チェビシェフ距離)
+var rage_ticks: int                    # 同士討ちの持続 (0.15 日を変換。ランクで延びる)
+var summon_cost: float = 10.0          # 下僕召喚: 即時 1 体 (消費重く常用不可。頭数上限の対象)
 
 # --- 増殖 (§3-6) ---
 var court_base_chance: float           # 求愛の誘い発火 1 tick 確率 (日次 3.0 を変換)
@@ -179,3 +223,6 @@ func _init() -> void:
 	enemy_move_per_tick = 110.0 / tpd
 	wander_retarget_per_tick = 8.0 / tpd
 	forage_regrow_ticks = int(1.5 * tpd)
+	mud_wall_ticks = int(0.25 * tpd)
+	rage_ticks = int(0.15 * tpd)
+	male_captive_join_chance_per_tick = male_captive_join_chance_per_day / tpd

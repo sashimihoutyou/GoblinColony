@@ -16,6 +16,7 @@ var target_x: int = -1         # 現在の移動目標 (パス再計算判定用
 var target_y: int = -1
 var path: Array = []           # Array[Vector2i]
 var is_human: bool = false
+var enraged_ticks: int = 0     # 奇跡「抑えられない怒り」(§4): 残 tick の間は同士討ち
 
 func pos() -> Vector2i:
 	return Vector2i(x, y)
@@ -27,6 +28,7 @@ func snapshot() -> Dictionary:
 		"target_x": target_x, "target_y": target_y,
 		"path": path.map(func(p): return [p.x, p.y]),
 		"is_human": is_human,
+		"enraged_ticks": enraged_ticks,
 	}
 
 static func from_snapshot(d: Dictionary) -> EnemyUnit:
