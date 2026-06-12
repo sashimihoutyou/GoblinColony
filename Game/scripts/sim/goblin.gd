@@ -52,6 +52,10 @@ var pregnant: bool = false
 var pregnant_ticks: int = 0
 var mate_id: int = -1
 var bereaved: bool = false
+# 捕虜との自然つがい化が承認待ちの状態 (KI-21)。true の間は本人 (側室個体) と
+# その mate_id 側の両方が「承認 or 引き離し」を待つ。承認で false + Role.NONE へ
+# 昇格 (巣に貢献開始)、引き離しで両者を処刑/追放する (tear_apart_bond)。
+var pending_bond: bool = false
 # 求愛ランデブー (§3-6): 雌が雄を寝床に誘い、寝床で合流して初めて妊娠が成立する。
 # courting_id は雌雄両方に相手 id を相互設定する (-1 = 非求愛)。court_ticks は
 # タイムアウト用の経過 tick (雌側でカウント)。
@@ -70,6 +74,7 @@ var guard_gate: int = -1         # T5 見張り: 担当巣口 index (-1 = 見張
 # §11.5 派遣: 回収を命じられた巣外出現物の id (-1 = 派遣されていない)。
 # 運搬中 (carrying_food) は出現物が消えても集積所への配達を済ませてから解除する。
 var dispatch_id: int = -1
+var job_id: int = -1             # §3-12 取得中のジョブ id (-1 = なし)
 
 # 出自 (KI-20)
 var born_tick: int = 0
@@ -117,13 +122,13 @@ func snapshot() -> Dictionary:
 		"hunger_latched": hunger_latched, "sleep_latched": sleep_latched,
 		"night_sleep_done": night_sleep_done,
 		"pregnant": pregnant, "pregnant_ticks": pregnant_ticks,
-		"mate_id": mate_id, "bereaved": bereaved,
+		"mate_id": mate_id, "bereaved": bereaved, "pending_bond": pending_bond,
 		"courting_id": courting_id, "court_ticks": court_ticks,
 		"is_unique": is_unique, "downed_ticks": downed_ticks,
 		"fear_safe_ticks": fear_safe_ticks, "child_born_tick": child_born_tick,
 		"quarrel_cd": quarrel_cd,
 		"carrying_food": carrying_food, "guard_gate": guard_gate,
-		"dispatch_id": dispatch_id,
+		"dispatch_id": dispatch_id, "job_id": job_id,
 		"born_tick": born_tick, "mother_id": mother_id, "father_id": father_id,
 		"origin": origin, "x": x, "y": y, "fx": fx, "fy": fy,
 		"target_x": target_x, "target_y": target_y,

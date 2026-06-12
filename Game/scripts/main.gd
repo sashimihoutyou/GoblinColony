@@ -59,6 +59,28 @@ var _forage_feed_count: int = 0  # T4: 採集フィードの間引き (4 回に 
 # 左クリックが選択でなく対象指定になる。Esc/右クリック/残高切れで解除。
 var _armed: int = -1
 var _miracle_buttons: Array = []  # Array[Dictionary] {btn: Button, def: Dictionary}
+# 建築モード (§3-15。演出/入力ローカル)。_armed_build = 武装中の部屋タイプ
+# (TileMapData.RoomType / -1 = 非武装)。武装中はゴーストがカーソルに追従し、
+# クリックで確定 (= 2 タップ目)。奇跡の武装とは排他。
+var _armed_build: int = -1
+var _build_buttons: Array = []  # Array[Dictionary] {btn: Button, rt: int}
+
+# 捕虜パネル + つがい承認バナー (§3-19/KI-21。表示状態は演出ローカル)。
+var _captive_panel: PanelContainer
+var _captive_info: Label
+var _concubine_button: Button
+var _bond_banner: PanelContainer
+var _bond_label: Label
+var _bond_captive_id: int = -1  # バナーが対象にしている承認待ち側室の id
+
+# 建築できる部屋 (spec 3-15 の 5 種)。
+const BUILD_TYPES := [
+	TileMapData.RoomType.RAT_RANCH,
+	TileMapData.RoomType.MUSHROOM,
+	TileMapData.RoomType.SMITHY,
+	TileMapData.RoomType.NURSERY,
+	TileMapData.RoomType.WITCH,
+]
 
 # 奇跡の操作定義 (§4)。target: 0=即時 (武装不要) / 1=敵クリック / 2=ゴブリンクリック /
 # 3=タイルクリック。cost_key は SimParams のコスト変数名 ("" = 無料の基本命令)。
@@ -141,10 +163,20 @@ func _process(delta: float) -> void:
 	# α = 次 tick までの端数 (固定タイムステップ補間。停止中は固定され静止)。
 	renderer.sel_kind = sel_kind
 	renderer.sel_id = sel_id
+	# 建築ゴースト (§3-15): カーソル追従。置けるかの判定もここで渡す (演出ローカル)。
+	if _armed_build >= 0:
+		var tl := _ghost_topleft(get_global_mouse_position())
+		var size: Vector2i = SimParams.ROOM_BUILD_SIZE[_armed_build]
+		renderer.build_ghost = {"x": tl.x, "y": tl.y, "w": size.x, "h": size.y,
+				"ok": world.can_place_room(_armed_build, tl.x, tl.y)
+					and world.mud >= float(SimParams.ROOM_BUILD_COST[_armed_build])}
+	else:
+		renderer.build_ghost = {}
 	renderer.render(world, delta, speed, clampf(_accum_ms / MS_PER_TICK, 0.0, 1.0))
 	_update_status()
 	_update_inspector()
 	_update_dispatch_panel()
+	_update_captive_ui()
 	# カメラ操作はシム停止中 (speed=0) でも独立して動く。
 	_process_keyboard_pan(delta)
 	_process_follow_camera(delta)
@@ -204,10 +236,13 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		match event.button_index:
 			MOUSE_BUTTON_LEFT:
-				# 左クリック: 武装中は奇跡の対象指定、そうでなければ個体/敵/部屋を選択。
+				# 左クリック: 武装中は奇跡/建築の対象指定、そうでなければ個体/敵/部屋を
+				# 選択。空振りはタイル指示 (採掘指定・壁修復) を試す。
 				if event.pressed:
 					if _armed >= 0:
 						_try_cast(get_global_mouse_position())
+					elif _armed_build >= 0:
+						_try_place_build(get_global_mouse_position())
 					else:
 						var picked := renderer.pick_any(world, get_global_mouse_position())
 						sel_kind = _sel_kind_from_pick(int(picked.kind))
@@ -218,10 +253,12 @@ func _unhandled_input(event: InputEvent) -> void:
 							_open_dispatch_panel(sel_id)
 						else:
 							_close_dispatch_panel()
+						if sel_kind == SelKind.NONE:
+							_try_tile_order(get_global_mouse_position())
 			MOUSE_BUTTON_RIGHT:
-				# 右クリック: 武装中なら奇跡を解除。ゴブリンを拾えれば追従モード開始
+				# 右クリック: 武装中なら奇跡/建築を解除。ゴブリンを拾えれば追従モード開始
 				# (インスペクタ選択も同期)。敵/部屋/空振りは選択のみ更新し追従は解除する。
-				if event.pressed and _armed >= 0:
+				if event.pressed and (_armed >= 0 or _armed_build >= 0):
 					_disarm()
 				elif event.pressed:
 					var picked2 := renderer.pick_any(world, get_global_mouse_position())
@@ -252,7 +289,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			_clamp_camera(cam)
 	elif event is InputEventKey and event.pressed and not event.echo:
 		# 奇跡のショートカット (MIRACLE_DEFS の key)。Esc: 武装解除。
-		if event.keycode == KEY_ESCAPE and _armed >= 0:
+		if event.keycode == KEY_ESCAPE and (_armed >= 0 or _armed_build >= 0):
 			_disarm()
 		else:
 			for def in MIRACLE_DEFS:
@@ -299,22 +336,21 @@ func _clamp_camera(cam: Camera2D) -> void:
 	var m := world.map
 	var map_w := m.width * renderer.tile_size
 	var map_h := m.height * renderer.tile_size
-	# 表示半分ぶんの余白を残してマップ中心からの可動域を制限する。
-	var view := get_viewport_rect().size / cam.zoom
-	var half := view * 0.5
-	var min_x := minf(half.x, map_w * 0.5)
-	var max_x := maxf(map_w - half.x, map_w * 0.5)
-	var min_y := minf(half.y, map_h * 0.5)
-	var max_y := maxf(map_h - half.y, map_h * 0.5)
-	cam.position.x = clampf(cam.position.x, min_x, max_x)
-	cam.position.y = clampf(cam.position.y, min_y, max_y)
+	# カメラ中心の可動域 = マップ矩形そのもの。中心がマップ端に立てるので、
+	# 画面の半分まではマップ外 (外の闇) をはみ出して覗ける。
+	cam.position.x = clampf(cam.position.x, 0.0, map_w)
+	cam.position.y = clampf(cam.position.y, 0.0, map_h)
 
 # ════ イベント → 物語の文 ════
 func _push_feed_event(e: Dictionary) -> void:
 	var t: String = e.get("t", "")
 	match t:
 		"raid":
-			var who: String = "人間の討伐隊" if e.get("human", false) else "敵対氏族の群れ"
+			var who: String = {
+				"human": "人間の討伐隊",
+				"kugyo": "苦魚族の群れ",
+				"bunta": "ブン・タ＝タ族の群れ",
+			}.get(e.get("faction", ""), "敵対氏族の群れ")
 			if e.get("final", false):
 				_push_feed("raid", "ラストバトル! %s %d 体が押し寄せる!" % [who, e.get("count", 0)])
 			else:
@@ -334,49 +370,65 @@ func _push_feed_event(e: Dictionary) -> void:
 		"birth":
 			var mother := _find_goblin(int(e.get("mother", -1)))
 			var mname: String = GobNames.of(mother) if mother != null else "母ゴブリン"
-			_push_feed("birth", "%s が %d 匹の子を産んだ。" % [mname, e.get("count", 0)])
+			_push_feed("birth", "%s が %d 匹の子を産んだ。" % [mname, e.get("count", 0)], int(e.get("mother", -1)))
 		"grow":
-			_push_feed("birth", "%s が一人前に育った。" % GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))))
+			_push_feed("birth", "%s が一人前に育った。" % GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))), int(e.get("id", -1)))
 		"mite_eaten":
-			_push_feed("event", "%s がパン虫を捕まえて食べた。" % GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))))
+			_push_feed("event", "%s がパン虫を捕まえて食べた。" % GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))), int(e.get("id", -1)))
 		"fumble":
 			var fnm := GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))
 			if e.get("dropped", false):
-				_push_feed("event", "%s が転んでキノコを取り落とした。" % fnm)
+				_push_feed("event", "%s が転んでキノコを取り落とした。" % fnm, int(e.get("id", -1)))
 			else:
-				_push_feed("event", "%s がすっ転んだ。" % fnm)
+				_push_feed("event", "%s がすっ転んだ。" % fnm, int(e.get("id", -1)))
 		"forage":
 			# 採集はひっきりなしに起きるのでフィードは 4 回に 1 回だけ流す (煩さ低減)。
 			_forage_feed_count += 1
 			if _forage_feed_count % 4 == 0:
 				_push_feed("event", "%s がキノコを集積所に運び込んだ。" \
-					% GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))))
+					% GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))), int(e.get("id", -1)))
 		"guard":
 			_push_feed("event", "%s が巣口の見張りに就いた。" \
-				% GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))))
+				% GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))), int(e.get("id", -1)))
 		"alarm":
 			_push_feed("raid", "見張りの %s が警報を上げた!" \
-				% GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))))
+				% GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))), int(e.get("id", -1)))
 		"quarrel":
 			var ga := _find_goblin(int(e.get("a", -1)))
 			var gb := _find_goblin(int(e.get("b", -1)))
 			var na: String = GobNames.of(ga) if ga != null else "ゴブリン"
 			var nb: String = GobNames.of(gb) if gb != null else "ゴブリン"
-			_push_feed("event", "%s と %s がケンカを始めた!" % [na, nb])
+			_push_feed("event", "%s と %s がケンカを始めた!" % [na, nb], int(e.get("a", -1)))
 		"court":
 			var cf := _find_goblin(int(e.get("f", -1)))
 			var cm := _find_goblin(int(e.get("m", -1)))
 			var cfn: String = GobNames.of(cf) if cf != null else "雌ゴブリン"
 			var cmn: String = GobNames.of(cm) if cm != null else "雄ゴブリン"
-			_push_feed("love", "%s が %s を寝床に誘った。" % [cfn, cmn])
+			_push_feed("love", "%s が %s を寝床に誘った。" % [cfn, cmn], int(e.get("f", -1)))
 		"pregnant":
 			var f := _find_goblin(int(e.get("id", -1)))
 			if f != null:
-				_push_feed("love", "%s が寝床で身ごもった。" % GobNames.of(f))
+				_push_feed("love", "%s が寝床で身ごもった。" % GobNames.of(f), f.id)
 		"field_spawn":
 			_push_feed("event", "巣の外に木の実の茂みが見つかった (%d 食ぶん)。" % e.get("amount", 0))
 		"dispatch":
 			_push_feed("event", "%d 体が恵みを取りに巣を出た。" % e.get("count", 0))
+		"mine_done":
+			var miner := _find_goblin(int(e.id))
+			var miner_name: String = GobNames.of(miner) if miner != null else "誰か"
+			if e.get("gem", false):
+				_push_feed("birth", "%s が岩塊を掘り崩した。崩れた奥から宝石が転がり出た!" % miner_name, int(e.id))
+			else:
+				_push_feed("event", "%s が岩塊を掘り崩し、建材を積み上げた。" % miner_name, int(e.id))
+		"build_start":
+			_push_feed("event", "%sの建設が始まった。地面に骨と泥で印が引かれる。"
+					% ROOM_TYPE_JP.get(int(e.room_type), "部屋"))
+		"build_done":
+			_push_feed("birth", "%sが完成した!" % ROOM_TYPE_JP.get(int(e.room_type), "部屋"), int(e.id))
+		"repair_done":
+			var fixer := _find_goblin(int(e.id))
+			_push_feed("event", "%s が壁のひびを泥で塗り固めた。"
+					% (GobNames.of(fixer) if fixer != null else "誰か"), int(e.id))
 		"field_done":
 			_push_feed("event", "茂みを取り尽くした。")
 		"field_expire":
@@ -391,7 +443,7 @@ func _push_feed_event(e: Dictionary) -> void:
 			_push_feed("event", "撃退の戦果として%sの捕虜を得た。" % who)
 		"captive_joined":
 			_push_feed("event", "捕らわれていた%s が群れに加わった。" \
-				% GobNames.name_of(int(e.get("id", -1)), Goblin.Sex.MALE))
+				% GobNames.name_of(int(e.get("id", -1)), Goblin.Sex.MALE), int(e.get("id", -1)))
 		"sacrifice":
 			var kind_txt: String = {
 				"male_goblin": "ゴブリンの雄捕虜",
@@ -403,15 +455,35 @@ func _push_feed_event(e: Dictionary) -> void:
 		"release_captive":
 			var sex_txt: String = "雄" if int(e.get("sex", 0)) == Goblin.Sex.MALE else "雌"
 			_push_feed("event", "人間の%s捕虜を解放した。敵対度が和らいだ。" % sex_txt)
+		"tribute":
+			var fac_txt: String = {
+				"human": "人間", "bunta": "ブン・タ＝タ族", "kugyo": "苦魚族",
+			}.get(e.get("faction", ""), "敵対勢力")
+			_push_feed("event", "%sへ捕虜を朝貢した。怒りがいくらか鎮まる。" % fac_txt)
+		"take_concubine":
+			var suitor := _find_goblin(int(e.get("suitor", -1)))
+			_push_feed("love", "%s が捕虜を側室に娶った。" \
+					% (GobNames.of(suitor) if suitor != null else "誰か"), int(e.get("suitor", -1)))
+		"pending_bond":
+			_push_feed("love", "捕虜と寄り添う影がある……つがいを認めるか、引き離すか。", int(e.get("id", -1)))
+		"approve_bond":
+			_push_feed("love", "つがいが認められた。捕虜は今日から巣の一員だ。", int(e.get("id", -1)))
+		"birth_nursery":
+			_push_feed("birth", "苗床で子が %d 体、泥の中から這い出した。" % int(e.get("count", 1)))
 
 const FEED_COLORS := {
 	"raid": "e06a50", "event": "e8943a", "birth": "9adb6e",
 	"death": "c08a7a", "love": "e8a0b8",
 }
 
-func _push_feed(kind: String, text: String) -> void:
+## フィードへ 1 行流す。subject_id を渡すと行全体が [url=g:id] リンクになり、
+## クリックでその個体を選択 + カメラ追従する (_on_feed_meta。死亡/不在なら無効)。
+func _push_feed(kind: String, text: String, subject_id: int = -1) -> void:
 	var col: String = FEED_COLORS.get(kind, "8a7d68")
-	_feed_lines.push_front("[color=#5a4f40][%d日][/color] [color=#%s]%s[/color]" % [world.day, col, text])
+	var body := text
+	if subject_id >= 0:
+		body = "[url=g:%d]%s[/url]" % [subject_id, text]
+	_feed_lines.push_front("[color=#5a4f40][%d日][/color] [color=#%s]%s[/color]" % [world.day, col, body])
 	if _feed_lines.size() > 40:
 		_feed_lines.resize(40)
 	if _feed != null:
@@ -422,6 +494,23 @@ func _find_goblin(id: int) -> Goblin:
 		if g.id == id:
 			return g
 	return null
+
+## フィードのリンククリック (巣の記録 → 現場へ)。対象の個体が生きていれば選択して
+## カメラ追従を開始する。死亡・巣立ち済みで補間エントリが無ければ何もしない (無効)。
+func _on_feed_meta(meta: Variant) -> void:
+	var s := String(meta)
+	if not s.begins_with("g:"):
+		return
+	var id := int(s.substr(2))
+	var g := _find_goblin(id)
+	if g == null or g.state == Goblin.State.DEAD:
+		return
+	if renderer.unit_screen_pos(id) == Vector2.INF:
+		return  # 演出層にもう居ない (除去済み)
+	sel_kind = SelKind.GOBLIN
+	sel_id = id
+	_follow_id = id
+	_manual_camera = true
 
 ## renderer.pick_any() の int (0=なし/1=ゴブリン/2=敵/3=部屋/4=出現物) を SelKind へ写像する。
 func _sel_kind_from_pick(kind: int) -> int:
@@ -458,17 +547,83 @@ func _press_miracle(def: Dictionary) -> void:
 		_refresh_miracle_buttons()
 		return
 	_armed = -1 if _armed == int(def.m) else int(def.m)
+	_armed_build = -1  # 建築モードとは排他
+	_refresh_build_buttons()
 	_refresh_miracle_buttons()
 
 func _disarm() -> void:
 	_armed = -1
+	_armed_build = -1
 	_refresh_miracle_buttons()
+	_refresh_build_buttons()
 
 func _armed_def() -> Dictionary:
 	for def in MIRACLE_DEFS:
 		if int(def.m) == _armed:
 			return def
 	return {}
+
+# ════ 建築モード (§3-15) ════
+func _press_build(rt: int) -> void:
+	_armed = -1  # 奇跡の武装とは排他
+	_armed_build = -1 if _armed_build == rt else rt
+	_refresh_miracle_buttons()
+	_refresh_build_buttons()
+
+func _refresh_build_buttons() -> void:
+	for bb in _build_buttons:
+		var rt: int = bb.rt
+		var cost: float = SimParams.ROOM_BUILD_COST[rt]
+		(bb.btn as Button).text = "%s %.0f" % [ROOM_TYPE_JP[rt], cost]
+		_style_button(bb.btn as Button, _armed_build == rt)
+		(bb.btn as Button).disabled = (_armed_build != rt) and world.mud < cost
+
+## カーソル位置を中心にしたゴーストの左上角タイル。
+func _ghost_topleft(pos: Vector2) -> Vector2i:
+	var size: Vector2i = SimParams.ROOM_BUILD_SIZE[_armed_build]
+	var tp := Vector2i(int(pos.x / renderer.tile_size), int(pos.y / renderer.tile_size))
+	return tp - Vector2i(size.x / 2, size.y / 2)
+
+## 建築モードの左クリック = 2 タップ目の確定。検証はシム側 can_place_room に委ね、
+## ここでは結果に応じたフィードバックだけ出す。
+func _try_place_build(pos: Vector2) -> void:
+	var rt := _armed_build
+	var tl := _ghost_topleft(pos)
+	if not world.can_place_room(rt, tl.x, tl.y):
+		_push_feed("event", "そこには%sを建てられない (巣内の空いた床が要る)。" % ROOM_TYPE_JP[rt])
+		return
+	var cost: float = SimParams.ROOM_BUILD_COST[rt]
+	if world.mud < cost:
+		_push_feed("event", "建材が足りない (必要 %.0f)。岩を掘らせよう。" % cost)
+		return
+	controller.queue.append({
+		"type": Controller.CommandType.BUILD_ROOM,
+		"room_type": rt, "x": tl.x, "y": tl.y,
+	})
+	_disarm()  # 2 タップ確定で建築モードを抜ける
+
+## 空振りクリックのタイル指示: 採掘ノード → 指定/解除トグル、損傷壁 → 修復発注。
+func _try_tile_order(pos: Vector2) -> void:
+	var tp := Vector2i(int(pos.x / renderer.tile_size), int(pos.y / renderer.tile_size))
+	var t := world.map.get_tile(tp.x, tp.y)
+	if t == TileMapData.TileType.RESOURCE_NODE:
+		var had := false
+		for j in world.jobs:
+			if j.type == World.JobType.MINE and j.x == tp.x and j.y == tp.y:
+				had = true
+		controller.queue.append({
+			"type": Controller.CommandType.DESIGNATE_MINE, "x": tp.x, "y": tp.y,
+		})
+		_push_feed("event", "採掘の指示を取り消した。" if had else "岩塊に採掘の印を付けた。")
+	elif t == TileMapData.TileType.WALL \
+			and world.map.wall_hp[world.map.idx(tp.x, tp.y)] < MapTemplate.WALL_HP:
+		if world.mud < world.params.wall_repair_cost:
+			_push_feed("event", "壁を直す建材がない (必要 %.0f)。" % world.params.wall_repair_cost)
+			return
+		controller.queue.append({
+			"type": Controller.CommandType.REPAIR_WALL, "x": tp.x, "y": tp.y,
+		})
+		_push_feed("event", "ひび割れた壁に修復の印を付けた。")
 
 ## 武装中の左クリック: 対象 (敵/ゴブリン/タイル) を指定して発動する。対象外クリックは
 ## 無視 (武装維持)。発動後も武装を保って連射でき、残高が尽きると自動解除する。
@@ -556,15 +711,30 @@ func _update_status() -> void:
 	var totem_txt := ""
 	if world.totem_hp < params.totem_hp_max:
 		totem_txt = "  ⚠トーテム %.0f/%.0f" % [world.totem_hp, params.totem_hp_max]
+	var res_txt := "  建材 %.0f" % world.mud
+	if world.gems > 0.0:
+		res_txt += "  宝石 %.0f" % world.gems
 	var captive_txt := ""
 	var captive_total := world.cap_male_goblin + world.cap_female_goblin \
 		+ world.cap_male_human + world.cap_female_human
-	if captive_total >= 1.0 or world.human_hostility > 0.0:
-		captive_txt = "  捕虜%d 敵対度%.0f%%" % [int(captive_total), world.human_hostility * 100.0]
-	_status_label.text = "第 %d 日 %s %s · %s   頭数 %d/%d (子%d)  食料 %.0f  信仰 %.0f/%.0f ランク%d  surge %.1f%s%s" % [
+	if captive_total >= 1.0:
+		captive_txt = "  捕虜%d" % int(captive_total)
+	# 敵対度は最も怒っている勢力を表示する (§10: 警告色 1 勢力。詳細パネルは B7)。
+	var hostilities := [
+		["人間", world.human_hostility],
+		["苦魚族", world.kugyo_hostility],
+		["ブン・タ＝タ", world.bunta_hostility],
+	]
+	var angriest: Array = hostilities[0]
+	for h in hostilities:
+		if h[1] > angriest[1]:
+			angriest = h
+	if angriest[1] > 0.0:
+		captive_txt += "  敵対 %s %.0f%%" % [angriest[0], float(angriest[1]) * 100.0]
+	_status_label.text = "第 %d 日 %s %s · %s   頭数 %d/%d (子%d)  食料 %.0f%s  信仰 %.0f/%.0f ランク%d  surge %.1f%s%s" % [
 		world.day, bar, time_txt, phase_txt,
 		world._alive_count(), params.cap_pop, _child_count(),
-		world.food, world.faith, world.faith_cap(), world.rank(), world.surge, totem_txt, captive_txt,
+		world.food, res_txt, world.faith, world.faith_cap(), world.rank(), world.surge, totem_txt, captive_txt,
 	]
 	var armed_def := _armed_def()
 	if not armed_def.is_empty():
@@ -737,6 +907,8 @@ func _build_ui() -> void:
 	_feed.scroll_active = true
 	_feed.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_feed.add_theme_font_size_override("normal_font_size", 11)
+	# 行クリックで対象へカメラ追従 ([url=g:id] リンク / _push_feed が付与)。
+	_feed.meta_clicked.connect(_on_feed_meta)
 	vbox.add_child(_feed)
 	ui.add_child(right)
 
@@ -775,8 +947,28 @@ func _build_ui() -> void:
 		bar.add_child(mb)
 		_miracle_buttons.append({"btn": mb, "def": def})
 	ui.add_child(bar)
+	# 建築バー (§3-15)。速度バーの上段。押下で建築モード (ゴースト追従 → クリック確定)。
+	var build_bar := HBoxContainer.new()
+	build_bar.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	build_bar.offset_top = -76.0
+	build_bar.offset_left = 8.0
+	build_bar.add_theme_constant_override("separation", 4)
+	var build_label := Label.new()
+	build_label.text = "⚒建築:"
+	build_label.add_theme_color_override("font_color", C_INK_FAINT)
+	build_label.add_theme_font_size_override("font_size", 12)
+	build_bar.add_child(build_label)
+	for rt in BUILD_TYPES:
+		var btn := Button.new()
+		btn.add_theme_font_size_override("font_size", 12)
+		var rt_v: int = rt
+		btn.pressed.connect(func() -> void: _press_build(rt_v))
+		build_bar.add_child(btn)
+		_build_buttons.append({"btn": btn, "rt": rt_v})
+	ui.add_child(build_bar)
 	_refresh_speed_buttons()
 	_refresh_miracle_buttons()
+	_refresh_build_buttons()
 
 	# --- 派遣パネル (§11.5。中央下。出現物クリックで開く) ---
 	_dispatch_panel = PanelContainer.new()
@@ -826,6 +1018,150 @@ func _build_ui() -> void:
 	brow.add_child(cancel)
 	dbox.add_child(brow)
 	ui.add_child(_dispatch_panel)
+
+	# --- 捕虜パネル (§10/KI-23。捕虜がいる間だけ表示。右パネルの左隣・下端) ---
+	_captive_panel = PanelContainer.new()
+	_captive_panel.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	_captive_panel.offset_left = -640.0
+	_captive_panel.offset_right = -298.0
+	_captive_panel.offset_top = -128.0
+	_captive_panel.offset_bottom = -48.0
+	_captive_panel.add_theme_stylebox_override("panel", _panel_style())
+	_captive_panel.visible = false
+	var cbox := VBoxContainer.new()
+	cbox.add_theme_constant_override("separation", 4)
+	_captive_panel.add_child(cbox)
+	_captive_info = Label.new()
+	_captive_info.add_theme_color_override("font_color", C_INK)
+	_captive_info.add_theme_font_size_override("font_size", 12)
+	cbox.add_child(_captive_info)
+	var crow1 := HBoxContainer.new()
+	crow1.add_theme_constant_override("separation", 4)
+	for cfg in [
+		["生贄", func() -> void:
+			controller.queue.append({"type": Controller.CommandType.SACRIFICE})],
+		["解放♂", func() -> void:
+			controller.queue.append({"type": Controller.CommandType.RELEASE_CAPTIVE,
+					"sex": Goblin.Sex.MALE})],
+		["解放♀", func() -> void:
+			controller.queue.append({"type": Controller.CommandType.RELEASE_CAPTIVE,
+					"sex": Goblin.Sex.FEMALE})],
+	]:
+		var cb := Button.new()
+		cb.text = cfg[0]
+		cb.add_theme_font_size_override("font_size", 11)
+		_style_button(cb, false)
+		cb.pressed.connect(cfg[1])
+		crow1.add_child(cb)
+	# 側室: 選択中のゴブリンに異性の捕虜を娶らせる (ゴブリン捕虜優先)。
+	_concubine_button = Button.new()
+	_concubine_button.text = "側室"
+	_concubine_button.add_theme_font_size_override("font_size", 11)
+	_style_button(_concubine_button, false)
+	_concubine_button.pressed.connect(_press_concubine)
+	crow1.add_child(_concubine_button)
+	cbox.add_child(crow1)
+	var crow2 := HBoxContainer.new()
+	crow2.add_theme_constant_override("separation", 4)
+	var tlabel := Label.new()
+	tlabel.text = "朝貢:"
+	tlabel.add_theme_color_override("font_color", C_INK_DIM)
+	tlabel.add_theme_font_size_override("font_size", 11)
+	crow2.add_child(tlabel)
+	for cfg in [["人間", "human"], ["ブン・タ＝タ", "bunta"], ["苦魚", "kugyo"]]:
+		var tb := Button.new()
+		tb.text = cfg[0]
+		tb.add_theme_font_size_override("font_size", 11)
+		_style_button(tb, false)
+		var fac: String = cfg[1]
+		tb.pressed.connect(func() -> void:
+			controller.queue.append({"type": Controller.CommandType.TRIBUTE, "faction": fac}))
+		crow2.add_child(tb)
+	cbox.add_child(crow2)
+	ui.add_child(_captive_panel)
+
+	# --- つがい承認バナー (KI-21。承認待ちが出たときだけ中央上に出す) ---
+	_bond_banner = PanelContainer.new()
+	_bond_banner.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_bond_banner.offset_left = -240.0
+	_bond_banner.offset_right = 240.0
+	_bond_banner.offset_top = 44.0
+	_bond_banner.offset_bottom = 100.0
+	_bond_banner.add_theme_stylebox_override("panel", _panel_style())
+	_bond_banner.visible = false
+	var bbox := VBoxContainer.new()
+	bbox.add_theme_constant_override("separation", 4)
+	_bond_banner.add_child(bbox)
+	_bond_label = Label.new()
+	_bond_label.add_theme_color_override("font_color", C_INK)
+	_bond_label.add_theme_font_size_override("font_size", 12)
+	bbox.add_child(_bond_label)
+	var brow2 := HBoxContainer.new()
+	brow2.add_theme_constant_override("separation", 6)
+	var approve := Button.new()
+	approve.text = "つがいを認める"
+	approve.add_theme_font_size_override("font_size", 12)
+	_style_button(approve, true)
+	approve.pressed.connect(func() -> void:
+		if _bond_captive_id >= 0:
+			controller.queue.append({"type": Controller.CommandType.APPROVE_BOND,
+					"captive_id": _bond_captive_id}))
+	brow2.add_child(approve)
+	var tear := Button.new()
+	tear.text = "引き離す"
+	tear.add_theme_font_size_override("font_size", 12)
+	_style_button(tear, false)
+	tear.pressed.connect(func() -> void:
+		if _bond_captive_id >= 0:
+			controller.queue.append({"type": Controller.CommandType.TEAR_APART_BOND,
+					"captive_id": _bond_captive_id, "cause": "torn_bond"}))
+	brow2.add_child(tear)
+	bbox.add_child(brow2)
+	ui.add_child(_bond_banner)
+
+## 側室ボタン: 選択中ゴブリンを婿/嫁に、異性の捕虜 (ゴブリン優先・なければ人間) を娶らせる。
+func _press_concubine() -> void:
+	var suitor := _find_goblin(sel_id) if sel_kind == SelKind.GOBLIN else null
+	if suitor == null or suitor.is_child():
+		_push_feed("event", "側室を娶らせるには、相手のゴブリン (成体) を選んでおく。")
+		return
+	var want_sex := Goblin.Sex.FEMALE if suitor.sex == Goblin.Sex.MALE else Goblin.Sex.MALE
+	var goblin_stock: float = world.cap_female_goblin if want_sex == Goblin.Sex.FEMALE \
+			else world.cap_male_goblin
+	var human_stock: float = world.cap_female_human if want_sex == Goblin.Sex.FEMALE \
+			else world.cap_male_human
+	if goblin_stock < 1.0 and human_stock < 1.0:
+		_push_feed("event", "娶らせられる異性の捕虜がいない。")
+		return
+	controller.queue.append({"type": Controller.CommandType.TAKE_CONCUBINE,
+			"suitor_id": suitor.id, "captive_sex": want_sex,
+			"captive_is_human": goblin_stock < 1.0})
+
+## 捕虜パネル + つがい承認バナーの毎フレーム更新 (表示はすべて演出ローカル)。
+func _update_captive_ui() -> void:
+	var total := world.cap_male_goblin + world.cap_female_goblin \
+			+ world.cap_male_human + world.cap_female_human
+	_captive_panel.visible = total >= 1.0
+	if _captive_panel.visible:
+		_captive_info.text = "捕虜 — ゴブリン 雄%d 雌%d / 人間 雄%d 雌%d" % [
+			int(world.cap_male_goblin), int(world.cap_female_goblin),
+			int(world.cap_male_human), int(world.cap_female_human)]
+		_concubine_button.disabled = sel_kind != SelKind.GOBLIN
+	# 承認待ちの先頭 1 件をバナーに出す (複数いても順に処理される)。
+	var pending: Goblin = null
+	for g in world.goblins:
+		if g.pending_bond and g.state != Goblin.State.DEAD:
+			pending = g
+			break
+	if pending == null:
+		_bond_banner.visible = false
+		_bond_captive_id = -1
+		return
+	_bond_captive_id = pending.id
+	var mate := _find_goblin(pending.mate_id)
+	_bond_label.text = "%s が捕虜の %s とつがいになりたがっている。" % [
+		GobNames.of(mate) if mate != null else "誰か", GobNames.of(pending)]
+	_bond_banner.visible = true
 
 # ════ 派遣パネル (§11.5) ════
 ## 出現物クリックで開く。スライダー上限は開いた時点の手すき頭数

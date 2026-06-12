@@ -20,12 +20,11 @@
 
 ## A. 高難度 ★★★（設計レビュー必須・メインセッション級）
 
-- [ ] **A1. 汎用ジョブキュー + 建築システム**（Godot / §5・§7・spec 3-12/3-15）
-  Job 型（Mine/Build/Haul/Pray/Craft/Guard）、最寄り×性格重みの取得・中断時進捗保持、
-  採掘（`RESOURCE_NODE`→`EXHAUSTED`）、部屋建築フロー（建築モード→ゴースト→2タップ確定→
-  建材消費→建設ジョブ→`rooms[]` 追加。`BUILD_ROOM` コマンドは `pass` のまま）、壁修復ジョブ。
-  **前提: A1a. 資源スカラー 6 種**（food/wood/mud/herb/equipment/gems / spec 3-11）。
-  §10 の資源/建築/撤去ダイヤルはこの上に乗る（→B7）。
+- [x] **A1. 汎用ジョブキュー + 建築システム** — 完了（`test_jobs.gd` = JOBS_OK。
+  資源スカラー 6 種 + Job{MINE/BUILD/REPAIR} + 整合スイープ一元化 + 採掘トグル +
+  建築モード（ゴースト→2タップ確定→建材消費→完了で rooms[]）+ 壁修復 + ジョブ可視化。
+  Haul/Pray/Craft/Guard は既存系が担うため型なし（spec 3-12 注記準拠）。
+  範囲なぞり指定・撤去ダイヤルは B7 に残置。wood/herb の供給経路は A4/B6 で接続）
 - [ ] **A2. ブリーチング + 防衛配分 UI**（Godot / §9・P2-07・P3-06）
   壁破壊敵 + 破壊予告（`breach_warnings` + 警告ハイライト）、破壊されない壁、
   防衛ライン（DefensePoint = 巣口内側 2 タイル）+ 配分スライダー + 敵戦力比例の自動配分、
@@ -43,13 +42,15 @@
 
 ## B. 中難度 ★★（確定仕様の移植・拡張。サブエージェント分担向き）
 
-- [ ] **B1. 3 勢力外交の Godot 移植**（TS 検証済み: `buntaHostility`/`kugyoHostility`・朝貢
-  `tributeCaptive`・常時の業ドリフト・`pickRaidFaction`・max 敵対度の間隔決定。
-  HUD の敵対度表示を 3 勢力化 = §10 の警告色 1 勢力 + タップで詳細）
-- [ ] **B2. 捕虜系 第二増分（Godot）**: 苗床（人間母体 ×2 倍 + `hostilityPerHumanNurseryBirth`、
-  苗床部屋 `RoomType.NURSERY` の配線 / spec 3-19 の `assignedCaptives` カウント方式）、
-  奴隷妻 + 自然つがい化 + 承認/引き離し UI（TS の takeConcubine/approveBond/tearApartBond 移植）、
-  捕虜操作 UI（生贄/解放/朝貢ボタン。`SACRIFICE`/`RELEASE_CAPTIVE` コマンドは配線済み）
+- [x] **B1. 3 勢力外交の Godot 移植** — 完了（`test_factions.gd` = FACTIONS_OK。
+  メーター 2 本 + ドリフト + 朝貢 + TRIBUTE コマンド + 勢力抽選 + max 間隔 +
+  HUD の最怒勢力表示。タップで 3 勢力詳細パネルは B7 に残置）
+- [x] **B2. 捕虜系 第二増分（Godot）** — 完了（test_captives.gd 拡張 = CAPTIVES_OK。
+  苗床確定生産（NURSERY 部屋必須・人間母体 ×2 + 敵対度上乗せ・母体消耗）、
+  take_concubine/pending_bond/approve_bond/tear_apart_bond、捕虜パネル UI
+  （生贄/解放/側室/朝貢 3 勢力）+ つがい承認バナー。A1 の建築と接続済み =
+  苗床部屋を建てると稼働。副産物: 泥壁/トーテム破壊時の床キャッシュ未再構築
+  という潜在 KI-09 バグを発見・修正（test_miracles の復元後決定性で検出））
 - [ ] **B3. 食料従属**（§2.5・P3-03）: TS は `foodAvailable=true` 固定の接続から。
   食料不足→妊娠率低下・流産、過剰→増殖バフ。Godot は飢餓→HP のみなので増殖への接続を追加。
   KI-26（食料経済）と KI-22（増殖）の相互作用に注意 = 多シードで検証してから確定
