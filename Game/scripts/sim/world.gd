@@ -55,6 +55,10 @@ var human_hostility: float = 0.0
 var bunta_hostility: float = 0.0
 var kugyo_hostility: float = 0.0
 
+# 苗床の確定生産タイマー (tick。§2.5/§3-19。B2 第二増分)。母体が居る間だけ進み、
+# nursery_period_ticks に達すると出産処理して 0 へ戻す (world.ts nurseryTimer)。
+var nursery_timer: float = 0.0
+
 # ログ (UI / デバッグ用)。
 var deaths_total: int = 0
 var births_total: int = 0
@@ -172,10 +176,12 @@ func tick_once() -> void:
 	_step_accidents()
 	_step_social()
 	_step_captives()      # §2.5/KI-17: 雄ゴブリン捕虜の平時自動加入
+	_step_captive_bonding()  # §3-19/KI-21: 捕虜との自然つがい化 (承認待ち)
 	_step_forage()        # T4: キノコ床の再生長を進める (食料加算は採集者の運搬で行う)
 	_step_food()
 	_step_starvation()
 	_step_faith()
+	_step_nursery()       # §2.5/§3-19: 苗床の確定生産 (B2 第二増分)
 	_cleanup_dead()
 	_step_fledge()
 	_check_outcome()
@@ -483,7 +489,9 @@ func _step_goblins() -> void:
 		var ctx := StateMachine.Context.new()
 		ctx.in_raid = in_raid
 		ctx.enemy_nearby = _enemy_near(g.pos(), 4)
-		ctx.assigned_to_combat = (g.sex == Goblin.Sex.MALE or g.is_unique)
+		# 側室/苗床ホストは戦線に出ない (子を産む役割に専念 / world.ts §3-6 と同条件)。
+		ctx.assigned_to_combat = (g.sex == Goblin.Sex.MALE or g.is_unique) \
+				and g.role != Goblin.Role.CONCUBINE and g.role != Goblin.Role.NURSERY_HOST
 		# §11.5: 派遣中・運搬中も WORK 扱い (運搬は派遣解除後も配達を済ませる)。
 		ctx.assigned_to_room = _has_room_assignment(g.id) or _is_forager(g) \
 				or g.dispatch_id >= 0 or g.carrying_food
@@ -907,6 +915,7 @@ func _resolve_combat() -> void:
 			totem_hp -= params.enemy_attack
 			if totem_hp <= 0.0:
 				map.set_tile(map.totem.x, map.totem.y, TileMapData.TileType.FLOOR)
+				_rebuild_floor_caches()  # トーテム破壊で FLOOR が増える (KI-09)
 	# 死んだ敵を除去。
 	var alive: Array = []
 	for e in enemies:
@@ -1199,6 +1208,207 @@ func _step_captives() -> void:
 		goblins.append(g)
 		_event({"t": "captive_joined", "id": g.id})
 
+# --- 奴隷妻化 (捕虜つがい / KI-19/§3-19。B2 第二増分) ---
+## suitor_id の個体が異性の捕虜を娶る。捕虜プールから 1 体取り出して側室
+## (Role.CONCUBINE) として個体化し、mate_id を相互に設定する。娶った側には
+## つがいバフ (_apply_bond_buff) を与える。苗床との違い: 苗床は捕虜消費のみで
+## 個体は無関係だが、奴隷妻は特定個体が望み、その個体が生存力を得る。
+## 異性でない・対象捕虜が居ない・suitor が不在/死亡なら何もせず false。
+func take_concubine(suitor_id: int, captive_sex: int, captive_is_human: bool) -> bool:
+	var suitor: Goblin = null
+	for g in goblins:
+		if g.id == suitor_id and g.state != Goblin.State.DEAD:
+			suitor = g
+			break
+	if suitor == null:
+		return false
+	if captive_sex == suitor.sex:
+		return false  # 異性のみ
+
+	var consumed := false
+	if captive_is_human and captive_sex == Goblin.Sex.MALE and cap_male_human >= 1.0:
+		cap_male_human -= 1.0
+		consumed = true
+	elif captive_is_human and captive_sex == Goblin.Sex.FEMALE and cap_female_human >= 1.0:
+		cap_female_human -= 1.0
+		consumed = true
+	elif not captive_is_human and captive_sex == Goblin.Sex.MALE and cap_male_goblin >= 1.0:
+		cap_male_goblin -= 1.0
+		consumed = true
+	elif not captive_is_human and captive_sex == Goblin.Sex.FEMALE and cap_female_goblin >= 1.0:
+		cap_female_goblin -= 1.0
+		consumed = true
+	if not consumed:
+		return false
+
+	var concubine := Goblin.new()
+	concubine.id = next_goblin_id
+	next_goblin_id += 1
+	concubine.sex = captive_sex
+	concubine.role = Goblin.Role.CONCUBINE
+	concubine.origin = Goblin.Origin.CONCUBINE
+	concubine.max_hp = 8.0 if captive_sex == Goblin.Sex.FEMALE else 10.0
+	concubine.hp = concubine.max_hp
+	concubine.born_tick = tick
+	concubine.mate_id = suitor.id
+	_place(concubine, _room_slot(TileMapData.RoomType.NEST, concubine.id))
+	suitor.mate_id = concubine.id
+	_apply_bond_buff(suitor)
+	goblins.append(concubine)
+	_event({"t": "take_concubine", "suitor": suitor.id, "concubine": concubine.id})
+	return true
+
+## つがいのステータスアップ。雄=生存力 (最大HP増 + 恐怖閾値↓)、雌=内政効率
+## (仕事/採餌重み増) (KI-18)。対象 g を直接書き換える。
+func _apply_bond_buff(g: Goblin) -> void:
+	if g.sex == Goblin.Sex.MALE:
+		g.max_hp += params.bond_male_hp_bonus
+		g.hp += params.bond_male_hp_bonus
+		g.fear_hp_bias -= params.bond_male_fear_reduce
+	else:
+		g.work_bias += params.bond_female_work_bonus
+		g.forage_bias += params.bond_female_work_bonus
+
+# --- 捕虜との自然つがい化 (§3-19/KI-21。B2 第二増分) ---
+## 各 tick 平時にごくごく稀に発生。捕虜と巣のゴブリンの間に絆が芽生え、
+## プレイヤーの承認 (approve_bond) / 引き離し (tear_apart_bond) を待つ
+## 状態 (pending_bond) になる。
+##
+## 発生対象は2系統:
+##  (a) 未娶の捕虜カテゴリ → 個体化して pending_bond の側室として加える。
+##  (b) 既に側室 (Role.CONCUBINE) の捕虜 → そのまま pending_bond に昇格。
+## 決定性: rng を一定順序で消費。発生率 captive_bond_chance_per_tick は極小。
+## 既に承認待ちが居るなら新規発生を抑える (通知の氾濫を防ぐ)。
+func _step_captive_bonding() -> void:
+	if phase != Phase.PEACE:
+		return
+	for g in goblins:
+		if g.pending_bond and g.state != Goblin.State.DEAD:
+			return
+	if rng.next_float() >= params.captive_bond_chance_per_tick:
+		return
+
+	# 相手になる巣のゴブリン (成体・生存・側室でない・pending でない・つがい無し) を集める。
+	var eligible: Array = []
+	for g in goblins:
+		if g.state == Goblin.State.DEAD or g.is_child():
+			continue
+		if g.role == Goblin.Role.CONCUBINE or g.pending_bond:
+			continue
+		if g.mate_id >= 0:
+			continue  # 既につがい持ちは対象外
+		eligible.append(g)
+	# world.ts stepCaptiveBonding と同じく、eligible が空ならここで打ち切る
+	# (ルート b の 50% ロールも含めて rng を消費しない。消費順序維持)。
+	if eligible.is_empty():
+		return
+
+	# (b) 既存の側室から自然つがい化するルート (50%)。
+	var concubines: Array = []
+	for g in goblins:
+		if g.role == Goblin.Role.CONCUBINE and g.state != Goblin.State.DEAD and not g.pending_bond:
+			concubines.append(g)
+	if concubines.size() > 0 and rng.next_float() < 0.5:
+		var pick: Goblin = concubines[rng.next_int(concubines.size())]
+		# 側室は既に娶り主 (mate_id) がいる。その絆が「正当なもの」に変わる。
+		pick.pending_bond = true
+		_event({"t": "pending_bond", "id": pick.id})
+		return
+
+	# (a) 未娶の捕虜を個体化して pending_bond の側室として加える。
+	var suitor: Goblin = eligible[rng.next_int(eligible.size())]
+	var want_sex := Goblin.Sex.FEMALE if suitor.sex == Goblin.Sex.MALE else Goblin.Sex.MALE  # 異性
+	# 捕虜カテゴリから 1 消費 (ゴブリン優先、なければ人間)。
+	var consumed := false
+	if want_sex == Goblin.Sex.FEMALE and cap_female_goblin >= 1.0:
+		cap_female_goblin -= 1.0
+		consumed = true
+	elif want_sex == Goblin.Sex.MALE and cap_male_goblin >= 1.0:
+		cap_male_goblin -= 1.0
+		consumed = true
+	elif want_sex == Goblin.Sex.FEMALE and cap_female_human >= 1.0:
+		cap_female_human -= 1.0
+		consumed = true
+	elif want_sex == Goblin.Sex.MALE and cap_male_human >= 1.0:
+		cap_male_human -= 1.0
+		consumed = true
+	if not consumed:
+		return  # 該当する捕虜が居ない
+
+	var lover := Goblin.new()
+	lover.id = next_goblin_id
+	next_goblin_id += 1
+	lover.sex = want_sex
+	lover.role = Goblin.Role.CONCUBINE
+	lover.origin = Goblin.Origin.CONCUBINE
+	lover.max_hp = 8.0 if want_sex == Goblin.Sex.FEMALE else 10.0
+	lover.hp = lover.max_hp
+	lover.born_tick = tick
+	lover.mate_id = suitor.id
+	lover.pending_bond = true  # 承認待ち
+	_place(lover, _room_slot(TileMapData.RoomType.NEST, lover.id))
+	suitor.mate_id = lover.id
+	suitor.pending_bond = true
+	goblins.append(lover)
+	_event({"t": "pending_bond", "id": lover.id})
+
+## 自然つがい化した捕虜を承認する (KI-21)。pending_bond を解除し、捕虜側を
+## 巣に貢献する一員 (Role.NONE) に昇格させる (性別別性格を再設定)。娶り主側の
+## pending_bond も解除し、まだバフ未適用 (自然発生(a)経路) ならつがいバフを与える
+## (takeConcubine 経由なら既にバフ済みなので二重適用しない)。
+## captive_id が見つからない/pending でなければ何もせず false。
+func approve_bond(captive_id: int) -> bool:
+	var captive: Goblin = null
+	for g in goblins:
+		if g.id == captive_id and g.pending_bond:
+			captive = g
+			break
+	if captive == null:
+		return false
+	# 捕虜を貢献する一員に昇格 (側室 → 無役)。性別別性格を与える (世代差なし。
+	# world.ts: sexedPersonality(sex, () => 0) と同じ基準値で 4 項目とも上書き)。
+	captive.role = Goblin.Role.NONE
+	captive.pending_bond = false
+	if captive.sex == Goblin.Sex.FEMALE:
+		captive.fear_hp_bias = 0.25
+		captive.hunger_bias = 0.05
+		captive.forage_bias = 0.6
+		captive.work_bias = -0.1
+	else:
+		captive.fear_hp_bias = -0.2
+		captive.hunger_bias = 0.0
+		captive.forage_bias = 0.0
+		captive.work_bias = 0.15
+	_apply_bond_buff(captive)  # つがいバフ
+	# 娶り主側も pending_bond 解除。
+	var mate := _goblin_by_id(captive.mate_id)
+	if mate != null:
+		mate.pending_bond = false
+	_event({"t": "approve_bond", "id": captive.id})
+	return true
+
+## 自然つがいを引き離す (KI-21)。両方を処刑 (execution) または追放 (banishment)
+## しないと引き離せない (片方だけ消すと残った方が悲嘆する仕様)。captive_id と
+## その娶り主の両方を Dead にする (cleanup で除去 / KI-20 死亡ログは
+## death_logged 経由で記録)。両方消すので悲嘆は発生しない。
+func tear_apart_bond(captive_id: int, cause: String) -> bool:
+	var captive: Goblin = null
+	for g in goblins:
+		if g.id == captive_id and g.pending_bond:
+			captive = g
+			break
+	if captive == null:
+		return false
+	var mate := _goblin_by_id(captive.mate_id)
+	captive.state = Goblin.State.DEAD
+	captive.death_logged = true
+	_event({"t": "death", "id": captive.id, "sex": captive.sex, "cause": cause})
+	if mate != null and mate.state != Goblin.State.DEAD:
+		mate.state = Goblin.State.DEAD
+		mate.death_logged = true
+		_event({"t": "death", "id": mate.id, "sex": mate.sex, "cause": cause})
+	return true
+
 # --- キノコ採集 (T4): キノコ床の再生長 ---
 # 摘み取られたスポット (forage_regrow[i] > 0) を毎 tick デクリメントする。
 # 0 になったら再び摘み取り可。食料への加算は採集者が集積所へ運んだ時点で行う
@@ -1253,6 +1463,91 @@ func _step_faith() -> void:
 	# トーテムの修繕 (§3-20): 平時に削れたぶんを直す。
 	if phase == Phase.PEACE and totem_hp < params.totem_hp_max:
 		totem_hp = min(params.totem_hp_max, totem_hp + params.totem_repair_per_tick)
+
+# --- 苗床の確定生産 (§2.5/§3-19。B2 第二増分) ---
+# 産み手は雌の捕虜 (胎を産み手とする部屋)。雌ゴブリン捕虜が基準の母体、解禁時のみ
+# 雌人間捕虜も母体にできる (大柄ゆえ多産だが消耗も速い = KI-17 の死蔵を解消)。
+# 仔は母体の種を問わず必ずゴブリン (§2.5)。Godot 版は §3-19 の確定どおり、苗床部屋
+# (RoomType.NURSERY) が存在する間だけ稼働する (部屋が無ければタイマーを 0 に保つ =
+# 「部屋が無ければ停止」)。rng は消費しない (世代の性別は tick からの決定的ハッシュ /
+# world.ts birthNurseryChildren と同式でスナップショット往復に影響しない)。
+func _step_nursery() -> void:
+	var has_room := false
+	for r in map.rooms:
+		if r.room_type == TileMapData.RoomType.NURSERY:
+			has_room = true
+			break
+	if not has_room:
+		nursery_timer = 0.0
+		return
+
+	var goblin_hosts: float = max(0.0, cap_female_goblin)
+	var human_hosts: float = max(0.0, cap_female_human) if params.human_nursery_allowed else 0.0
+	if goblin_hosts <= 0.0 and human_hosts <= 0.0:
+		nursery_timer = 0.0
+		return
+
+	nursery_timer += 1.0
+	if nursery_timer < float(params.nursery_period_ticks):
+		return
+	nursery_timer = 0.0
+
+	# ゴブリン母体ぶん (基準レート)。確定生産で子を追加 (成長ラグ付き §2.5)。
+	var goblin_born := int(floor(goblin_hosts * params.nursery_yield_per_captive))
+	_birth_nursery_children(goblin_born, 0)
+	# 苗床は産み手を緩やかに消耗する (§2.5 即物性)。
+	cap_female_goblin = max(0.0, cap_female_goblin - float(goblin_born) * params.nursery_captive_consume)
+
+	# 人間母体ぶん (大柄ゆえ多産 = 倍率を乗せる)。多産のぶん消耗も速く、人間雌捕虜は
+	# 「速いが続かない」高価値な産み手になる (KI-17 の死蔵を解消)。
+	var human_born := int(floor(human_hosts * params.nursery_yield_per_captive * params.human_nursery_yield_factor))
+	_birth_nursery_children(human_born, goblin_born)  # k オフセットで性別パターンを分離
+	cap_female_human = max(0.0, cap_female_human - float(human_born) * params.nursery_captive_consume)
+	# 人間の胎を仔産み機にする残虐が人間勢力の憎悪を募らせる (§13)。
+	if human_born > 0:
+		human_hostility = clampf(human_hostility + float(human_born) * params.hostility_per_human_nursery_birth, 0.0, 1.0)
+
+## 苗床の確定生産で子ゴブリンを count 体追加する (母体の種を問わず仔はゴブリン)。
+## 性別は tick と (k+kOffset) から決定的に決め、出生比 (雌 30%) に寄せる
+## (rng を持たないため / スナップショット不変。world.ts birthNurseryChildren と同式)。
+## 苗床部屋の床タイルへ配置する (_room_slot は rng を消費しない)。
+func _birth_nursery_children(count: int, k_offset: int) -> void:
+	for k in range(count):
+		# JS の ToInt32 (32bit へ切り詰めてから XOR) を模す: 各乗算結果を 32bit へ
+		# マスクしてから XOR する (world.ts: ((tick*2654435761) ^ ((k+kOffset)*40503)) >>> 0)。
+		var a: int = (tick * 2654435761) & 0xFFFFFFFF
+		var b: int = ((k + k_offset) * 40503) & 0xFFFFFFFF
+		var hash_v: int = (a ^ b) & 0xFFFFFFFF
+		var sex := Goblin.Sex.FEMALE if float(hash_v % 100) / 100.0 < 0.3 else Goblin.Sex.MALE
+		var child := Goblin.new()
+		child.id = next_goblin_id
+		next_goblin_id += 1
+		child.sex = sex
+		child.role = Goblin.Role.NONE
+		child.origin = Goblin.Origin.NURSERY
+		child.max_hp = 8.0 if sex == Goblin.Sex.FEMALE else 10.0
+		child.hp = child.max_hp
+		child.born_tick = tick
+		# 苗床産は個体差なし (world.ts: sexedPersonality(sex, () => 0))。性別ごとの
+		# 基準バイアスのみ与える (jitter=0。4 項目とも既定値で初期化する)。
+		if sex == Goblin.Sex.FEMALE:
+			child.fear_hp_bias = 0.25
+			child.hunger_bias = 0.05
+			child.forage_bias = 0.6
+			child.work_bias = -0.1
+		else:
+			child.fear_hp_bias = -0.2
+			child.hunger_bias = 0.0
+			child.forage_bias = 0.0
+			child.work_bias = 0.15
+		child.child_born_tick = tick
+		child.max_hp *= 0.5  # 子は脆い (_give_birth と同条件)
+		child.hp = child.max_hp
+		_place(child, _room_slot(TileMapData.RoomType.NURSERY, child.id))
+		goblins.append(child)
+		births_total += 1
+	if count > 0:
+		_event({"t": "birth_nursery", "count": count})
 
 # --- トーテムランク (§3 / P3-04) ---
 ## 累計信仰から導出する派生値 (保存しない = KI-09 セーフ)。減らない。
@@ -1360,6 +1655,10 @@ func cast_mud(x: int, y: int) -> bool:
 		map.set_tile(m.x, m.y, TileMapData.TileType.WALL)
 		mud_walls.append(m)
 	_invalidate_paths_through(placed)
+	# FLOOR タイルが減るので床キャッシュを再構築する (KI-09: setup 時と restore 時で
+	# 床キャッシュがズレるとパス再抽選 (_random_nest_floor) の結果が分岐し、
+	# 復元後の決定性が崩れる)。
+	_rebuild_floor_caches()
 	_event({"t": "mud", "x": x, "y": y, "tiles": placed.size()})
 	return true
 
@@ -1497,12 +1796,17 @@ func _step_mud() -> void:
 	if mud_walls.is_empty():
 		return
 	var keep: Array = []
+	var reverted := false
 	for m in mud_walls:
 		if tick >= int(m.expire_tick):
 			map.set_tile(int(m.x), int(m.y), int(m.prev))
+			reverted = true
 		else:
 			keep.append(m)
 	mud_walls = keep
+	# FLOOR タイルが戻るので床キャッシュを再構築する (cast_mud と対称。KI-09)。
+	if reverted:
+		_rebuild_floor_caches()
 
 ## 指定タイルに生存ユニット (ゴブリン/敵/パン虫) が立っているか。
 func _unit_on_tile(p: Vector2i) -> bool:
@@ -1850,6 +2154,7 @@ func snapshot() -> Dictionary:
 		"cap_male_human": cap_male_human, "cap_female_human": cap_female_human,
 		"human_hostility": human_hostility,
 		"bunta_hostility": bunta_hostility, "kugyo_hostility": kugyo_hostility,
+		"nursery_timer": nursery_timer,
 		"outcome": outcome, "next_goblin_id": next_goblin_id,
 		"next_enemy_id": next_enemy_id, "next_mite_id": next_mite_id,
 		"next_field_id": next_field_id,
@@ -1880,6 +2185,7 @@ func restore(d: Dictionary) -> void:
 	human_hostility = d.human_hostility
 	bunta_hostility = d.get("bunta_hostility", 0.0)
 	kugyo_hostility = d.get("kugyo_hostility", 0.0)
+	nursery_timer = d.get("nursery_timer", 0.0)
 	outcome = d.outcome; next_goblin_id = d.next_goblin_id
 	next_enemy_id = d.next_enemy_id; next_mite_id = d.next_mite_id
 	next_field_id = d.next_field_id

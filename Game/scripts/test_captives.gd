@@ -1,5 +1,6 @@
 extends SceneTree
-## 捕虜プール + 敵対度メーター + 襲撃間隔接続 (KI-17/23/24) のヘッドレス検証。
+## 捕虜プール + 敵対度メーター + 襲撃間隔接続 (KI-17/23/24)
+## + 苗床の確定生産・側室・自然つがい化 (KI-21/§2.5/§3-19。B2 第二増分) のヘッドレス検証。
 ##
 ## 実行: godot --headless --path Game --script res://scripts/test_captives.gd
 ##   - 襲撃撃退で捕虜を獲得 (人間/ゴブリンの内訳は raid_is_human 連動)。
@@ -8,6 +9,11 @@ extends SceneTree
 ##   - 人間捕虜の解放と敵対度の上下動。
 ##   - 敵対度 → 大規模襲撃間隔の線形写像。
 ##   - 新規フィールド (cap_*/human_hostility) のスナップショット往復。
+##   - 苗床の確定生産 (部屋なし=停止 / 部屋あり=周期出産・捕虜消耗)。
+##   - 人間母体の苗床産 (倍率・敵対度上乗せ)。
+##   - take_concubine (プール消費・つがい成立・Origin.CONCUBINE)。
+##   - pending_bond の承認 (approve_bond) / 引き離し (tear_apart_bond)。
+##   - B2 新規フィールド込みのスナップショット往復 + 復元後の決定性。
 
 func _init() -> void:
 	var ok := true
@@ -17,6 +23,13 @@ func _init() -> void:
 	ok = _test_release_hostility() and ok
 	ok = _test_raid_interval_mapping() and ok
 	ok = _test_snapshot_roundtrip_with_captives() and ok
+	ok = _test_nursery_requires_room() and ok
+	ok = _test_nursery_goblin_births_and_consumption() and ok
+	ok = _test_nursery_human_mother_yield_and_hostility() and ok
+	ok = _test_take_concubine() and ok
+	ok = _test_pending_bond_approve() and ok
+	ok = _test_pending_bond_tear_apart() and ok
+	ok = _test_snapshot_roundtrip_with_b2_fields() and ok
 	if ok:
 		print("CAPTIVES_OK")
 		quit(0)
@@ -280,5 +293,366 @@ func _test_snapshot_roundtrip_with_captives() -> bool:
 		w2.tick_once()
 	if JSON.stringify(w.snapshot()) != JSON.stringify(w2.snapshot()):
 		print("  FAIL: 復元後の進行が一致しない (決定性)")
+		return false
+	return true
+
+## NURSERY 部屋を w.map.rooms へ直接追加し、床キャッシュを再構築するテスト用ヘルパー。
+## NEST 部屋 (10,24,9x9) と同じ実在の床域を再利用する (重複登録で構わない。
+## _room_floors はインデックス別に独立して構築されるため)。
+func _add_nursery_room(w: World) -> void:
+	w.map.rooms.append({"x": 10, "y": 24, "w": 9, "h": 9,
+		"room_type": TileMapData.RoomType.NURSERY, "assigned": []})
+	w._rebuild_floor_caches()
+
+## 苗床: NURSERY 部屋が無ければ稼働しない (nursery_timer は 0 のまま・出産なし)。
+## 部屋を追加すると母体 (雌ゴブリン捕虜) が居る間だけタイマーが進み、
+## nursery_period_ticks に達すると出産する (world.ts stepFaithAndNursery の移植)。
+func _test_nursery_requires_room() -> bool:
+	var ok := true
+	# 部屋なし: 母体が居てもタイマーが進まず出産もしない。
+	var w := _make_world()
+	w.cap_female_goblin = 10.0
+	var pop_before := w._alive_count()
+	for i in range(50):
+		w.tick_once()
+	if w.nursery_timer != 0.0:
+		print("  FAIL: 部屋が無いと nursery_timer は 0 のままのはず")
+		ok = false
+	if w._alive_count() != pop_before:
+		print("  FAIL: 部屋が無いと苗床産は発生しないはず")
+		ok = false
+	if abs(w.cap_female_goblin - 10.0) > 1e-9:
+		print("  FAIL: 部屋が無いと母体は消耗しないはず")
+		ok = false
+
+	# 部屋あり・母体なし: タイマーは 0 のまま。
+	var w2 := _make_world()
+	_add_nursery_room(w2)
+	w2.tick_once()
+	if w2.nursery_timer != 0.0:
+		print("  FAIL: 部屋があっても母体が居なければ nursery_timer は 0 のはず")
+		ok = false
+
+	# 部屋あり・母体あり: タイマーが進む。
+	var w3 := _make_world()
+	_add_nursery_room(w3)
+	w3.cap_female_goblin = 10.0
+	w3.tick_once()
+	if w3.nursery_timer != 1.0:
+		print("  FAIL: 部屋・母体が揃うと nursery_timer が進むはず (got %f)" % w3.nursery_timer)
+		ok = false
+	return ok
+
+## 苗床: ゴブリン母体 (cap_female_goblin) による周期出産。nursery_period_ticks 到達で
+## floor(host * nursery_yield_per_captive) 体を追加し、母体を nursery_captive_consume
+## 分だけ消耗する (world.ts birthNurseryChildren / stepFaithAndNursery と同式)。
+func _test_nursery_goblin_births_and_consumption() -> bool:
+	var ok := true
+	var w := _make_world()
+	_add_nursery_room(w)
+	# 周期を小さくしてテストを高速化する (yield/consume レートはそのまま)。
+	w.params.nursery_period_ticks = 5
+	w.cap_female_goblin = 10.0
+	var pop_before := w._alive_count()
+	var births_before := w.births_total
+
+	var expect_born := int(floor(10.0 * w.params.nursery_yield_per_captive))  # floor(10*0.16)=1
+	if expect_born <= 0:
+		print("  FAIL: テスト前提が崩れている (expect_born<=0)")
+		return false
+
+	# period_ticks-1 回までは出産しない。
+	for i in range(w.params.nursery_period_ticks - 1):
+		w.tick_once()
+	if w._alive_count() != pop_before:
+		print("  FAIL: nursery_period_ticks 未到達では出産しないはず")
+		ok = false
+
+	# 到達した tick で出産・消耗が発生する。
+	w.tick_once()
+	if w.nursery_timer != 0.0:
+		print("  FAIL: 出産後 nursery_timer は 0 に戻るはず (got %f)" % w.nursery_timer)
+		ok = false
+	if w._alive_count() != pop_before + expect_born:
+		print("  FAIL: 苗床産で頭数が %d 増えるはず (got %d -> %d)" \
+			% [expect_born, pop_before, w._alive_count()])
+		ok = false
+	if w.births_total != births_before + expect_born:
+		print("  FAIL: births_total が苗床産ぶん増えるはず")
+		ok = false
+	var expect_consume := float(expect_born) * w.params.nursery_captive_consume
+	if abs(w.cap_female_goblin - (10.0 - expect_consume)) > 1e-9:
+		print("  FAIL: 母体 (cap_female_goblin) が消耗するはず (got %f)" % w.cap_female_goblin)
+		ok = false
+
+	# 新しく生まれた個体は Origin.NURSERY / Role.NONE / 子 (child_born_tick>=0)。
+	var newest: Goblin = w.goblins[w.goblins.size() - 1]
+	if newest.origin != Goblin.Origin.NURSERY:
+		print("  FAIL: 苗床産の出自は Origin.NURSERY のはず")
+		ok = false
+	if newest.role != Goblin.Role.NONE:
+		print("  FAIL: 苗床産の役職は Role.NONE のはず")
+		ok = false
+	if not newest.is_child():
+		print("  FAIL: 苗床産は子 (child_born_tick>=0) のはず")
+		ok = false
+	return ok
+
+## 苗床: 人間母体 (cap_female_human) は human_nursery_yield_factor 倍の出産数になり、
+## 1 体産むごとに human_hostility が hostility_per_human_nursery_birth 増える
+## (world.ts stepFaithAndNursery の人間母体ぶん)。
+func _test_nursery_human_mother_yield_and_hostility() -> bool:
+	var ok := true
+	var w := _make_world()
+	_add_nursery_room(w)
+	w.params.nursery_period_ticks = 3
+	w.cap_female_goblin = 0.0
+	w.cap_female_human = 10.0
+	w.human_hostility = 0.0
+	var pop_before := w._alive_count()
+
+	var expect_born := int(floor(10.0 * w.params.nursery_yield_per_captive \
+		* w.params.human_nursery_yield_factor))  # floor(10*0.16*2.0)=3
+	if expect_born <= 0:
+		print("  FAIL: テスト前提が崩れている (expect_born<=0)")
+		return false
+
+	for i in range(w.params.nursery_period_ticks):
+		w.tick_once()
+
+	if w._alive_count() != pop_before + expect_born:
+		print("  FAIL: 人間母体の苗床産で頭数が %d 増えるはず (got %d -> %d)" \
+			% [expect_born, pop_before, w._alive_count()])
+		ok = false
+	var expect_consume := float(expect_born) * w.params.nursery_captive_consume
+	if abs(w.cap_female_human - (10.0 - expect_consume)) > 1e-9:
+		print("  FAIL: 人間母体 (cap_female_human) が消耗するはず (got %f)" % w.cap_female_human)
+		ok = false
+	var expect_hostility := float(expect_born) * w.params.hostility_per_human_nursery_birth
+	if abs(w.human_hostility - expect_hostility) > 1e-9:
+		print("  FAIL: 人間母体の苗床産で敵対度が上がるはず (got %f, want %f)" \
+			% [w.human_hostility, expect_hostility])
+		ok = false
+	return ok
+
+## take_concubine: 異性の捕虜カテゴリを 1 体消費して側室として加える。
+## プール減少・mate_id の相互設定・Origin.CONCUBINE/Role.CONCUBINE・つがいバフを確認する。
+## 失敗系 (同性・プール不足・対象不在) も確認する (world.ts takeConcubine と同式)。
+func _test_take_concubine() -> bool:
+	var ok := true
+	var w := _make_world()
+	var suitor: Goblin = w.goblins[0]
+	suitor.sex = Goblin.Sex.MALE
+	suitor.state = Goblin.State.WANDER
+	var hp_before := suitor.hp
+	var max_hp_before := suitor.max_hp
+	var fear_before := suitor.fear_hp_bias
+	w.cap_female_goblin = 2.0
+	var pop_before := w._alive_count()
+
+	if not w.take_concubine(suitor.id, Goblin.Sex.FEMALE, false):
+		print("  FAIL: take_concubine が成立しないはず (異性・プール十分)")
+		ok = false
+	if abs(w.cap_female_goblin - 1.0) > 1e-9:
+		print("  FAIL: cap_female_goblin が 1 減るはず (got %f)" % w.cap_female_goblin)
+		ok = false
+	if w._alive_count() != pop_before + 1:
+		print("  FAIL: 側室追加で頭数が 1 増えるはず")
+		ok = false
+	var concubine: Goblin = w.goblins[w.goblins.size() - 1]
+	if concubine.origin != Goblin.Origin.CONCUBINE or concubine.role != Goblin.Role.CONCUBINE:
+		print("  FAIL: 新規側室の出自/役職が CONCUBINE のはず")
+		ok = false
+	if concubine.sex != Goblin.Sex.FEMALE:
+		print("  FAIL: 指定した性別 (FEMALE) の側室が生成されるはず")
+		ok = false
+	if concubine.mate_id != suitor.id or suitor.mate_id != concubine.id:
+		print("  FAIL: mate_id が双方向に設定されるはず")
+		ok = false
+	# つがいバフ (雄=最大HP/HP増・恐怖閾値減)。
+	if abs(suitor.max_hp - (max_hp_before + w.params.bond_male_hp_bonus)) > 1e-9 \
+			or abs(suitor.hp - (hp_before + w.params.bond_male_hp_bonus)) > 1e-9:
+		print("  FAIL: 雄の娶り主に bond_male_hp_bonus が加算されるはず")
+		ok = false
+	if abs(suitor.fear_hp_bias - (fear_before - w.params.bond_male_fear_reduce)) > 1e-9:
+		print("  FAIL: 雄の娶り主の fear_hp_bias が減るはず")
+		ok = false
+
+	# 失敗系: 同性は不成立 (プールは変化しない)。
+	var w2 := _make_world()
+	var suitor2: Goblin = w2.goblins[0]
+	suitor2.sex = Goblin.Sex.MALE
+	w2.cap_male_goblin = 2.0
+	if w2.take_concubine(suitor2.id, Goblin.Sex.MALE, false):
+		print("  FAIL: 同性は側室にできないはず")
+		ok = false
+	if abs(w2.cap_male_goblin - 2.0) > 1e-9:
+		print("  FAIL: 不成立時はプールが変化しないはず")
+		ok = false
+
+	# 失敗系: プール不足。
+	var w3 := _make_world()
+	var suitor3: Goblin = w3.goblins[0]
+	suitor3.sex = Goblin.Sex.MALE
+	w3.cap_female_goblin = 0.0
+	if w3.take_concubine(suitor3.id, Goblin.Sex.FEMALE, false):
+		print("  FAIL: プール不足では側室にできないはず")
+		ok = false
+
+	# 失敗系: 対象 (suitor) が存在しない/死亡。
+	var w4 := _make_world()
+	w4.cap_female_goblin = 2.0
+	if w4.take_concubine(99999, Goblin.Sex.FEMALE, false):
+		print("  FAIL: 存在しない suitor では不成立のはず")
+		ok = false
+	var dead_suitor: Goblin = w4.goblins[0]
+	dead_suitor.sex = Goblin.Sex.MALE
+	dead_suitor.state = Goblin.State.DEAD
+	if w4.take_concubine(dead_suitor.id, Goblin.Sex.FEMALE, false):
+		print("  FAIL: 死亡した suitor では不成立のはず")
+		ok = false
+	return ok
+
+## pending_bond → approve_bond: 承認で側室 (Role.CONCUBINE) が貢献する一員 (Role.NONE) に
+## 昇格し、性別別性格 4 項目が再設定され、つがいバフが付与される。娶り主側の
+## pending_bond も解除される (world.ts approveBond と同式)。
+func _test_pending_bond_approve() -> bool:
+	var ok := true
+	var w := _make_world()
+	var suitor: Goblin = w.goblins[0]
+	suitor.sex = Goblin.Sex.MALE
+	suitor.state = Goblin.State.WANDER
+	w.cap_female_goblin = 1.0
+	if not w.take_concubine(suitor.id, Goblin.Sex.FEMALE, false):
+		print("  FAIL: 前提の take_concubine が失敗した")
+		return false
+	var concubine: Goblin = w.goblins[w.goblins.size() - 1]
+	# 自然つがい化が承認待ちになった状態を直接模す (KI-21)。
+	concubine.pending_bond = true
+	suitor.pending_bond = true
+	var max_hp_before := concubine.max_hp
+	var hp_before := concubine.hp
+
+	if not w.approve_bond(concubine.id):
+		print("  FAIL: approve_bond が成立しないはず")
+		ok = false
+	if concubine.pending_bond:
+		print("  FAIL: 承認後 captive 側の pending_bond は解除されるはず")
+		ok = false
+	if suitor.pending_bond:
+		print("  FAIL: 承認後 mate 側の pending_bond も解除されるはず")
+		ok = false
+	if concubine.role != Goblin.Role.NONE:
+		print("  FAIL: 承認で Role.NONE (貢献する一員) になるはず")
+		ok = false
+	# 性別別性格 4 項目 (雌の基準値)。fear_hp_bias/hunger_bias はつがいバフの対象外なので
+	# 基準値のまま。work_bias/forage_bias はつがいバフ (bond_female_work_bonus 加算) 後の値になる。
+	if abs(concubine.fear_hp_bias - 0.25) > 1e-9 or abs(concubine.hunger_bias - 0.05) > 1e-9:
+		print("  FAIL: 承認後の性格 (雌基準値: fear_hp_bias/hunger_bias) が一致しない")
+		ok = false
+	# つがいバフ (雌=work_bias/forage_bias に bond_female_work_bonus 加算)。
+	if abs(concubine.work_bias - (-0.1 + w.params.bond_female_work_bonus)) > 1e-9 \
+			or abs(concubine.forage_bias - (0.6 + w.params.bond_female_work_bonus)) > 1e-9:
+		print("  FAIL: 承認時につがいバフ (bond_female_work_bonus) が適用されるはず")
+		ok = false
+	if abs(concubine.max_hp - max_hp_before) > 1e-9 or abs(concubine.hp - hp_before) > 1e-9:
+		print("  FAIL: 雌の承認では HP/最大HP は変化しないはず")
+		ok = false
+
+	# 失敗系: pending でない/存在しない captive_id は false。
+	if w.approve_bond(concubine.id):
+		print("  FAIL: 既に承認済みの captive を再承認できてはいけない")
+		ok = false
+	if w.approve_bond(99999):
+		print("  FAIL: 存在しない captive_id は不成立のはず")
+		ok = false
+	return ok
+
+## pending_bond → tear_apart_bond: 引き離しで承認待ちの捕虜とその娶り主の両方が
+## Goblin.State.DEAD + death_logged=true になる (片方だけ残すと悲嘆するため両方処刑/追放。
+## world.ts tearApartBond と同式)。
+func _test_pending_bond_tear_apart() -> bool:
+	var ok := true
+	var w := _make_world()
+	var suitor: Goblin = w.goblins[0]
+	suitor.sex = Goblin.Sex.MALE
+	suitor.state = Goblin.State.WANDER
+	w.cap_female_goblin = 1.0
+	if not w.take_concubine(suitor.id, Goblin.Sex.FEMALE, false):
+		print("  FAIL: 前提の take_concubine が失敗した")
+		return false
+	var concubine: Goblin = w.goblins[w.goblins.size() - 1]
+	concubine.pending_bond = true
+	suitor.pending_bond = true
+	var deaths_before := w.deaths_total
+
+	if not w.tear_apart_bond(concubine.id, "execution"):
+		print("  FAIL: tear_apart_bond が成立しないはず")
+		ok = false
+	if concubine.state != Goblin.State.DEAD or not concubine.death_logged:
+		print("  FAIL: captive 側が DEAD + death_logged になるはず")
+		ok = false
+	if suitor.state != Goblin.State.DEAD or not suitor.death_logged:
+		print("  FAIL: mate 側も DEAD + death_logged になるはず")
+		ok = false
+	# death イベントが両者ぶん記録される。
+	var death_events := 0
+	for e in w.last_events:
+		if e.t == "death" and (e.id == concubine.id or e.id == suitor.id):
+			death_events += 1
+	if death_events != 2:
+		print("  FAIL: death イベントが両者ぶん (2件) 記録されるはず (got %d)" % death_events)
+		ok = false
+
+	# 失敗系: pending でない/存在しない captive_id は false。
+	var w2 := _make_world()
+	if w2.tear_apart_bond(w2.goblins[0].id, "execution"):
+		print("  FAIL: pending_bond でない個体は引き離せないはず")
+		ok = false
+	if w2.tear_apart_bond(99999, "execution"):
+		print("  FAIL: 存在しない captive_id は不成立のはず")
+		ok = false
+	return ok
+
+## B2 新規フィールド (nursery_timer / pending_bond 等) 込みのスナップショット往復 (KI-09)。
+## 苗床部屋を生やした状態で進行させ、承認待ちの個体も含めて往復・決定性を確認する。
+func _test_snapshot_roundtrip_with_b2_fields() -> bool:
+	var w := _make_world(11)
+	_add_nursery_room(w)
+	w.params.nursery_period_ticks = 4
+	w.cap_male_goblin = 1.0
+	w.cap_female_goblin = 3.0
+	w.cap_male_human = 1.0
+	w.cap_female_human = 3.0
+
+	var suitor: Goblin = w.goblins[0]
+	suitor.sex = Goblin.Sex.MALE
+	suitor.state = Goblin.State.WANDER
+	if not w.take_concubine(suitor.id, Goblin.Sex.FEMALE, false):
+		print("  FAIL: 前提の take_concubine が失敗した")
+		return false
+	var concubine: Goblin = w.goblins[w.goblins.size() - 1]
+	concubine.pending_bond = true
+	suitor.pending_bond = true
+
+	for i in range(10):
+		w.tick_once()
+	if w.nursery_timer <= 0.0 and w.births_total == 0:
+		print("  FAIL: テスト前提が崩れている (苗床が一度も進行していない)")
+		return false
+
+	var snap := w.snapshot()
+	var w2 := World.new()
+	w2.setup(w.params)
+	w2.restore(snap)
+	if JSON.stringify(w2.snapshot()) != JSON.stringify(snap):
+		print("  FAIL: B2 新規フィールド込みの往復が一致しない")
+		return false
+
+	for i in range(30):
+		w.tick_once()
+		w2.tick_once()
+	if JSON.stringify(w.snapshot()) != JSON.stringify(w2.snapshot()):
+		print("  FAIL: 復元後の進行が一致しない (決定性。B2 新規フィールド)")
 		return false
 	return true

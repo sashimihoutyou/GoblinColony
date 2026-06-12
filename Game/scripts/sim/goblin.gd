@@ -52,6 +52,10 @@ var pregnant: bool = false
 var pregnant_ticks: int = 0
 var mate_id: int = -1
 var bereaved: bool = false
+# 捕虜との自然つがい化が承認待ちの状態 (KI-21)。true の間は本人 (側室個体) と
+# その mate_id 側の両方が「承認 or 引き離し」を待つ。承認で false + Role.NONE へ
+# 昇格 (巣に貢献開始)、引き離しで両者を処刑/追放する (tear_apart_bond)。
+var pending_bond: bool = false
 # 求愛ランデブー (§3-6): 雌が雄を寝床に誘い、寝床で合流して初めて妊娠が成立する。
 # courting_id は雌雄両方に相手 id を相互設定する (-1 = 非求愛)。court_ticks は
 # タイムアウト用の経過 tick (雌側でカウント)。
@@ -117,7 +121,7 @@ func snapshot() -> Dictionary:
 		"hunger_latched": hunger_latched, "sleep_latched": sleep_latched,
 		"night_sleep_done": night_sleep_done,
 		"pregnant": pregnant, "pregnant_ticks": pregnant_ticks,
-		"mate_id": mate_id, "bereaved": bereaved,
+		"mate_id": mate_id, "bereaved": bereaved, "pending_bond": pending_bond,
 		"courting_id": courting_id, "court_ticks": court_ticks,
 		"is_unique": is_unique, "downed_ticks": downed_ticks,
 		"fear_safe_ticks": fear_safe_ticks, "child_born_tick": child_born_tick,
