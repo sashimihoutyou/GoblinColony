@@ -309,7 +309,11 @@ func _push_feed_event(e: Dictionary) -> void:
 	var t: String = e.get("t", "")
 	match t:
 		"raid":
-			var who: String = "人間の討伐隊" if e.get("human", false) else "敵対氏族の群れ"
+			var who: String = {
+				"human": "人間の討伐隊",
+				"kugyo": "苦魚族の群れ",
+				"bunta": "ブン・タ＝タ族の群れ",
+			}.get(e.get("faction", ""), "敵対氏族の群れ")
 			if e.get("final", false):
 				_push_feed("raid", "ラストバトル! %s %d 体が押し寄せる!" % [who, e.get("count", 0)])
 			else:
@@ -576,8 +580,20 @@ func _update_status() -> void:
 	var captive_txt := ""
 	var captive_total := world.cap_male_goblin + world.cap_female_goblin \
 		+ world.cap_male_human + world.cap_female_human
-	if captive_total >= 1.0 or world.human_hostility > 0.0:
-		captive_txt = "  捕虜%d 敵対度%.0f%%" % [int(captive_total), world.human_hostility * 100.0]
+	if captive_total >= 1.0:
+		captive_txt = "  捕虜%d" % int(captive_total)
+	# 敵対度は最も怒っている勢力を表示する (§10: 警告色 1 勢力。詳細パネルは B7)。
+	var hostilities := [
+		["人間", world.human_hostility],
+		["苦魚族", world.kugyo_hostility],
+		["ブン・タ＝タ", world.bunta_hostility],
+	]
+	var angriest: Array = hostilities[0]
+	for h in hostilities:
+		if h[1] > angriest[1]:
+			angriest = h
+	if angriest[1] > 0.0:
+		captive_txt += "  敵対 %s %.0f%%" % [angriest[0], float(angriest[1]) * 100.0]
 	_status_label.text = "第 %d 日 %s %s · %s   頭数 %d/%d (子%d)  食料 %.0f  信仰 %.0f/%.0f ランク%d  surge %.1f%s%s" % [
 		world.day, bar, time_txt, phase_txt,
 		world._alive_count(), params.cap_pop, _child_count(),
