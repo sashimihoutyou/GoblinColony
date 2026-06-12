@@ -43,9 +43,9 @@
 
 ## B. 中難度 ★★（確定仕様の移植・拡張。サブエージェント分担向き）
 
-- [ ] **B1. 3 勢力外交の Godot 移植**（TS 検証済み: `buntaHostility`/`kugyoHostility`・朝貢
-  `tributeCaptive`・常時の業ドリフト・`pickRaidFaction`・max 敵対度の間隔決定。
-  HUD の敵対度表示を 3 勢力化 = §10 の警告色 1 勢力 + タップで詳細）
+- [x] **B1. 3 勢力外交の Godot 移植** — 完了（`test_factions.gd` = FACTIONS_OK。
+  メーター 2 本 + ドリフト + 朝貢 + TRIBUTE コマンド + 勢力抽選 + max 間隔 +
+  HUD の最怒勢力表示。タップで 3 勢力詳細パネルは B7 に残置）
 - [ ] **B2. 捕虜系 第二増分（Godot）**: 苗床（人間母体 ×2 倍 + `hostilityPerHumanNurseryBirth`、
   苗床部屋 `RoomType.NURSERY` の配線 / spec 3-19 の `assignedCaptives` カウント方式）、
   奴隷妻 + 自然つがい化 + 承認/引き離し UI（TS の takeConcubine/approveBond/tearApartBond 移植）、
