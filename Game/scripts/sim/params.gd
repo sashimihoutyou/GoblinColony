@@ -256,6 +256,17 @@ const ROOM_BUILD_COST := {
 	TileMapData.RoomType.WITCH: 4.0,
 }
 
+# --- ブリーチング + 防衛配分 (§9 / §3-17 / §3-20。数値は §NUMBERS 暫定) ---
+var breacher_from_day: int = 8       # この日以降の大規模襲撃に壁破壊役が混ざる (襲撃カーブ §15)
+var breacher_every: int = 4          # 何体に 1 体を壁破壊役にするか (決定的。1/4 = 25%)
+# 壁 1 枚 (WALL_HP=20) を割る速さ。日次で定義し _init() で per-tick 整数へ変換
+# (wall_hp が int 配列のため最低 1/tick。既定 240/日 × tpd=240 → 1/tick = 壁 1 枚
+# 約 0.083 日 ≒ 実 7.5 秒。泥の抱擁 (寿命 0.25 日) で塞ぎ直す猶予が出る設計)。
+var wall_damage_per_day: float = 240.0
+var wall_damage_per_tick: int
+var wall_rebuild_cost: float = 2.0   # 破られた壁跡の再建コスト (修復 1.0 より重い §9 復興)
+var totem_panic_radius: int = 6      # 敵がトーテムへこの距離まで踏み込んだら環防衛へ収束
+
 var seed: int = 0
 
 func _init() -> void:
@@ -291,6 +302,8 @@ func _init() -> void:
 	starve_hp_per_tick = 6.0 / tpd
 	faith_per_shaman_tick = 2.0 / tpd
 	totem_repair_per_tick = 20.0 / tpd
+	# 壁破壊は int 配列 (wall_hp) を削るので 1 以上へ丸める (KI-02 の整数版)。
+	wall_damage_per_tick = maxi(1, roundi(wall_damage_per_day / tpd))
 	# ジョブの労働量 = 1 体が張り付いたときの所要日数の逆数 (KI-02)。
 	mine_work_per_tick = 1.0 / (0.5 * tpd)
 	build_work_per_tick = 1.0 / (1.0 * tpd)
