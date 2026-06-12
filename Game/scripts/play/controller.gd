@@ -25,6 +25,8 @@ enum CommandType {
 	TAKE_CONCUBINE,   # 奴隷妻化 {suitor_id, captive_sex, captive_is_human} (KI-19/§3-19)
 	APPROVE_BOND,     # 自然つがいの承認 {captive_id} (KI-21)
 	TEAR_APART_BOND,  # 自然つがいの引き離し {captive_id, cause} (KI-21)
+	SET_DEFENSE_ALLOC,  # 防衛配分スライダー {weights: Array} (§3-17)
+	DEFENSE_AUTO,       # 防衛配分を自動 (敵戦力比例) へ戻す (§3-17)
 }
 
 # 奇跡の種別 (§4)。CAST_MIRACLE コマンドの cmd.miracle に入れる。
@@ -75,6 +77,10 @@ func apply(world: World) -> void:
 				world.approve_bond(cmd.captive_id)
 			CommandType.TEAR_APART_BOND:
 				world.tear_apart_bond(cmd.captive_id, cmd.cause)
+			CommandType.SET_DEFENSE_ALLOC:
+				world.set_defense_alloc(cmd.weights)
+			CommandType.DEFENSE_AUTO:
+				world.clear_defense_alloc()
 			_:
 				pass
 	queue.clear()

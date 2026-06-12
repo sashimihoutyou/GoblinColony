@@ -17,6 +17,10 @@ var target_y: int = -1
 var path: Array = []           # Array[Vector2i]
 var is_human: bool = false
 var enraged_ticks: int = 0     # 奇跡「抑えられない怒り」(§4): 残 tick の間は同士討ち
+# §3-20 ブリーチング: 壁破壊役は狙いの壁を割ってから進軍する。
+var is_breacher: bool = false
+var wall_x: int = -1           # 狙っている壁 (-1 = 未選定/破壊済み)
+var wall_y: int = -1
 
 func pos() -> Vector2i:
 	return Vector2i(x, y)
@@ -29,6 +33,7 @@ func snapshot() -> Dictionary:
 		"path": path.map(func(p): return [p.x, p.y]),
 		"is_human": is_human,
 		"enraged_ticks": enraged_ticks,
+		"is_breacher": is_breacher, "wall_x": wall_x, "wall_y": wall_y,
 	}
 
 static func from_snapshot(d: Dictionary) -> EnemyUnit:
