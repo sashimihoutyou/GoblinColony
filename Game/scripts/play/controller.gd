@@ -19,6 +19,7 @@ enum CommandType {
 	DISPATCH,       # 派遣 {count, target}  (§11.5: target = 出現物 id)
 	SACRIFICE,      # 生贄 (対象不要。優先順位は world.sacrifice_captive() 側で決定)
 	RELEASE_CAPTIVE,  # 人間捕虜の解放 {sex}
+	TRIBUTE,        # 朝貢 {faction} ("human"/"bunta"/"kugyo" §13 双方向化)
 }
 
 # 奇跡の種別 (§4)。CAST_MIRACLE コマンドの cmd.miracle に入れる。
@@ -55,6 +56,8 @@ func apply(world: World) -> void:
 				world.sacrifice_captive()
 			CommandType.RELEASE_CAPTIVE:
 				world.release_human_captive(cmd.sex)
+			CommandType.TRIBUTE:
+				world.tribute_captive(cmd.faction)
 			_:
 				pass  # P2 で実装予定の干渉 (BUILD_ROOM)
 	queue.clear()

@@ -33,6 +33,7 @@ var over_cap_ticks: int = 0
 var next_big_raid_tick: int = 0
 var raid_is_human: bool = false
 var raid_is_small: bool = false  # 現襲撃が小規模 (恵み §11/KI-05) か。捕虜報酬を控えめにする
+var raid_faction: String = "kugyo"  # 現襲撃の勢力 ("human"/"bunta"/"kugyo" §13)。既定値は侵攻側
 var raid_start_hp: float = 0.0
 var alarm_raised: bool = false   # T5: この襲撃で見張りが警報を上げ済みか (襲撃ごとにリセット)
 var outcome: int = Outcome.ONGOING
@@ -49,6 +50,10 @@ var cap_male_human: float = 0.0
 var cap_female_human: float = 0.0
 # 人間勢力の敵対度 (0..1)。残虐な仕打ち (生贄) で上昇、解放で下降 (§13)。
 var human_hostility: float = 0.0
+# ゴブリン 2 部族の敵対度 (0..1。§13 3 勢力分離 / KI-24 残り)。人間と違い
+# 常時の業 (自然ドリフト) でじわじわ悪化する (中立ルート保護は人間のみ §14.5.7)。
+var bunta_hostility: float = 0.0
+var kugyo_hostility: float = 0.0
 
 # ログ (UI / デバッグ用)。
 var deaths_total: int = 0
@@ -154,6 +159,7 @@ func tick_once() -> void:
 		day += 1
 		_on_day_boundary()
 
+	_step_hostility_drift()  # §13 常時の業: ゴブリン 2 部族の敵対度の自然悪化 (毎 tick)
 	_update_raid_schedule()
 	_step_mud()           # §4 泥の抱擁: 寿命が尽きた泥壁を元のタイルへ戻す
 	_step_enemies()
@@ -185,7 +191,7 @@ func _on_day_boundary() -> void:
 	_maintain_guards()  # T5: 見張りの目標人数を維持 (死亡で欠けたら補充・過剰なら解任)
 	# ラストバトルは最終日に一度だけ (>= だと日境界ごとに多重スポーンしていた)。
 	if day == params.final_day:
-		_spawn_raid(true, true)  # ラストバトル
+		_spawn_raid(true, "human")  # ラストバトル (人間勢力の総攻撃)
 
 # --- 襲撃スケジュール (§3-5 / §3-7。間隔は敵対度連動 §11/§13/KI-24) ---
 ## 敵対度 → 大規模襲撃の間隔 (日) を線形写像する (world.ts raidIntervalDays と同式)。
@@ -195,24 +201,55 @@ func raid_interval_days(hostility: float) -> float:
 	return params.big_raid_interval_peace \
 		+ (params.big_raid_interval_max - params.big_raid_interval_peace) * h
 
+## 3 勢力のうち最も高い敵対度 (§13)。襲撃間隔 (難度ダイヤル) の入力になる
+## (world.ts maxHostility と同式)。
+func max_hostility() -> float:
+	return max(human_hostility, max(bunta_hostility, kugyo_hostility))
+
 func _schedule_next_raid() -> void:
-	# 次回を現在の敵対度で予約 (敵対度が高いほど短間隔 = 高難度 / KI-08)。
-	var interval_days := raid_interval_days(human_hostility)
+	# 次回を「最も怒っている勢力」の敵対度で予約 (敵対度が高いほど短間隔 = 高難度 /
+	# KI-08。§13 3 勢力化後は max_hostility が入力 / world.ts と同式)。
+	var interval_days := raid_interval_days(max_hostility())
 	next_big_raid_tick = tick + int(round(interval_days * params.ticks_per_day))
 
+## 常時の業 (§13 小ノイズ層): ゴブリン 2 部族の敵対度の自然悪化。放置で関係が
+## じわじわ悪化する (自然位置がやや敵対寄り。苦魚族が最速)。人間メーターは
+## ドリフトさせない (加害でのみ動く = 中立ルート保護 §14.5.7。world.ts と同式)。
+func _step_hostility_drift() -> void:
+	bunta_hostility = clampf(bunta_hostility + params.hostility_drift_per_tick_bunta, 0.0, 1.0)
+	kugyo_hostility = clampf(kugyo_hostility + params.hostility_drift_per_tick_kugyo, 0.0, 1.0)
+
+## 襲撃してくる勢力を抽選する純粋関数 (§13 3 勢力。world.ts pickRaidFaction と同式)。
+## r は [0,1) の乱数 1 個。人間判定は従来式 (r < human) のまま = 既存の検証帯を
+## 崩さない。残り区間 [human, 1) を [0,1) へ正規化して部族間で分け合う:
+## 基礎割合 kugyo_base_share (苦魚族は同種に容赦なく攻めやすい) に互いの
+## 敵対度を重みとして上乗せする。
+static func pick_raid_faction(human: float, bunta: float, kugyo: float, kugyo_base_share: float, r: float) -> String:
+	if r < human:
+		return "human"
+	var u := 0.0 if human >= 1.0 else (r - human) / (1.0 - human)
+	var w_kugyo := kugyo_base_share + kugyo
+	var w_bunta := (1.0 - kugyo_base_share) + bunta
+	return "kugyo" if u < w_kugyo / (w_kugyo + w_bunta) else "bunta"
+
 func _update_raid_schedule() -> void:
-	# 大規模襲撃の発火。勢力構成は敵対度連動 (怒らせた相手が攻めてくる §13)。
+	# 大規模襲撃の発火。勢力: 怒らせた相手が攻めてくる (§13 3 勢力)。RNG 消費は
+	# 従来と同じ 1 float (消費順序厳守 / world.ts pickRaidFaction)。
 	if phase == Phase.PEACE and tick >= next_big_raid_tick and day < params.final_day:
-		_spawn_raid(false, rng.next_float() < human_hostility)
+		var faction := pick_raid_faction(
+			human_hostility, bunta_hostility, kugyo_hostility,
+			params.kugyo_base_raid_share, rng.next_float())
+		_spawn_raid(false, faction)
 		_schedule_next_raid()
 	# 小規模襲撃 (恵み): 1 日 1 回判定、平時のみ。
 	if phase == Phase.PEACE and (tick % params.ticks_per_day) == params.day_ticks / 2:
 		if rng.next_float() < params.small_raid_prob:
 			_spawn_raid_small()
 
-func _spawn_raid(final_battle: bool, human: bool) -> void:
+func _spawn_raid(final_battle: bool, faction: String) -> void:
 	phase = Phase.COMBAT
-	raid_is_human = human
+	raid_faction = faction
+	raid_is_human = faction == "human"
 	raid_is_small = false
 	raid_start_hp = _total_hp()
 	alarm_raised = false  # T5: 新しい襲撃ごとに警報フラグをリセット
@@ -220,11 +257,11 @@ func _spawn_raid(final_battle: bool, human: bool) -> void:
 	var count := int(params.base_enemies + params.enemy_per_day * day)
 	if final_battle:
 		count = int(count * params.final_mult)
-	_event({"t": "raid", "count": count, "human": human, "final": final_battle})
+	_event({"t": "raid", "count": count, "human": raid_is_human, "faction": faction, "final": final_battle})
 	# 全巣口に部隊を分散 (§3-14)。
 	for i in range(count):
 		var gate_idx := i % map.gates.size()
-		_spawn_enemy_at_gate(gate_idx, human)
+		_spawn_enemy_at_gate(gate_idx, raid_is_human)
 
 func _spawn_raid_small() -> void:
 	# 小規模は無作為 1 巣口のみ。準自動・少数。
@@ -1425,6 +1462,35 @@ func release_human_captive(sex: int) -> bool:
 	_event({"t": "release_captive", "sex": sex})
 	return true
 
+## 朝貢 (§13 双方向化 / KI-24 残り): 捕虜 1 体を相手勢力へ返し、敵対度を大きく
+## 下げる (解放より効く能動的な外交手段)。人間勢力には人間捕虜、ゴブリン部族には
+## ゴブリン捕虜と、種族が合う捕虜しか差し出せない。雄から先に出す (雌は産み手と
+## して温存 / KI-17)。在庫が無ければ何もせず false (world.ts tributeCaptive と同式)。
+func tribute_captive(faction: String) -> bool:
+	if outcome != Outcome.ONGOING:
+		return false
+	if faction == "human":
+		if cap_male_human >= 1.0:
+			cap_male_human -= 1.0
+		elif cap_female_human >= 1.0:
+			cap_female_human -= 1.0
+		else:
+			return false
+		human_hostility = clampf(human_hostility - params.hostility_tribute_drop, 0.0, 1.0)
+	else:
+		if cap_male_goblin >= 1.0:
+			cap_male_goblin -= 1.0
+		elif cap_female_goblin >= 1.0:
+			cap_female_goblin -= 1.0
+		else:
+			return false
+		if faction == "bunta":
+			bunta_hostility = clampf(bunta_hostility - params.hostility_tribute_drop, 0.0, 1.0)
+		else:
+			kugyo_hostility = clampf(kugyo_hostility - params.hostility_tribute_drop, 0.0, 1.0)
+	_event({"t": "tribute", "faction": faction})
+	return true
+
 # --- 奇跡の下働きヘルパ ---
 ## 泥壁の寿命処理: 尽きたタイルを元へ戻す。
 func _step_mud() -> void:
@@ -1774,6 +1840,7 @@ func snapshot() -> Dictionary:
 		"surge": surge, "over_cap_ticks": over_cap_ticks,
 		"next_big_raid_tick": next_big_raid_tick,
 		"raid_is_human": raid_is_human, "raid_is_small": raid_is_small,
+		"raid_faction": raid_faction,
 		"raid_start_hp": raid_start_hp,
 		"alarm_raised": alarm_raised,
 		"mud_walls": mud_walls.map(func(m):
@@ -1782,6 +1849,7 @@ func snapshot() -> Dictionary:
 		"cap_male_goblin": cap_male_goblin, "cap_female_goblin": cap_female_goblin,
 		"cap_male_human": cap_male_human, "cap_female_human": cap_female_human,
 		"human_hostility": human_hostility,
+		"bunta_hostility": bunta_hostility, "kugyo_hostility": kugyo_hostility,
 		"outcome": outcome, "next_goblin_id": next_goblin_id,
 		"next_enemy_id": next_enemy_id, "next_mite_id": next_mite_id,
 		"next_field_id": next_field_id,
@@ -1800,6 +1868,7 @@ func restore(d: Dictionary) -> void:
 	surge = d.surge; over_cap_ticks = d.over_cap_ticks
 	next_big_raid_tick = d.next_big_raid_tick
 	raid_is_human = d.raid_is_human; raid_is_small = d.get("raid_is_small", false)
+	raid_faction = d.get("raid_faction", "kugyo")
 	raid_start_hp = d.raid_start_hp
 	alarm_raised = d.alarm_raised
 	mud_walls = (d.get("mud_walls", []) as Array).map(func(m):
@@ -1809,6 +1878,8 @@ func restore(d: Dictionary) -> void:
 	cap_male_goblin = d.cap_male_goblin; cap_female_goblin = d.cap_female_goblin
 	cap_male_human = d.cap_male_human; cap_female_human = d.cap_female_human
 	human_hostility = d.human_hostility
+	bunta_hostility = d.get("bunta_hostility", 0.0)
+	kugyo_hostility = d.get("kugyo_hostility", 0.0)
 	outcome = d.outcome; next_goblin_id = d.next_goblin_id
 	next_enemy_id = d.next_enemy_id; next_mite_id = d.next_mite_id
 	next_field_id = d.next_field_id
