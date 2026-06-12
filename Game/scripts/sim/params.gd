@@ -199,6 +199,35 @@ var totem_repair_per_tick: float       # 平時の修繕 (日次 20.0 を変換)
 # --- 信仰 (§3-1。α版は集計のみ) ---
 var faith_per_shaman_tick: float       # 日次 2.0 を変換
 
+# --- 資源・ジョブ (§3-11/§3-12/§3-15。コスト・収量は §NUMBERS 暫定) ---
+# 建材は当面 mud (泥) に一本化する。wood (枝) は外征 (§11.5/A4) の戦利品経路が
+# 主供給のため、採掘からは出さない (§7「供給は既存挙動に寄せる」)。
+var start_mud: float = 6.0            # 初期盤面「少量の建材」(GDD §14.5.2)
+var mine_yield_mud: float = 4.0       # 採掘ノード 1 つの建材収量 (イベント単位)
+var gem_mine_chance: float = 0.15     # 採掘完了ごとの宝石ロール (§7 採掘で稀)
+var mine_work_per_tick: float         # 採掘進捗 (1 ノード 0.5 日ぶんの労働を変換)
+var build_work_per_tick: float        # 建設進捗 (1 部屋 1.0 日ぶんの労働を変換)
+var repair_work_per_tick: float       # 壁修復進捗 (1 枚 0.25 日ぶんの労働を変換)
+var wall_repair_cost: float = 1.0     # 壁修復 1 枚の建材 (イベント単位)
+# ジョブ取得の性格重み (§3-12「最寄り×性格重み」): work_bias 1.0 の個体は
+# job_affinity_tiles タイルぶん遠いジョブでも同点とみなす距離換算。
+var job_affinity_tiles: float = 8.0
+# 部屋テンプレート (spec 3-15 固定サイズ) と建材コスト (§NUMBERS 暫定)。
+const ROOM_BUILD_SIZE := {
+	TileMapData.RoomType.RAT_RANCH: Vector2i(4, 3),
+	TileMapData.RoomType.MUSHROOM: Vector2i(3, 3),
+	TileMapData.RoomType.SMITHY: Vector2i(3, 3),
+	TileMapData.RoomType.NURSERY: Vector2i(4, 3),
+	TileMapData.RoomType.WITCH: Vector2i(3, 3),
+}
+const ROOM_BUILD_COST := {
+	TileMapData.RoomType.RAT_RANCH: 6.0,
+	TileMapData.RoomType.MUSHROOM: 4.0,
+	TileMapData.RoomType.SMITHY: 6.0,
+	TileMapData.RoomType.NURSERY: 6.0,
+	TileMapData.RoomType.WITCH: 4.0,
+}
+
 var seed: int = 0
 
 func _init() -> void:
@@ -234,6 +263,10 @@ func _init() -> void:
 	starve_hp_per_tick = 6.0 / tpd
 	faith_per_shaman_tick = 2.0 / tpd
 	totem_repair_per_tick = 20.0 / tpd
+	# ジョブの労働量 = 1 体が張り付いたときの所要日数の逆数 (KI-02)。
+	mine_work_per_tick = 1.0 / (0.5 * tpd)
+	build_work_per_tick = 1.0 / (1.0 * tpd)
+	repair_work_per_tick = 1.0 / (0.25 * tpd)
 	move_per_tick = 150.0 / tpd
 	enemy_move_per_tick = 110.0 / tpd
 	wander_retarget_per_tick = 8.0 / tpd

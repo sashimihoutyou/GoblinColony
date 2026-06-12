@@ -15,7 +15,9 @@ enum CommandType {
 	ASSIGN_ROOM,    # ゴブリンを部屋へ任命 {goblin_id, room_index}
 	APPOINT_ROLE,   # 役職任命 {goblin_id, role}
 	CAST_MIRACLE,   # 奇跡発動 {miracle, x, y} or {miracle, target_id}
-	BUILD_ROOM,     # 建築 {room_type, x, y}     (P2 で実装)
+	BUILD_ROOM,     # 建築 {room_type, x, y} (§3-15。x,y = 左上角)
+	DESIGNATE_MINE, # 採掘指定のトグル {x, y} (§3-12)
+	REPAIR_WALL,    # 壁修復の発注 {x, y} (§3-20)
 	DISPATCH,       # 派遣 {count, target}  (§11.5: target = 出現物 id)
 	SACRIFICE,      # 生贄 (対象不要。優先順位は world.sacrifice_captive() 側で決定)
 	RELEASE_CAPTIVE,  # 人間捕虜の解放 {sex}
@@ -58,8 +60,14 @@ func apply(world: World) -> void:
 				world.release_human_captive(cmd.sex)
 			CommandType.TRIBUTE:
 				world.tribute_captive(cmd.faction)
+			CommandType.BUILD_ROOM:
+				world.order_build(cmd.room_type, cmd.x, cmd.y)
+			CommandType.DESIGNATE_MINE:
+				world.designate_mine(cmd.x, cmd.y)
+			CommandType.REPAIR_WALL:
+				world.order_repair(cmd.x, cmd.y)
 			_:
-				pass  # P2 で実装予定の干渉 (BUILD_ROOM)
+				pass
 	queue.clear()
 
 func _apply_miracle(world: World, cmd: Dictionary) -> void:
