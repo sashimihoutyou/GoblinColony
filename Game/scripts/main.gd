@@ -65,6 +65,14 @@ var _miracle_buttons: Array = []  # Array[Dictionary] {btn: Button, def: Diction
 var _armed_build: int = -1
 var _build_buttons: Array = []  # Array[Dictionary] {btn: Button, rt: int}
 
+# 捕虜パネル + つがい承認バナー (§3-19/KI-21。表示状態は演出ローカル)。
+var _captive_panel: PanelContainer
+var _captive_info: Label
+var _concubine_button: Button
+var _bond_banner: PanelContainer
+var _bond_label: Label
+var _bond_captive_id: int = -1  # バナーが対象にしている承認待ち側室の id
+
 # 建築できる部屋 (spec 3-15 の 5 種)。
 const BUILD_TYPES := [
 	TileMapData.RoomType.RAT_RANCH,
@@ -168,6 +176,7 @@ func _process(delta: float) -> void:
 	_update_status()
 	_update_inspector()
 	_update_dispatch_panel()
+	_update_captive_ui()
 	# カメラ操作はシム停止中 (speed=0) でも独立して動く。
 	_process_keyboard_pan(delta)
 	_process_follow_camera(delta)
@@ -446,6 +455,21 @@ func _push_feed_event(e: Dictionary) -> void:
 		"release_captive":
 			var sex_txt: String = "雄" if int(e.get("sex", 0)) == Goblin.Sex.MALE else "雌"
 			_push_feed("event", "人間の%s捕虜を解放した。敵対度が和らいだ。" % sex_txt)
+		"tribute":
+			var fac_txt: String = {
+				"human": "人間", "bunta": "ブン・タ＝タ族", "kugyo": "苦魚族",
+			}.get(e.get("faction", ""), "敵対勢力")
+			_push_feed("event", "%sへ捕虜を朝貢した。怒りがいくらか鎮まる。" % fac_txt)
+		"take_concubine":
+			var suitor := _find_goblin(int(e.get("suitor", -1)))
+			_push_feed("love", "%s が捕虜を側室に娶った。" \
+					% (GobNames.of(suitor) if suitor != null else "誰か"), int(e.get("suitor", -1)))
+		"pending_bond":
+			_push_feed("love", "捕虜と寄り添う影がある……つがいを認めるか、引き離すか。", int(e.get("id", -1)))
+		"approve_bond":
+			_push_feed("love", "つがいが認められた。捕虜は今日から巣の一員だ。", int(e.get("id", -1)))
+		"birth_nursery":
+			_push_feed("birth", "苗床で子が %d 体、泥の中から這い出した。" % int(e.get("count", 1)))
 
 const FEED_COLORS := {
 	"raid": "e06a50", "event": "e8943a", "birth": "9adb6e",
@@ -994,6 +1018,150 @@ func _build_ui() -> void:
 	brow.add_child(cancel)
 	dbox.add_child(brow)
 	ui.add_child(_dispatch_panel)
+
+	# --- 捕虜パネル (§10/KI-23。捕虜がいる間だけ表示。右パネルの左隣・下端) ---
+	_captive_panel = PanelContainer.new()
+	_captive_panel.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	_captive_panel.offset_left = -640.0
+	_captive_panel.offset_right = -298.0
+	_captive_panel.offset_top = -128.0
+	_captive_panel.offset_bottom = -48.0
+	_captive_panel.add_theme_stylebox_override("panel", _panel_style())
+	_captive_panel.visible = false
+	var cbox := VBoxContainer.new()
+	cbox.add_theme_constant_override("separation", 4)
+	_captive_panel.add_child(cbox)
+	_captive_info = Label.new()
+	_captive_info.add_theme_color_override("font_color", C_INK)
+	_captive_info.add_theme_font_size_override("font_size", 12)
+	cbox.add_child(_captive_info)
+	var crow1 := HBoxContainer.new()
+	crow1.add_theme_constant_override("separation", 4)
+	for cfg in [
+		["生贄", func() -> void:
+			controller.queue.append({"type": Controller.CommandType.SACRIFICE})],
+		["解放♂", func() -> void:
+			controller.queue.append({"type": Controller.CommandType.RELEASE_CAPTIVE,
+					"sex": Goblin.Sex.MALE})],
+		["解放♀", func() -> void:
+			controller.queue.append({"type": Controller.CommandType.RELEASE_CAPTIVE,
+					"sex": Goblin.Sex.FEMALE})],
+	]:
+		var cb := Button.new()
+		cb.text = cfg[0]
+		cb.add_theme_font_size_override("font_size", 11)
+		_style_button(cb, false)
+		cb.pressed.connect(cfg[1])
+		crow1.add_child(cb)
+	# 側室: 選択中のゴブリンに異性の捕虜を娶らせる (ゴブリン捕虜優先)。
+	_concubine_button = Button.new()
+	_concubine_button.text = "側室"
+	_concubine_button.add_theme_font_size_override("font_size", 11)
+	_style_button(_concubine_button, false)
+	_concubine_button.pressed.connect(_press_concubine)
+	crow1.add_child(_concubine_button)
+	cbox.add_child(crow1)
+	var crow2 := HBoxContainer.new()
+	crow2.add_theme_constant_override("separation", 4)
+	var tlabel := Label.new()
+	tlabel.text = "朝貢:"
+	tlabel.add_theme_color_override("font_color", C_INK_DIM)
+	tlabel.add_theme_font_size_override("font_size", 11)
+	crow2.add_child(tlabel)
+	for cfg in [["人間", "human"], ["ブン・タ＝タ", "bunta"], ["苦魚", "kugyo"]]:
+		var tb := Button.new()
+		tb.text = cfg[0]
+		tb.add_theme_font_size_override("font_size", 11)
+		_style_button(tb, false)
+		var fac: String = cfg[1]
+		tb.pressed.connect(func() -> void:
+			controller.queue.append({"type": Controller.CommandType.TRIBUTE, "faction": fac}))
+		crow2.add_child(tb)
+	cbox.add_child(crow2)
+	ui.add_child(_captive_panel)
+
+	# --- つがい承認バナー (KI-21。承認待ちが出たときだけ中央上に出す) ---
+	_bond_banner = PanelContainer.new()
+	_bond_banner.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_bond_banner.offset_left = -240.0
+	_bond_banner.offset_right = 240.0
+	_bond_banner.offset_top = 44.0
+	_bond_banner.offset_bottom = 100.0
+	_bond_banner.add_theme_stylebox_override("panel", _panel_style())
+	_bond_banner.visible = false
+	var bbox := VBoxContainer.new()
+	bbox.add_theme_constant_override("separation", 4)
+	_bond_banner.add_child(bbox)
+	_bond_label = Label.new()
+	_bond_label.add_theme_color_override("font_color", C_INK)
+	_bond_label.add_theme_font_size_override("font_size", 12)
+	bbox.add_child(_bond_label)
+	var brow2 := HBoxContainer.new()
+	brow2.add_theme_constant_override("separation", 6)
+	var approve := Button.new()
+	approve.text = "つがいを認める"
+	approve.add_theme_font_size_override("font_size", 12)
+	_style_button(approve, true)
+	approve.pressed.connect(func() -> void:
+		if _bond_captive_id >= 0:
+			controller.queue.append({"type": Controller.CommandType.APPROVE_BOND,
+					"captive_id": _bond_captive_id}))
+	brow2.add_child(approve)
+	var tear := Button.new()
+	tear.text = "引き離す"
+	tear.add_theme_font_size_override("font_size", 12)
+	_style_button(tear, false)
+	tear.pressed.connect(func() -> void:
+		if _bond_captive_id >= 0:
+			controller.queue.append({"type": Controller.CommandType.TEAR_APART_BOND,
+					"captive_id": _bond_captive_id, "cause": "torn_bond"}))
+	brow2.add_child(tear)
+	bbox.add_child(brow2)
+	ui.add_child(_bond_banner)
+
+## 側室ボタン: 選択中ゴブリンを婿/嫁に、異性の捕虜 (ゴブリン優先・なければ人間) を娶らせる。
+func _press_concubine() -> void:
+	var suitor := _find_goblin(sel_id) if sel_kind == SelKind.GOBLIN else null
+	if suitor == null or suitor.is_child():
+		_push_feed("event", "側室を娶らせるには、相手のゴブリン (成体) を選んでおく。")
+		return
+	var want_sex := Goblin.Sex.FEMALE if suitor.sex == Goblin.Sex.MALE else Goblin.Sex.MALE
+	var goblin_stock: float = world.cap_female_goblin if want_sex == Goblin.Sex.FEMALE \
+			else world.cap_male_goblin
+	var human_stock: float = world.cap_female_human if want_sex == Goblin.Sex.FEMALE \
+			else world.cap_male_human
+	if goblin_stock < 1.0 and human_stock < 1.0:
+		_push_feed("event", "娶らせられる異性の捕虜がいない。")
+		return
+	controller.queue.append({"type": Controller.CommandType.TAKE_CONCUBINE,
+			"suitor_id": suitor.id, "captive_sex": want_sex,
+			"captive_is_human": goblin_stock < 1.0})
+
+## 捕虜パネル + つがい承認バナーの毎フレーム更新 (表示はすべて演出ローカル)。
+func _update_captive_ui() -> void:
+	var total := world.cap_male_goblin + world.cap_female_goblin \
+			+ world.cap_male_human + world.cap_female_human
+	_captive_panel.visible = total >= 1.0
+	if _captive_panel.visible:
+		_captive_info.text = "捕虜 — ゴブリン 雄%d 雌%d / 人間 雄%d 雌%d" % [
+			int(world.cap_male_goblin), int(world.cap_female_goblin),
+			int(world.cap_male_human), int(world.cap_female_human)]
+		_concubine_button.disabled = sel_kind != SelKind.GOBLIN
+	# 承認待ちの先頭 1 件をバナーに出す (複数いても順に処理される)。
+	var pending: Goblin = null
+	for g in world.goblins:
+		if g.pending_bond and g.state != Goblin.State.DEAD:
+			pending = g
+			break
+	if pending == null:
+		_bond_banner.visible = false
+		_bond_captive_id = -1
+		return
+	_bond_captive_id = pending.id
+	var mate := _find_goblin(pending.mate_id)
+	_bond_label.text = "%s が捕虜の %s とつがいになりたがっている。" % [
+		GobNames.of(mate) if mate != null else "誰か", GobNames.of(pending)]
+	_bond_banner.visible = true
 
 # ════ 派遣パネル (§11.5) ════
 ## 出現物クリックで開く。スライダー上限は開いた時点の手すき頭数
