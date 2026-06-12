@@ -299,15 +299,10 @@ func _clamp_camera(cam: Camera2D) -> void:
 	var m := world.map
 	var map_w := m.width * renderer.tile_size
 	var map_h := m.height * renderer.tile_size
-	# 表示半分ぶんの余白を残してマップ中心からの可動域を制限する。
-	var view := get_viewport_rect().size / cam.zoom
-	var half := view * 0.5
-	var min_x := minf(half.x, map_w * 0.5)
-	var max_x := maxf(map_w - half.x, map_w * 0.5)
-	var min_y := minf(half.y, map_h * 0.5)
-	var max_y := maxf(map_h - half.y, map_h * 0.5)
-	cam.position.x = clampf(cam.position.x, min_x, max_x)
-	cam.position.y = clampf(cam.position.y, min_y, max_y)
+	# カメラ中心の可動域 = マップ矩形そのもの。中心がマップ端に立てるので、
+	# 画面の半分まではマップ外 (外の闇) をはみ出して覗ける。
+	cam.position.x = clampf(cam.position.x, 0.0, map_w)
+	cam.position.y = clampf(cam.position.y, 0.0, map_h)
 
 # ════ イベント → 物語の文 ════
 func _push_feed_event(e: Dictionary) -> void:
@@ -334,45 +329,45 @@ func _push_feed_event(e: Dictionary) -> void:
 		"birth":
 			var mother := _find_goblin(int(e.get("mother", -1)))
 			var mname: String = GobNames.of(mother) if mother != null else "母ゴブリン"
-			_push_feed("birth", "%s が %d 匹の子を産んだ。" % [mname, e.get("count", 0)])
+			_push_feed("birth", "%s が %d 匹の子を産んだ。" % [mname, e.get("count", 0)], int(e.get("mother", -1)))
 		"grow":
-			_push_feed("birth", "%s が一人前に育った。" % GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))))
+			_push_feed("birth", "%s が一人前に育った。" % GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))), int(e.get("id", -1)))
 		"mite_eaten":
-			_push_feed("event", "%s がパン虫を捕まえて食べた。" % GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))))
+			_push_feed("event", "%s がパン虫を捕まえて食べた。" % GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))), int(e.get("id", -1)))
 		"fumble":
 			var fnm := GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))
 			if e.get("dropped", false):
-				_push_feed("event", "%s が転んでキノコを取り落とした。" % fnm)
+				_push_feed("event", "%s が転んでキノコを取り落とした。" % fnm, int(e.get("id", -1)))
 			else:
-				_push_feed("event", "%s がすっ転んだ。" % fnm)
+				_push_feed("event", "%s がすっ転んだ。" % fnm, int(e.get("id", -1)))
 		"forage":
 			# 採集はひっきりなしに起きるのでフィードは 4 回に 1 回だけ流す (煩さ低減)。
 			_forage_feed_count += 1
 			if _forage_feed_count % 4 == 0:
 				_push_feed("event", "%s がキノコを集積所に運び込んだ。" \
-					% GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))))
+					% GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))), int(e.get("id", -1)))
 		"guard":
 			_push_feed("event", "%s が巣口の見張りに就いた。" \
-				% GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))))
+				% GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))), int(e.get("id", -1)))
 		"alarm":
 			_push_feed("raid", "見張りの %s が警報を上げた!" \
-				% GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))))
+				% GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))), int(e.get("id", -1)))
 		"quarrel":
 			var ga := _find_goblin(int(e.get("a", -1)))
 			var gb := _find_goblin(int(e.get("b", -1)))
 			var na: String = GobNames.of(ga) if ga != null else "ゴブリン"
 			var nb: String = GobNames.of(gb) if gb != null else "ゴブリン"
-			_push_feed("event", "%s と %s がケンカを始めた!" % [na, nb])
+			_push_feed("event", "%s と %s がケンカを始めた!" % [na, nb], int(e.get("a", -1)))
 		"court":
 			var cf := _find_goblin(int(e.get("f", -1)))
 			var cm := _find_goblin(int(e.get("m", -1)))
 			var cfn: String = GobNames.of(cf) if cf != null else "雌ゴブリン"
 			var cmn: String = GobNames.of(cm) if cm != null else "雄ゴブリン"
-			_push_feed("love", "%s が %s を寝床に誘った。" % [cfn, cmn])
+			_push_feed("love", "%s が %s を寝床に誘った。" % [cfn, cmn], int(e.get("f", -1)))
 		"pregnant":
 			var f := _find_goblin(int(e.get("id", -1)))
 			if f != null:
-				_push_feed("love", "%s が寝床で身ごもった。" % GobNames.of(f))
+				_push_feed("love", "%s が寝床で身ごもった。" % GobNames.of(f), f.id)
 		"field_spawn":
 			_push_feed("event", "巣の外に木の実の茂みが見つかった (%d 食ぶん)。" % e.get("amount", 0))
 		"dispatch":
@@ -391,7 +386,7 @@ func _push_feed_event(e: Dictionary) -> void:
 			_push_feed("event", "撃退の戦果として%sの捕虜を得た。" % who)
 		"captive_joined":
 			_push_feed("event", "捕らわれていた%s が群れに加わった。" \
-				% GobNames.name_of(int(e.get("id", -1)), Goblin.Sex.MALE))
+				% GobNames.name_of(int(e.get("id", -1)), Goblin.Sex.MALE), int(e.get("id", -1)))
 		"sacrifice":
 			var kind_txt: String = {
 				"male_goblin": "ゴブリンの雄捕虜",
@@ -409,9 +404,14 @@ const FEED_COLORS := {
 	"death": "c08a7a", "love": "e8a0b8",
 }
 
-func _push_feed(kind: String, text: String) -> void:
+## フィードへ 1 行流す。subject_id を渡すと行全体が [url=g:id] リンクになり、
+## クリックでその個体を選択 + カメラ追従する (_on_feed_meta。死亡/不在なら無効)。
+func _push_feed(kind: String, text: String, subject_id: int = -1) -> void:
 	var col: String = FEED_COLORS.get(kind, "8a7d68")
-	_feed_lines.push_front("[color=#5a4f40][%d日][/color] [color=#%s]%s[/color]" % [world.day, col, text])
+	var body := text
+	if subject_id >= 0:
+		body = "[url=g:%d]%s[/url]" % [subject_id, text]
+	_feed_lines.push_front("[color=#5a4f40][%d日][/color] [color=#%s]%s[/color]" % [world.day, col, body])
 	if _feed_lines.size() > 40:
 		_feed_lines.resize(40)
 	if _feed != null:
@@ -422,6 +422,23 @@ func _find_goblin(id: int) -> Goblin:
 		if g.id == id:
 			return g
 	return null
+
+## フィードのリンククリック (巣の記録 → 現場へ)。対象の個体が生きていれば選択して
+## カメラ追従を開始する。死亡・巣立ち済みで補間エントリが無ければ何もしない (無効)。
+func _on_feed_meta(meta: Variant) -> void:
+	var s := String(meta)
+	if not s.begins_with("g:"):
+		return
+	var id := int(s.substr(2))
+	var g := _find_goblin(id)
+	if g == null or g.state == Goblin.State.DEAD:
+		return
+	if renderer.unit_screen_pos(id) == Vector2.INF:
+		return  # 演出層にもう居ない (除去済み)
+	sel_kind = SelKind.GOBLIN
+	sel_id = id
+	_follow_id = id
+	_manual_camera = true
 
 ## renderer.pick_any() の int (0=なし/1=ゴブリン/2=敵/3=部屋/4=出現物) を SelKind へ写像する。
 func _sel_kind_from_pick(kind: int) -> int:
@@ -737,6 +754,8 @@ func _build_ui() -> void:
 	_feed.scroll_active = true
 	_feed.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_feed.add_theme_font_size_override("normal_font_size", 11)
+	# 行クリックで対象へカメラ追従 ([url=g:id] リンク / _push_feed が付与)。
+	_feed.meta_clicked.connect(_on_feed_meta)
 	vbox.add_child(_feed)
 	ui.add_child(right)
 
