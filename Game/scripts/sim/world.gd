@@ -214,6 +214,7 @@ func tick_once() -> void:
 	_step_captive_bonding()  # §3-19/KI-21: 捕虜との自然つがい化 (承認待ち)
 	_step_forage()        # T4: キノコ床の再生長を進める (食料加算は採集者の運搬で行う)
 	_step_food()
+	_step_workshops()     # §7/B6: キノコ農園→薬草 / 泥鍛冶屋→装備
 	_step_starvation()
 	_step_faith()
 	_step_nursery()       # §2.5/§3-19: 苗床の確定生産 (B2 第二増分)
@@ -229,6 +230,7 @@ func _on_day_boundary() -> void:
 	if surge > 0.0:
 		surge = max(0.0, surge - params.surge_decay)
 	_rebalance_ranch()
+	_staff_workshops()  # §7/B6: 建てたキノコ農園/泥鍛冶屋へ手すきを少人数配員
 	_maintain_guards()  # T5: 見張りの目標人数を維持 (死亡で欠けたら補充・過剰なら解任)
 	# ラストバトルは最終日に一度だけ (>= だと日境界ごとに多重スポーンしていた)。
 	if day == params.final_day:
@@ -295,6 +297,7 @@ func _spawn_raid(final_battle: bool, faction: String) -> void:
 	raid_start_hp = _total_hp()
 	alarm_raised = false  # T5: 新しい襲撃ごとに警報フラグをリセット
 	_recall_dispatched()  # §11.5: 襲撃が来たら派遣中の個体は帰路につく
+	_equip_fighters_from_stock()  # §3-16/B8: 警報で戦闘員が共有在庫から武装する
 	var count := int(params.base_enemies + params.enemy_per_day * day)
 	if final_battle:
 		count = int(count * params.final_mult)
@@ -317,6 +320,7 @@ func _spawn_raid_small() -> void:
 	raid_start_hp = _total_hp()
 	alarm_raised = false  # T5: 新しい襲撃ごとに警報フラグをリセット
 	_recall_dispatched()  # §11.5: 襲撃が来たら派遣中の個体は帰路につく
+	_equip_fighters_from_stock()  # §3-16/B8: 警報で戦闘員が共有在庫から武装する
 	_event({"t": "raid_small", "count": count})
 	for i in range(count):
 		_spawn_enemy_at_gate(gate_idx, false)
@@ -1406,6 +1410,26 @@ func _advance_along_path(unit, target: Vector2i, speed: float, occ: Dictionary =
 	unit.x = int(roundf(unit.fx))
 	unit.y = int(roundf(unit.fy))
 
+## §3-16/B8: 襲撃開始時、未装備の戦闘員 (雄/ユニーク成体・生存・戦闘可) が共有在庫
+## (equipment) から 1 ずつ取って装備する。在庫が尽きたら素手 (equipped=false)。
+## id 順で決定的に配り、消費はスカラー (搬送・取得動線の演出は描画層 / spec 3-11 思想)。
+func _equip_fighters_from_stock() -> void:
+	var fighters: Array = []
+	for g in goblins:
+		if g.equipped or g.is_child():
+			continue
+		if g.sex != Goblin.Sex.MALE and not g.is_unique:
+			continue
+		if g.state == Goblin.State.DEAD or g.state == Goblin.State.KNOCKED_OUT:
+			continue
+		fighters.append(g)
+	fighters.sort_custom(func(a, b): return a.id < b.id)
+	for g in fighters:
+		if equipment < 1.0:
+			break
+		equipment -= 1.0
+		g.equipped = true
+
 # --- 戦闘解決 (§3-13: 8 隣接で攻撃) ---
 func _resolve_combat() -> void:
 	if enemies.is_empty():
@@ -1470,6 +1494,16 @@ func _can_fight(g: Goblin) -> bool:
 func _end_raid() -> void:
 	phase = Phase.PEACE
 	_event({"t": "raid_end", "alive": _alive_count()})
+	# §3-16/B8: 装備の軽い消耗。生存装備個体ごとに一定確率で壊れる (装備需要を循環。
+	# rng 消費順序を保つため生存個体を id 順で回す)。
+	var survivors: Array = []
+	for g in goblins:
+		if g.equipped and g.state != Goblin.State.DEAD:
+			survivors.append(g)
+	survivors.sort_custom(func(a, b): return a.id < b.id)
+	for g in survivors:
+		if rng.next_float() < params.equip_wear_chance:
+			g.equipped = false
 	# 損耗時バフ (§2.5 / KI-04): この戦闘の HP 損失割合が閾値超なら surge 発火。
 	var lost_frac := 0.0
 	if raid_start_hp > 0.0:
@@ -1976,6 +2010,27 @@ func _step_food() -> void:
 				active_ranchers += 1
 	food += active_ranchers * params.food_per_rancher_tick
 	# 救済はパン虫の実体湧き (_step_mites) が担う (旧 food_passive_per_tick の抽象救済を置換)。
+
+## 工房の生産 (§7 / B6)。キノコ農園 → 薬草、泥鍛冶屋 → 装備。牧場と同じく
+## 「その部屋で実際に WORK 中 (部屋内に居る) 個体数 × 日次レート」で加算する
+## (建て置きでは生産しない / _step_food と同規律)。
+func _step_workshops() -> void:
+	var farmers := 0
+	var smiths := 0
+	for r in map.rooms:
+		var rt: int = r.room_type
+		if rt != TileMapData.RoomType.MUSHROOM and rt != TileMapData.RoomType.SMITHY:
+			continue
+		for gid in (r.assigned as Array):
+			var g: Goblin = _goblin_by_id(int(gid))
+			if g == null or g.state != Goblin.State.WORK or not _in_room(r, g.pos()):
+				continue
+			if rt == TileMapData.RoomType.MUSHROOM:
+				farmers += 1
+			else:
+				smiths += 1
+	herb += farmers * params.herb_per_farmer_tick
+	equipment += smiths * params.equip_per_smith_tick
 
 func _step_starvation() -> void:
 	if food > 0.0:
@@ -2646,6 +2701,46 @@ func _assign_to_room(room_type: int, count: int) -> void:
 				r.assigned.append(g.id)
 				assigned += 1
 
+## ある個体が工房 (キノコ農園/泥鍛冶屋) に配属済みか。牧場の配員プールから工房員を
+## 除くために使う (相互に取り合わない。工房が無ければ常に false = 既存挙動不変)。
+func _in_workshop(id: int) -> bool:
+	for r in map.rooms:
+		if (r.room_type == TileMapData.RoomType.MUSHROOM \
+				or r.room_type == TileMapData.RoomType.SMITHY) and (id in (r.assigned as Array)):
+			return true
+	return false
+
+## §7/B6: 建てた工房を少人数 (目標 workshop_staff) まで自動配員する。GDD §10
+## 「建てる = 生産の意図宣言、ゴブリンが埋める」。役職なし成体・どの部屋にも未配属
+## の手すきから id 順で補充する (牧場・苗床・他工房とは _has_room_assignment で排他)。
+## 個別任命 UI は B7。
+func _staff_workshops() -> void:
+	const WORKSHOP_STAFF := 2
+	for r in map.rooms:
+		var rt: int = r.room_type
+		if rt != TileMapData.RoomType.MUSHROOM and rt != TileMapData.RoomType.SMITHY:
+			continue
+		var cleaned: Array = []
+		for gid in (r.assigned as Array):
+			var g: Goblin = _goblin_by_id(int(gid))
+			if g != null and g.state != Goblin.State.DEAD:
+				cleaned.append(gid)
+		r.assigned = cleaned
+		if r.assigned.size() >= WORKSHOP_STAFF:
+			continue
+		var pool: Array = []
+		for g in goblins:
+			if g.role != Goblin.Role.NONE or g.is_unique or g.is_child():
+				continue
+			if g.state == Goblin.State.DEAD or _has_room_assignment(g.id):
+				continue
+			pool.append(g.id)
+		pool.sort()
+		for gid in pool:
+			if r.assigned.size() >= WORKSHOP_STAFF:
+				break
+			r.assigned.append(gid)
+
 func _rebalance_ranch() -> void:
 	var target := int(round(_alive_count() * params.ranch_assign_frac))
 	for r in map.rooms:
@@ -2667,7 +2762,7 @@ func _rebalance_ranch() -> void:
 				if g.sex != Goblin.Sex.MALE:
 					continue
 				if g.role == Goblin.Role.NONE and not g.is_unique and not g.is_child() \
-						and not (g.id in assigned):
+						and not (g.id in assigned) and not _in_workshop(g.id):
 					pool.append(g.id)
 			pool.sort()
 			for gid in pool:

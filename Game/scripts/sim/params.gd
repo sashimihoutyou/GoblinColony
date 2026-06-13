@@ -208,6 +208,16 @@ var food_per_meal: float = 1.0
 # 供給が上振れしないよう 0.34 → 0.30 へ下げる (採集の純増を相殺する置換)。
 var ranch_assign_frac: float = 0.30    # 無役成体のうち牧場へ寄せる目標割合
 
+# --- 工房 (§7 / B6。キノコ農園=薬草 / 泥鍛冶屋=装備。牧場と同じ「稼働個体数 ×
+# 日次レート」方式。部屋は A1 建築 + プレイヤー任命で稼働する)。日次→tick 変換 (KI-02)。
+var herb_per_farmer_tick: float        # キノコ農園 1 稼働あたりの薬草 (日次 4.0 を変換)
+var equip_per_smith_tick: float        # 泥鍛冶屋 1 稼働あたりの装備 (日次 1.5 を変換)
+# --- 装備経済 (§14.5.6 / spec 3-16 / B8) ---
+# 襲撃開始時、未装備の戦闘員が共有在庫 (equipment) から 1 ずつ取って装備する
+# (id 順・在庫が尽きるまで)。装備は攻撃 +equip_bonus。死亡で消滅。襲撃終了ごとに
+# 軽い消耗で一定確率に壊れる (装備需要を循環させる §15 ダイヤル)。
+var equip_wear_chance: float = 0.2     # 襲撃 1 回ごとに装備が壊れる確率 (イベント単位)
+
 # --- キノコ採集 (T4 メスの仕事。巣内のキノコ床から摘み集積所へ運ぶ) ---
 var forage_regrow_ticks: int          # 摘んだ後の再生長 (1.5 日を _init() で変換)
 # 1 回の運搬で集積所に加わる食料 (一食分。イベント単位なので KI-02 変換不要)。
@@ -311,6 +321,8 @@ func _init() -> void:
 	# (旧 4.5 相当は、廃止した抽象救済 + 一括消費クランプ (在庫が僅かでも一食に
 	# なる) の隠れ補助に依存した見かけの均衡で、キャップ人口で飢餓スパイラル化)
 	food_per_rancher_tick = 8.0 / tpd
+	herb_per_farmer_tick = 4.0 / tpd
+	equip_per_smith_tick = 1.5 / tpd
 	field_spawn_per_tick = 2.5 / tpd
 	mite_spawn_per_tick = 1.2 / tpd
 	mite_move_per_tick = 30.0 / tpd

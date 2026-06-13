@@ -802,6 +802,10 @@ func _update_status() -> void:
 	if world.totem_hp < params.totem_hp_max:
 		totem_txt = "  ⚠トーテム %.0f/%.0f" % [world.totem_hp, params.totem_hp_max]
 	var res_txt := "  建材 %.0f" % world.mud
+	if world.equipment > 0.0:
+		res_txt += "  装備 %.0f" % world.equipment
+	if world.herb > 0.0:
+		res_txt += "  薬草 %.0f" % world.herb
 	if world.gems > 0.0:
 		res_txt += "  宝石 %.0f" % world.gems
 	var captive_txt := ""
