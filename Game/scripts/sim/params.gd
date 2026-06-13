@@ -218,6 +218,23 @@ var equip_per_smith_tick: float        # 泥鍛冶屋 1 稼働あたりの装備
 # 軽い消耗で一定確率に壊れる (装備需要を循環させる §15 ダイヤル)。
 var equip_wear_chance: float = 0.2     # 襲撃 1 回ごとに装備が壊れる確率 (イベント単位)
 
+# --- まじない医 (§6 / spec 3-17 / B4)。効果は控えめ (D1 調整前提。GDD §6
+# 「被ダメ低下は決定打にせず気休め程度に」)。
+# 平時: 巣内の負傷個体 (hp < max_hp で寝床休息中) の HP 回復を加速。herb を消費し、
+# herb=0 なら加速なし (素の hp_regen のみ = キノコ農園との経済従属 §7/B6)。
+var medic_heal_bonus_per_day: float = 1.5   # 加速ぶん (hp_regen_per_tick=1.5/日に上乗せ→倍速)
+var medic_heal_bonus_per_tick: float
+# 治療 1 体・1 tick あたりの薬草消費 (日次で定義し変換。KI-02)。
+var herb_per_medic_heal_per_day: float = 0.5
+var herb_per_medic_heal_per_tick: float
+# 戦時 (spec 3-17): 防衛ライン (DefensePoint) から巣中心方向へ下がる後衛座標までの
+# タイル数 (確定値)。後衛のまじない医は被ダメ低下 + 近接の負傷個体を遠距離治療する。
+var medic_backline_offset: int = 3
+var medic_dmg_reduce: float = 0.2           # 後衛時の被ダメ低下 (気休め程度)
+var medic_field_heal_radius: int = 3        # 遠距離治療の範囲 (チェビシェフ距離)
+var medic_field_heal_per_day: float = 3.0   # 遠距離治療 1 体・1 日あたりの回復量
+var medic_field_heal_per_tick: float
+
 # --- キノコ採集 (T4 メスの仕事。巣内のキノコ床から摘み集積所へ運ぶ) ---
 var forage_regrow_ticks: int          # 摘んだ後の再生長 (1.5 日を _init() で変換)
 # 1 回の運搬で集積所に加わる食料 (一食分。イベント単位なので KI-02 変換不要)。
@@ -323,6 +340,9 @@ func _init() -> void:
 	food_per_rancher_tick = 8.0 / tpd
 	herb_per_farmer_tick = 4.0 / tpd
 	equip_per_smith_tick = 1.5 / tpd
+	medic_heal_bonus_per_tick = medic_heal_bonus_per_day / tpd
+	herb_per_medic_heal_per_tick = herb_per_medic_heal_per_day / tpd
+	medic_field_heal_per_tick = medic_field_heal_per_day / tpd
 	field_spawn_per_tick = 2.5 / tpd
 	mite_spawn_per_tick = 1.2 / tpd
 	mite_move_per_tick = 30.0 / tpd
