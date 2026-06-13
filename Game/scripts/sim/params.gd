@@ -60,6 +60,11 @@ var big_raid_interval_peace: int = 5   # 敵対度 0 のときの間隔 (日)
 var big_raid_interval_max: int = 1     # 敵対度 MAX のときの間隔 (日)
 var small_raid_prob: float = 0.3       # 小規模襲撃 (恵み) の 1 日あたり発生確率
 var final_mult: float = 2.5            # ラストバトル倍率 (FINAL_MULT)
+# ラストバトルの波状期 (§11/B10): 最終日の手前 final_wave_days 日間は、敵対度に
+# よらず襲撃間隔を final_wave_interval_days (下限) でキャップし、波状に圧を高める
+# (静かなまま最終決戦に入らせない climax の助走)。即時量・日単位。
+var final_wave_days: int = 4
+var final_wave_interval_days: float = 2.0
 
 # --- 捕虜プール + 敵対度 (§2.5/§13。world.ts の捕虜・敵対度セクションの移植 KI-17/23/24) ---
 # 捕虜は cap_male_goblin/cap_female_goblin/cap_male_human/cap_female_human の

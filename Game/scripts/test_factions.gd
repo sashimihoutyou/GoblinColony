@@ -16,6 +16,7 @@ func _init() -> void:
 	ok = _test_tribute() and ok
 	ok = _test_pick_raid_faction() and ok
 	ok = _test_max_interval() and ok
+	ok = _test_final_wave() and ok
 	ok = _test_snapshot_roundtrip_with_factions() and ok
 	if ok:
 		print("FACTIONS_OK")
@@ -210,6 +211,36 @@ func _test_max_interval() -> bool:
 	w2.kugyo_hostility = 0.2
 	if abs(w2.max_hostility() - 0.6) > 1e-9:
 		print("  FAIL: human が最大なら max_hostility は human のはず (got %f)" % w2.max_hostility())
+		ok = false
+	return ok
+
+## §11/B10: ラストバトル手前の波状期は敵対度が低くても間隔が下限でキャップされる。
+func _test_final_wave() -> bool:
+	var w := _make_world()
+	var ok := true
+	# 全勢力の敵対度を 0 にし、平時の長間隔 (big_raid_interval_peace) を基準にする。
+	w.human_hostility = 0.0
+	w.bunta_hostility = 0.0
+	w.kugyo_hostility = 0.0
+	# 波状期の手前 (序盤): 間隔は平時のまま (キャップされない)。
+	w.day = 0
+	w.tick = 0
+	w._schedule_next_raid()
+	var early_days := float(w.next_big_raid_tick) / float(w.params.ticks_per_day)
+	if abs(early_days - w.params.big_raid_interval_peace) > 0.5:
+		print("  FAIL: 序盤は平時間隔のはず (got %.2f 日)" % early_days)
+		ok = false
+	# 波状期 (最終日の手前 final_wave_days 日以内): 間隔が下限でキャップ。
+	w.day = w.params.final_day - 1
+	w.tick = w.day * w.params.ticks_per_day
+	w._schedule_next_raid()
+	var wave_days := float(w.next_big_raid_tick - w.tick) / float(w.params.ticks_per_day)
+	if wave_days > w.params.final_wave_interval_days + 0.5:
+		print("  FAIL: 波状期は間隔が下限 %.1f 日でキャップされるはず (got %.2f)" \
+				% [w.params.final_wave_interval_days, wave_days])
+		ok = false
+	if wave_days >= early_days:
+		print("  FAIL: 波状期の間隔は序盤より短いはず (%.2f >= %.2f)" % [wave_days, early_days])
 		ok = false
 	return ok
 

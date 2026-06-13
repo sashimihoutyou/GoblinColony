@@ -257,6 +257,10 @@ func _schedule_next_raid() -> void:
 	# 次回を「最も怒っている勢力」の敵対度で予約 (敵対度が高いほど短間隔 = 高難度 /
 	# KI-08。§13 3 勢力化後は max_hostility が入力 / world.ts と同式)。
 	var interval_days := raid_interval_days(max_hostility())
+	# §11/B10: ラストバトル手前の波状期は間隔を下限でキャップ (敵対度が低くても
+	# 静かに最終決戦へ入らせない。最終日に向け波状に圧が高まる)。
+	if day >= params.final_day - params.final_wave_days:
+		interval_days = min(interval_days, params.final_wave_interval_days)
 	next_big_raid_tick = tick + int(round(interval_days * params.ticks_per_day))
 
 ## 常時の業 (§13 小ノイズ層): ゴブリン 2 部族の敵対度の自然悪化。放置で関係が
