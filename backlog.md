@@ -79,9 +79,15 @@
 
 ## C. 低難度 ★（独立タスク・即発注可能）
 
-- [ ] **C1. 自動セーブ**（§14.5.1）: まず JSON int/float 正規化（`map.rooms` 等。現状の往復保証は
-  ライブ Dictionary のみ = PR #19 監査所見）→ ファイルセーブ/ロード → タイミング制御
-  （日境界/襲撃フェーズ切れ目/バックグラウンド移行。交戦中はセーブしない）
+- [x] **C1. 自動セーブ** — 完了（`test_save.gd` = SAVE_OK）。JSON 型正規化（rooms/
+  forage_regrow/jobs の int フィールド）+ `user://autosave.json` 保存/復元 +
+  タイミング（日境界・襲撃終了のみ、交戦中は不保存、勝敗で削除）。
+  ⚠ **設計上の限界（記録）**: Godot の JSON/var_to_str はどちらも任意 double のテキスト
+  往復をバイト一致できない（17 桁出力を parse が 16 桁へ丸める。微小 hostility 等で非冪等）。
+  KI-09 のバイト一致はライブ dict 往復（parity 側）で担保済みのため、autosave は
+  「ロード後に自己無矛盾で決定的（再ロードで同じ未来を再現）」を保証する設計とした。
+  バックグラウンド移行セーブは Godot の `NOTIFICATION_APPLICATION_PAUSED` 配線が要る
+  （モバイル実機。未配線 = 将来）。
 - [ ] **C2. AutoController の牧場雌補充の矛盾修正**: 雌を ASSIGN_ROOM →日境界の
   `_rebalance_ranch` が剥がすデッドロック疑い（PR #19 監査所見）。バランスに触るため §15 と同時に
 - [ ] **C3. §15 調整インフラ**（P2-08・§14.5.4）: パラメータの JSON/URL 上書きハーネス、
