@@ -166,6 +166,16 @@ var surge_gain: float = 2.0
 var surge_max: float = 1.5
 var surge_decay: float = 0.2
 
+# --- 食料従属 (§2.5・B3。world.ts と同じ規律・同値)。在庫(food)/頭数の比率が
+# 閾値を割ると求愛成立率を抑制 + 妊娠個体が確率流産、超えると控えめなバフ。
+# Godot は実食料経済 (牧場生産・集積所消費) を持つので不足は内生的に起こりうる。
+var food_per_capita_shortage: float = 0.5   # 在庫/頭数がこれ未満なら食料不足
+var food_per_capita_surplus: float = 2.0    # 在庫/頭数がこれ超なら食料過剰
+var food_shortage_court_mult: float = 0.5   # 不足時、求愛成立率に乗じる係数 (<1)
+var food_surplus_court_bonus: float = 0.15  # 過剰時、求愛成立率の乗数へ加える上乗せ
+var food_shortage_miscarry_per_day: float = 0.1  # 不足時、妊娠個体が1日に流産する確率
+var food_shortage_miscarry_per_tick: float       # _init() で per-tick へ変換 (KI-02)
+
 # --- 移動 (§3-0 連続移動。タイル/日で定義し per-tick へ変換) ---
 # 成体 150 タイル/日 = 2.5 タイル/実秒 (1 日 60 秒)。巣の端から端まで約 10 秒。
 var move_per_tick: float           # ゴブリン成体の 1 tick 移動量 (タイル)
@@ -282,6 +292,7 @@ func _init() -> void:
 	goblin_attack = 24.0 / tpd
 	enemy_attack = 20.0 / tpd
 	court_base_chance = 3.0 / tpd
+	food_shortage_miscarry_per_tick = food_shortage_miscarry_per_day / tpd
 	court_timeout_ticks = int(0.5 * tpd)
 	pregnancy_ticks = ticks_per_day
 	child_grow_ticks = ticks_per_day

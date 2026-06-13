@@ -10,6 +10,7 @@ func _init() -> void:
 	ok = _test_starvation_progression() and ok
 	ok = _test_mite_relief() and ok
 	ok = _test_instant_meal() and ok
+	ok = _test_food_breeding_dependency() and ok
 	ok = _test_snapshot_roundtrip() and ok
 	if ok:
 		print("FOOD_OK")
@@ -273,3 +274,65 @@ func _test_snapshot_roundtrip() -> bool:
 		return false
 	print("  snapshot-roundtrip: OK (food=%.2f)" % w.food)
 	return true
+
+## ⑦ 食料従属 (§2.5・B3): 在庫/頭数で増殖が単調に変わる。過剰固定と不足固定を
+##    並走させ、過剰側の妊娠 (成立 + 維持) が不足側を上回ることを確認する
+##    (求愛バフ + 不足流産。world.ts の単調性テストと同じ趣旨)。
+func _test_food_breeding_dependency() -> bool:
+	var ok := true
+	# 過剰と不足を在庫の手動固定で作る。牧場の生産が混ざらないよう毎 tick 上書き。
+	var preg_surplus := 0
+	var preg_shortage := 0
+	for seed_v in [1, 2, 3]:
+		var ps := SimParams.new(); ps.seed = seed_v
+		var ws := World.new(); ws.setup(ps)
+		var psh := SimParams.new(); psh.seed = seed_v
+		var wsh := World.new(); wsh.setup(psh)
+		for d in range(12):
+			for i in range(ps.ticks_per_day):
+				ws.food = float(ws._alive_count()) * (ps.food_per_capita_surplus + 1.0)
+				wsh.food = 0.0
+				ws.tick_once()
+				wsh.tick_once()
+				for g in ws.goblins:
+					if g.pregnant:
+						preg_surplus += 1
+				for g in wsh.goblins:
+					if g.pregnant:
+						preg_shortage += 1
+	if preg_surplus <= preg_shortage:
+		print("  FAIL: 食料が増殖に単調に効かない (surplus=%d <= shortage=%d)" % [preg_surplus, preg_shortage])
+		ok = false
+	# 不足下では健康な妊娠個体が流産しうる (個体の hunger/HP は正常範囲)。
+	var pm := SimParams.new(); pm.seed = 5
+	var wm := World.new(); wm.setup(pm)
+	var fem: Goblin = null
+	for g in wm.goblins:
+		if g.sex == Goblin.Sex.FEMALE and not g.is_child():
+			fem = g
+			break
+	if fem == null:
+		print("  FAIL: 流産検証用の雌成体がいない")
+		return false
+	fem.pregnant = true
+	fem.pregnant_ticks = 0
+	fem.hunger = 0.0
+	fem.hp = fem.max_hp
+	var target_id := fem.id
+	var miscarried := false
+	for d in range(20):
+		for i in range(pm.ticks_per_day):
+			wm.food = 0.0  # 不足を強制
+			wm.tick_once()
+			var cur := wm._goblin_by_id(target_id)
+			if cur != null and not cur.pregnant:
+				miscarried = true
+				break
+		if miscarried:
+			break
+	if not miscarried:
+		print("  FAIL: 食料不足が続いても流産しなかった")
+		ok = false
+	if ok:
+		print("  food-breeding-dependency: OK (surplus=%d shortage=%d 妊娠 tick 累計)" % [preg_surplus, preg_shortage])
+	return ok

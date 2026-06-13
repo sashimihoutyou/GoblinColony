@@ -1452,10 +1452,26 @@ func _end_raid() -> void:
 		_event({"t": "captive_gain", "human": raid_is_human, "male": males, "female": females})
 
 # --- 増殖 (§3-6) ---
+## 在庫/頭数 (食事回数 per capita。§2.5・B3)。頭数0なら不足側 (0) に寄せる。
+func _food_per_capita() -> float:
+	var pop := _alive_count()
+	return 0.0 if pop <= 0 else food / float(pop)
+
 func _step_breeding() -> void:
+	# 食料従属 (§2.5・B3): 在庫/頭数で不足/過剰を判定し、求愛成立率・流産率に効く。
+	var per_capita := _food_per_capita()
+	var food_shortage := per_capita < params.food_per_capita_shortage
+	var food_surplus := per_capita > params.food_per_capita_surplus
 	# 妊娠の進行と出産。
 	for g in goblins.duplicate():
 		if g.pregnant:
+			# 食料不足が続くと健康な個体でも確率流産する (在庫従属 §2.5・B3)。
+			# 不足でなければ rng を引かない (消費順序を変えない / world.ts と同じ)。
+			if food_shortage and rng.next_float() < params.food_shortage_miscarry_per_tick:
+				g.pregnant = false
+				g.pregnant_ticks = 0
+				_event({"t": "miscarry", "id": g.id})
+				continue
 			g.pregnant_ticks += 1
 			if g.pregnant_ticks >= params.pregnancy_ticks:
 				_give_birth(g)
@@ -1482,8 +1498,10 @@ func _step_breeding() -> void:
 		if f.state != Goblin.State.WANDER and f.state != Goblin.State.WORK \
 				and f.state != Goblin.State.HUNGRY:
 			continue
-		# 損耗バフで誘いの発火率を乗算 (§2.5 必須骨格)。
-		var chance := params.court_base_chance * (1.0 + surge)
+		# 損耗バフ + 食料過剰バフで誘いの発火率を上乗せ、食料不足で抑制 (§2.5・B3)。
+		var food_bonus := params.food_surplus_court_bonus if food_surplus else 0.0
+		var food_mult := params.food_shortage_court_mult if food_shortage else 1.0
+		var chance := params.court_base_chance * (1.0 + surge + food_bonus) * food_mult
 		if rng.next_float() < chance:
 			# 相手の雄を探す (近場優先・相性で確率)。
 			var mate := _find_mate(f)
