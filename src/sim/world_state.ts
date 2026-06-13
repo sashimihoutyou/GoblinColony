@@ -104,6 +104,10 @@ export interface WorldState {
   phase: RaidPhase;
   surge: number; // 損耗時バフ残量 (§2.5 必須骨格 / KI-04)
   foodBuff: number; // 小規模襲撃の食料バフ残量 (§11/KI-05。増殖を底上げ・減衰)
+  // 食料在庫 (§2.5・B3: 増殖の食料従属)。単位は「食事回数」(Godot food と同概念)。
+  // 生存頭数比例で生産/消費し (KI-02 で tick 次へ変換)、在庫/頭数の比率が
+  // 不足/過剰の閾値を割る/超えると求愛成立率・流産率に効く (stepReproduction)。
+  foodStock: number;
   overCapTicks: number; // 上限超過が続いた平時 tick (巣立ち猶予 §2.5)
   nextBigRaidTick: number; // 次の大規模襲撃を発火する tick (自動スケジューラ §11)
   enemiesRemaining: number; // 交戦中の残敵数 (0 なら非交戦)

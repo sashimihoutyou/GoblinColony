@@ -638,5 +638,110 @@ const p = makeWorldParams(10);
   check("自動スケジューラが襲撃勢力 (raidFaction) を記録する", sawKugyoRaid, "");
 }
 
+// --- 20. 食料従属 (§2.5・B3): 不足→求愛抑制・流産、過剰→求愛バフ、平常→従来同等 ---
+{
+  // 20-1. 平常 (在庫/頭数が閾値の中間): 乗数1・上乗せ0 = 従来の chance 式と同等。
+  //       初期 foodStock = startGoblins (per capita = 1.0、不足0.5/過剰2.0の中間)。
+  {
+    let w = initWorld(p, { startGoblins: 16, capPop: 40, seed: 2, withChief: true, startCaptives: 0 });
+    for (let i = 0; i < p.ticksPerDay; i++) w = stepWorld(w, p);
+    const perCapita = w.foodStock / livePop(w);
+    check("平常時は在庫/頭数が不足/過剰の中間に収まる (従来同等の求愛式)",
+      perCapita >= p.foodPerCapitaShortage && perCapita <= p.foodPerCapitaSurplus,
+      `perCapita=${perCapita.toFixed(3)}`);
+  }
+
+  // 20-2. 不足 (foodStock=0 に固定): 通常シードより妊娠成立が大幅に減り、
+  //       既に妊娠中の個体は不足下の流産ロールで解消されうる。
+  {
+    const seeds = [1, 2, 3];
+    let shortagePregDays = 0;
+    let normalPregDays = 0;
+    const totalDays = 15;
+    for (const seed of seeds) {
+      // 不足側: 在庫を毎 tick 0 に固定 (生産分は溜まらない)。
+      let ws = initWorld(p, { startGoblins: 16, capPop: 40, seed, withChief: true, startCaptives: 0 });
+      let wn = initWorld(p, { startGoblins: 16, capPop: 40, seed, withChief: true, startCaptives: 0 });
+      for (let d = 0; d < totalDays; d++) {
+        for (let i = 0; i < p.ticksPerDay; i++) {
+          ws.foodStock = 0; // 不足を強制し続ける (per capita = 0 < 0.5)
+          ws = stepWorld(ws, p);
+          wn = stepWorld(wn, p);
+        }
+        if (ws.goblins.some((g) => g.pregnant)) shortagePregDays++;
+        if (wn.goblins.some((g) => g.pregnant)) normalPregDays++;
+      }
+    }
+    check("食料不足が続くと妊娠の発生が通常より減る (求愛抑制+流産 §2.5・B3)",
+      shortagePregDays < normalPregDays,
+      `shortage=${shortagePregDays} normal=${normalPregDays} (各${seeds.length * totalDays}日中)`);
+  }
+
+  // 20-3. 不足下の流産: 妊娠済みの個体を用意し、在庫0を固定して数日進めると
+  //       一定確率で pregnant が解消される (個体の hunger/HP は正常範囲のまま)。
+  {
+    let w = initWorld(p, { startGoblins: 16, capPop: 40, seed: 5, withChief: true, startCaptives: 0 });
+    // 雌個体を 1 体、健康なまま強制的に妊娠させる (流産要因を食料不足のみに絞る)。
+    const fi = w.goblins.findIndex((g) => g.sex === Sex.Female && g.childBornTick === null);
+    w.goblins[fi] = { ...w.goblins[fi], pregnant: true, pregnantTicks: 0, hunger: 0, hp: w.goblins[fi].maxHp };
+    const targetId = w.goblins[fi].id;
+    let miscarried = false;
+    for (let d = 0; d < 20 && !miscarried; d++) {
+      for (let i = 0; i < p.ticksPerDay; i++) {
+        w.foodStock = 0; // 在庫0を固定 (per capita = 0 < shortage閾値)
+        w = stepWorld(w, p);
+        const g = w.goblins.find((x) => x.id === targetId);
+        if (g && !g.pregnant) { miscarried = true; break; }
+      }
+    }
+    check("食料不足の継続で妊娠個体が流産しうる (個体は健康でも在庫不足で流産 §2.5・B3)",
+      miscarried, "");
+  }
+
+  // 20-4. 食料と妊娠の単調性: 在庫を「過剰固定」と「不足固定」で並走させると、
+  //       過剰側の妊娠 (成立 + 維持) が不足側を上回る。指標は「妊娠している
+  //       個体 tick 数の累計」で、日次の飽和に左右されない細かい差を拾う。
+  //       (通常 (無干渉) は数日で過剰域へドリフトし過剰と収束するため、単調性は
+  //        両端 = 過剰 vs 不足の比較で検証する。中間が baseline §2.5・B3。)
+  {
+    const seeds = [1, 2, 3, 4];
+    let surplusPregTicks = 0;
+    let shortagePregTicks = 0;
+    const totalDays = 12;
+    for (const seed of seeds) {
+      let ws = initWorld(p, { startGoblins: 16, capPop: 40, seed, withChief: true, startCaptives: 0 });
+      let wsh = initWorld(p, { startGoblins: 16, capPop: 40, seed, withChief: true, startCaptives: 0 });
+      for (let d = 0; d < totalDays; d++) {
+        for (let i = 0; i < p.ticksPerDay; i++) {
+          ws.foodStock = livePop(ws) * (p.foodPerCapitaSurplus + 1); // 過剰を強制
+          wsh.foodStock = 0; // 不足を強制
+          ws = stepWorld(ws, p);
+          wsh = stepWorld(wsh, p);
+          surplusPregTicks += ws.goblins.filter((g) => g.pregnant).length;
+          shortagePregTicks += wsh.goblins.filter((g) => g.pregnant).length;
+        }
+      }
+    }
+    check("食料が妊娠に単調に効く (過剰 > 不足。求愛バフ + 流産 §2.5・B3)",
+      surplusPregTicks > shortagePregTicks,
+      `surplus=${surplusPregTicks} shortage=${shortagePregTicks} (妊娠個体 tick 累計)`);
+  }
+
+  // 20-5. foodAvailable の接続: 在庫が尽きると Hungry 個体の空腹が解消されない。
+  //       生産レート 0 のパラメータで在庫が補充されないようにし、配線のみを隔離検証
+  //       (通常パラメータでは生産が毎 tick 乗り foodStock>0 へ戻るため配線を分離する)。
+  {
+    const pNoFood: WorldParams = { ...p, foodProducePerTick: 0 };
+    let w = initWorld(pNoFood, { startGoblins: 10, capPop: 40, seed: 1, withChief: true, startCaptives: 0 });
+    // 全個体を空腹ラッチさせ、在庫を 0 にして数 tick 進める (生産 0 なので 0 のまま)。
+    w.goblins = w.goblins.map((g) => ({ ...g, hunger: 0.9, hungerLatched: true, state: GoblinState.Hungry }));
+    w.foodStock = 0;
+    for (let i = 0; i < 5; i++) w = stepWorld(w, pNoFood);
+    const stillHungry = w.goblins.every((g) => g.state === GoblinState.Dead || g.hunger > 0.85);
+    check("在庫0では Hungry 個体の空腹が解消されない (foodAvailable 接続 §2.5・B3)",
+      stillHungry, "");
+  }
+}
+
 console.log(failures === 0 ? "WORLD_OK" : `WORLD_FAIL(${failures})`);
 if (failures > 0) process.exit(1);
