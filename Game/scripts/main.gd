@@ -8,6 +8,11 @@ extends Node2D
 
 const MS_PER_TICK := 375.0
 
+# --- 自動セーブ (C1 / GDD §14.5.1) ---
+# 確定的 tick スナップショット (world.snapshot()) を JSON で保存・復元する。
+# 実時間は含めない (KI-09)。タイミングは _step_one_tick 参照。
+const AUTOSAVE_PATH := "user://autosave.json"
+
 # --- Web 版と同じ配色 ---
 const C_BG_PANEL := Color(0.078, 0.067, 0.055, 0.92)
 const C_ROCK_LINE := Color(0.227, 0.196, 0.157, 0.5)
@@ -148,10 +153,52 @@ func _ready() -> void:
 	renderer = $Renderer
 	renderer.tile_size = 16
 
+	var restored := _load_autosave()
+
 	_build_ui()
 	_update_camera()
 	get_viewport().size_changed.connect(_update_camera)
-	_push_feed("event", "巣が築かれた。%d 体のゴブリンと族長。" % params.start_goblins)
+	if restored:
+		_push_feed("event", "巣の記録を復元した (%d 日目)。" % world.day)
+	else:
+		_push_feed("event", "巣が築かれた。%d 体のゴブリンと族長。" % params.start_goblins)
+
+## 自動セーブの復元 (C1)。user://autosave.json が存在し、有効な JSON の
+## World.snapshot() であれば world に復元する。存在しない・壊れている場合は
+## 何もせず新規開始のまま (setup() 済みの world を使う)。
+func _load_autosave() -> bool:
+	if not FileAccess.file_exists(AUTOSAVE_PATH):
+		return false
+	var f := FileAccess.open(AUTOSAVE_PATH, FileAccess.READ)
+	if f == null:
+		return false
+	var text := f.get_as_text()
+	f.close()
+	var parsed = JSON.parse_string(text)
+	if typeof(parsed) != TYPE_DICTIONARY:
+		return false
+	world.restore(parsed)
+	return true
+
+## 自動セーブの書き出し (C1)。world.snapshot() を JSON 化して保存する
+## (実時間は含めない / KI-09)。
+func _save_autosave() -> void:
+	var f := FileAccess.open(AUTOSAVE_PATH, FileAccess.WRITE)
+	if f == null:
+		return
+	# JSON 既定精度で書く。Godot の JSON/var_to_str はいずれも任意 double の
+	# テキスト往復をバイト一致できない (17 桁出力を parse が 16 桁へ丸める) ため、
+	# バイト一致は追わず「ロード後に自己無矛盾で決定的」を保証する設計とする
+	# (KI-09 のバイト一致はライブ dict 往復 = parity 側で担保。autosave は
+	# 既定精度の冪等点へ倒し、再ロードで同じ未来を再現する / test_save.gd)。
+	f.store_string(JSON.stringify(world.snapshot()))
+	f.close()
+
+## 自動セーブの削除 (C1)。勝敗確定後に呼び、古いセーブで再開して即敗北画面に
+## なる事態を防ぐ。
+func _delete_autosave() -> void:
+	if FileAccess.file_exists(AUTOSAVE_PATH):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(AUTOSAVE_PATH))
 
 func _process(delta: float) -> void:
 	if world.outcome == World.Outcome.ONGOING and speed > 0.0:
@@ -227,16 +274,31 @@ func _process_follow_camera(delta: float) -> void:
 func _step_one_tick() -> void:
 	controller.decide(world)
 	controller.apply(world)
+	var day_boundary := (world.tick % params.ticks_per_day) == (params.ticks_per_day - 1)
 	world.tick_once()
 	# シムの構造化イベントをフィードと演出へ翻訳する。
 	# on_tick より先に処理する: 死亡/巣立ちバーストは演出層に残る直前の
 	# 補間位置 (_last_pos_of) を使うため、その個体が on_tick で除去される前に拾う。
+	var raid_ended := false
+	var game_over := false
 	for e in world.last_events:
 		_push_feed_event(e)
 		renderer.on_event(e)
+		var et: String = e.get("t", "")
+		if et == "raid_end":
+			raid_ended = true
+		elif et == "victory" or et == "defeat":
+			game_over = true
 	# tick 確定後に演出層の補間ターゲット (prev→cur) を更新する。
 	# (1 フレームに複数 tick 回る場合も毎回。O(個体数) の座標コピーのみ)
 	renderer.on_tick(world)
+	# 自動セーブ (C1 / GDD §14.5.1): 日境界・襲撃終了 (PEACE 遷移) で保存する。
+	# 交戦中はセーブしない (直前の安定点に倒す)。勝敗確定後は古いセーブを消す
+	# (再開時に即敗北/勝利画面にならないように)。
+	if game_over:
+		_delete_autosave()
+	elif world.phase != World.Phase.COMBAT and (day_boundary or raid_ended):
+		_save_autosave()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:

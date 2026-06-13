@@ -2680,8 +2680,20 @@ func restore(d: Dictionary) -> void:
 	faith = d.faith; cum_faith = d.cum_faith; food = d.food
 	wood = d.get("wood", 0.0); mud = d.get("mud", 0.0); herb = d.get("herb", 0.0)
 	equipment = d.get("equipment", 0.0); gems = d.get("gems", 0.0)
-	jobs = (d.get("jobs", []) as Array).duplicate(true)
-	next_job_id = d.get("next_job_id", 0)
+	# jobs: JSON 経由だと int フィールド (id/type/x/y/priority/assigned_id/w/h/
+	# room_type) が float 化する。type 比較や map.idx() で壊れるため int() で正規化
+	# する (C1 / KI-09)。progress は float のまま。BUILD のみ w/h/room_type を持つ。
+	jobs = (d.get("jobs", []) as Array).map(func(j: Dictionary) -> Dictionary:
+		var nj := {
+			"id": int(j.id), "type": int(j.type), "x": int(j.x), "y": int(j.y),
+			"priority": int(j.priority), "assigned_id": int(j.assigned_id),
+			"progress": float(j.progress),
+		}
+		if j.has("w"): nj["w"] = int(j.w)
+		if j.has("h"): nj["h"] = int(j.h)
+		if j.has("room_type"): nj["room_type"] = int(j.room_type)
+		return nj)
+	next_job_id = int(d.get("next_job_id", 0))
 	surge = d.surge; over_cap_ticks = d.over_cap_ticks
 	next_big_raid_tick = d.next_big_raid_tick
 	raid_is_human = d.raid_is_human; raid_is_small = d.get("raid_is_small", false)

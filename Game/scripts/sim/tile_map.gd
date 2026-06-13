@@ -86,8 +86,16 @@ func restore(d: Dictionary) -> void:
 	terrain = PackedInt32Array(d.terrain)
 	wall_hp = PackedInt32Array(d.wall_hp)
 	gates = (d.gates as Array).map(func(g): return Vector2i(g[0], g[1]))
-	rooms = (d.rooms as Array).duplicate(true)
+	# rooms: JSON 経由だと x/y/w/h/room_type と assigned の各要素が float 化する。
+	# `g.id in r.assigned` 等の `in` 比較は int/float で一致しないため int() で
+	# 正規化する (C1 / KI-09)。
+	rooms = (d.rooms as Array).map(func(r: Dictionary) -> Dictionary:
+		return {
+			"x": int(r.x), "y": int(r.y), "w": int(r.w), "h": int(r.h),
+			"room_type": int(r.room_type),
+			"assigned": (r.assigned as Array).map(func(a): return int(a)),
+		})
 	totem = Vector2i(d.totem[0], d.totem[1])
 	storage = Vector2i(d.storage[0], d.storage[1])
 	forage_spots = (d.forage_spots as Array).map(func(s): return Vector2i(s[0], s[1]))
-	forage_regrow = (d.forage_regrow as Array).duplicate()
+	forage_regrow = (d.forage_regrow as Array).map(func(r): return int(r))
