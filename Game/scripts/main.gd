@@ -992,10 +992,13 @@ func _build_ui() -> void:
 	_outcome_label.visible = false
 	ui.add_child(_outcome_label)
 
-	# --- 左下: 速度コントロール ---
+	# --- 左下: 速度コントロール + 奇跡 (下段) / 建築 (上段) ---
+	# 2 本の HBox は高さを明示して横帯に分離する (offset_bottom 未設定だと両方とも
+	# 画面下端まで伸びて矩形が重なり、後追加の建築バーが速度/奇跡のクリックを奪う)。
 	var bar := HBoxContainer.new()
 	bar.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	bar.offset_top = -40.0
+	bar.offset_top = -38.0
+	bar.offset_bottom = -8.0
 	bar.offset_left = 8.0
 	bar.add_theme_constant_override("separation", 4)
 	for cfg in [["‖ 停止", 0.0], ["▶ 1x", 1.0], ["▶▶ 3x", 3.0]]:
@@ -1019,10 +1022,11 @@ func _build_ui() -> void:
 		bar.add_child(mb)
 		_miracle_buttons.append({"btn": mb, "def": def})
 	ui.add_child(bar)
-	# 建築バー (§3-15)。速度バーの上段。押下で建築モード (ゴースト追従 → クリック確定)。
+	# 建築バー (§3-15)。速度バーの上段 (重ならない横帯)。押下で建築モード。
 	var build_bar := HBoxContainer.new()
 	build_bar.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	build_bar.offset_top = -76.0
+	build_bar.offset_top = -74.0
+	build_bar.offset_bottom = -42.0
 	build_bar.offset_left = 8.0
 	build_bar.add_theme_constant_override("separation", 4)
 	var build_label := Label.new()
