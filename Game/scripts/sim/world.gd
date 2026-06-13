@@ -80,6 +80,17 @@ var human_hostility: float = 0.0
 var bunta_hostility: float = 0.0
 var kugyo_hostility: float = 0.0
 
+# --- 中立ルート状態機械 (§14.5.7・A3)。判定を一箇所に集約する (KI-01 の精神)。---
+# harm_committed: 人間捕虜への消費系 (生贄・苗床・朝貢・奴隷妻) を一度でも実行したか。
+# 立ったら中立善エンドは不可逆に閉じる (グローバル 1 ビット / §13)。保持・解放は非加害。
+var harm_committed: bool = false
+# 中立善エンドの残り 2 条件 (有益の提示 + 無害の証明)。B5 宝石献上 / A4 アミナ加入で
+# 立てる。現状は供給系が未実装なので false 固定 = 中立善は到達不可 (構造のみ先行)。
+var gems_tributed: bool = false   # 人間へ宝石を献上したか (→ B5)
+var amina_joined: bool = false    # アミナが加入したか (→ A4)
+# 難度 (易=0/並=1/難=2)。world.setup で初期敵対度・助走窓に効く (§14.5.2)。
+var difficulty: int = 1
+
 # 苗床の確定生産タイマー (tick。§2.5/§3-19。B2 第二増分)。母体が居る間だけ進み、
 # nursery_period_ticks に達すると出産処理して 0 へ戻す (world.ts nurseryTimer)。
 var nursery_timer: float = 0.0
@@ -132,8 +143,20 @@ func setup(p: SimParams) -> void:
 	defense_alloc = []
 	for i in range(map.gates.size()):
 		defense_alloc.append(1.0 / map.gates.size())
+	# A3 中立ルート状態機械をリセット + 難度を初期敵対度・助走窓へ反映 (§14.5.2)。
+	harm_committed = false
+	gems_tributed = false
+	amina_joined = false
+	var d := clampi(difficulty, 0, 2)
+	human_hostility = float(p.start_human_hostility_by_diff[d])
+	bunta_hostility = float(p.start_tribe_hostility_by_diff[d])
+	kugyo_hostility = float(p.start_tribe_hostility_by_diff[d])
 	_rebuild_floor_caches()
+	# 最初の大規模襲撃を敵対度連動で予約 (並 = 基準。難は初期敵対度ぶん早まる)。
 	_schedule_next_raid()
+	# 易のみ助走窓を延ばす (§14.5.2: 序盤の無襲撃日数を長くして易しくする。並/難は不変)。
+	if d == 0:
+		next_big_raid_tick += int(round(p.first_raid_grace_easy_days * p.ticks_per_day))
 
 	# 初期ゴブリンを巣内に配置。雌雄比は 7:3 (世界観バイブル)。
 	var nest_center := map.totem + Vector2i(0, -3)
@@ -1999,6 +2022,8 @@ func take_concubine(suitor_id: int, captive_sex: int, captive_is_human: bool) ->
 		consumed = true
 	if not consumed:
 		return false
+	if captive_is_human:
+		_commit_human_harm("concubine")  # §14.5.7: 人間捕虜を奴隷妻にする = 加害
 
 	var concubine := Goblin.new()
 	concubine.id = next_goblin_id
@@ -2286,6 +2311,7 @@ func _step_nursery() -> void:
 	# 人間の胎を仔産み機にする残虐が人間勢力の憎悪を募らせる (§13)。
 	if human_born > 0:
 		human_hostility = clampf(human_hostility + float(human_born) * params.hostility_per_human_nursery_birth, 0.0, 1.0)
+		_commit_human_harm("nursery")  # §14.5.7: 人間捕虜を苗床に使う = 加害
 
 ## 苗床の確定生産で子ゴブリンを count 体追加する (母体の種を問わず仔はゴブリン)。
 ## 性別は tick と (k+kOffset) から決定的に決め、出生比 (雌 30%) に寄せる
@@ -2495,6 +2521,34 @@ func rally_clear() -> void:
 ## 優先順位: 雄ゴブリン捕虜 (安い燃料・係数 0.5) → 人間雄捕虜 → 人間雌捕虜
 ## → 雌ゴブリン捕虜 (最後の手段)。人間捕虜の生贄は敵対度を上げる (§13)。
 ## 捕虜が 1 体も無ければ何もせず false。
+## 中立ルートの加害判定の一元化 (§14.5.7)。人間捕虜への消費系操作はすべてここを
+## 通し、初回に harm_committed を立てて中立善エンドを不可逆に閉じる (§13)。
+## §13/§14 で別々に書かず一箇所に集約する (KI-01)。保持・解放・宝石献上は非加害。
+func _commit_human_harm(reason: String) -> void:
+	if harm_committed:
+		return
+	harm_committed = true
+	_event({"t": "harm_committed", "reason": reason})
+
+## 達成エンディングのルート分類 (§13 の 4 ルート / A3)。勝利時にどの結末に到達したかを
+## 返す。中立善・家畜化は宝石献上 (B5) とアミナ (A4) の供給系が要るため、それらが
+## 入るまでは事実上 HOSTILE のみ到達可 (条件は先行配線)。
+##   0 = ゴブリン連合 vs 人間 (HOSTILE。既定の軍事生存)
+##   1 = 中立善「敵でも友でもなく」(NEUTRAL_GOOD)
+##   2 = 家畜化 (DOMESTICATION)
+func ending_route() -> int:
+	# 中立善: 無害の証明 (アミナ加入 + 人間捕虜の消費系を一度も行わない) + 有益の
+	# 提示 (宝石献上) + 人間敵対度が低い (三点セット §13/§14.5.7)。
+	if amina_joined and not harm_committed and gems_tributed \
+			and human_hostility <= 0.3:
+		return 1
+	# 家畜化: 宝石献上で人間に取り入り (人間敵対度低)、同族の部族とは手を切った
+	# (部族敵対度が高い)。中立善と違いアミナ/無害は問わない (物語分岐 §13)。
+	if gems_tributed and human_hostility <= 0.3 \
+			and max(bunta_hostility, kugyo_hostility) >= 0.5:
+		return 2
+	return 0
+
 func sacrifice_captive() -> bool:
 	if outcome != Outcome.ONGOING:
 		return false
@@ -2509,11 +2563,13 @@ func sacrifice_captive() -> bool:
 		gain = params.sacrifice_faith
 		kind = "male_human"
 		human_hostility = clampf(human_hostility + params.hostility_per_human_sacrifice, 0.0, 1.0)
+		_commit_human_harm("sacrifice")  # §14.5.7: 人間捕虜の生贄 = 加害
 	elif cap_female_human >= 1.0:
 		cap_female_human -= 1.0
 		gain = params.sacrifice_faith
 		kind = "female_human"
 		human_hostility = clampf(human_hostility + params.hostility_per_human_sacrifice, 0.0, 1.0)
+		_commit_human_harm("sacrifice")  # §14.5.7: 人間捕虜の生贄 = 加害
 	elif cap_female_goblin >= 1.0:
 		cap_female_goblin -= 1.0
 		gain = params.sacrifice_faith
@@ -2556,6 +2612,7 @@ func tribute_captive(faction: String) -> bool:
 		else:
 			return false
 		human_hostility = clampf(human_hostility - params.hostility_tribute_drop, 0.0, 1.0)
+		_commit_human_harm("tribute")  # §14.5.7: 人間捕虜の朝貢 = 加害 (敵対度は下がるが中立は閉じる)
 	else:
 		if cap_male_goblin >= 1.0:
 			cap_male_goblin -= 1.0
@@ -3026,6 +3083,8 @@ func snapshot() -> Dictionary:
 		"cap_male_human": cap_male_human, "cap_female_human": cap_female_human,
 		"human_hostility": human_hostility,
 		"bunta_hostility": bunta_hostility, "kugyo_hostility": kugyo_hostility,
+		"harm_committed": harm_committed, "gems_tributed": gems_tributed,
+		"amina_joined": amina_joined, "difficulty": difficulty,
 		"nursery_timer": nursery_timer,
 		"outcome": outcome, "next_goblin_id": next_goblin_id,
 		"next_enemy_id": next_enemy_id, "next_mite_id": next_mite_id,
@@ -3080,6 +3139,10 @@ func restore(d: Dictionary) -> void:
 	human_hostility = d.human_hostility
 	bunta_hostility = d.get("bunta_hostility", 0.0)
 	kugyo_hostility = d.get("kugyo_hostility", 0.0)
+	harm_committed = d.get("harm_committed", false)
+	gems_tributed = d.get("gems_tributed", false)
+	amina_joined = d.get("amina_joined", false)
+	difficulty = int(d.get("difficulty", 1))
 	nursery_timer = d.get("nursery_timer", 0.0)
 	outcome = d.outcome; next_goblin_id = d.next_goblin_id
 	next_enemy_id = d.next_enemy_id; next_mite_id = d.next_mite_id

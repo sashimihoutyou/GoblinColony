@@ -60,6 +60,13 @@ var big_raid_interval_peace: int = 5   # 敵対度 0 のときの間隔 (日)
 var big_raid_interval_max: int = 1     # 敵対度 MAX のときの間隔 (日)
 var small_raid_prob: float = 0.3       # 小規模襲撃 (恵み) の 1 日あたり発生確率
 var final_mult: float = 2.5            # ラストバトル倍率 (FINAL_MULT)
+# 難度 (易=0/並=1/難=2。§14.5.2: 初期盤面は共通、難度差は「初期敵対度位置」と
+# 「最初の襲撃の早さ=助走窓」のみ。本当の難度はプレイ中の §13 4 ルート選択で立てる)。
+# 並 (=1) は確定済み安定帯の基準 (初期敵対度 0・通常スケジュール) を厳守。難 (=2) は
+# 初期敵対度を上げて最初の襲撃を早める。易 (=0) は助走窓を延ばすだけ (敵対度は並と同じ 0)。
+var start_human_hostility_by_diff: Array = [0.0, 0.0, 0.15]
+var start_tribe_hostility_by_diff: Array = [0.0, 0.0, 0.15]
+var first_raid_grace_easy_days: float = 2.0   # 易のみ最初の大規模襲撃をこの日数ぶん遅らせる
 # ラストバトルの波状期 (§11/B10): 最終日の手前 final_wave_days 日間は、敵対度に
 # よらず襲撃間隔を final_wave_interval_days (下限) でキャップし、波状に圧を高める
 # (静かなまま最終決戦に入らせない climax の助走)。即時量・日単位。

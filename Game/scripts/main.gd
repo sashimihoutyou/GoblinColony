@@ -163,6 +163,28 @@ func _ready() -> void:
 	else:
 		_push_feed("event", "巣が築かれた。%d 体のゴブリンと族長。" % params.start_goblins)
 
+## 指定難度で新しい群れを始める (§14.5.2)。world を作り直し、古いセーブを消す
+## (前の群れのセーブで即終了画面に戻らないように)。演出層の選択状態もリセット。
+func _start_new_game(diff: int) -> void:
+	_delete_autosave()
+	world = World.new()
+	world.difficulty = diff
+	world.setup(params)
+	speed = 1.0
+	_armed = -1
+	_armed_build = -1
+	sel_kind = SelKind.NONE
+	sel_id = -1
+	_follow_id = -1
+	_outcome_label.visible = false
+	_feed.clear()
+	_feed_lines.clear()
+	var diff_jp: String = ["易", "並", "難"][clampi(diff, 0, 2)]
+	_push_feed("event", "新しい群れ (難度: %s)。%d 体のゴブリンと族長。" % [diff_jp, params.start_goblins])
+	_refresh_speed_buttons()
+	_refresh_miracle_buttons()
+	_refresh_build_buttons()
+
 ## 自動セーブの復元 (C1)。user://autosave.json が存在し、有効な JSON の
 ## World.snapshot() であれば world に復元する。存在しない・壊れている場合は
 ## 何もせず新規開始のまま (setup() 済みの world を使う)。
@@ -846,9 +868,14 @@ func _update_status() -> void:
 	for mb in _miracle_buttons:
 		var mdef: Dictionary = mb.def
 		(mb.btn as Button).disabled = (_armed != int(mdef.m)) and world.faith < _miracle_cost(mdef)
-	# 勝敗バナー。
+	# 勝敗バナー。勝利時は到達ルート (§13 4 ルート / A3) を添える。
 	if world.outcome == World.Outcome.VICTORY:
-		_outcome_label.text = "★ 勝利 — 規定日数を生き延びた!"
+		var route_txt: String = {
+			0: "ゴブリン連合は人間の総攻撃を退けた",
+			1: "敵でも友でもなく — 人間との和平が成った",
+			2: "宝石を差し出し、人間に飼われる道を選んだ",
+		}.get(world.ending_route(), "")
+		_outcome_label.text = "★ 勝利 — %s" % route_txt
 		_outcome_label.visible = true
 	elif world.outcome == World.Outcome.DEFEAT:
 		_outcome_label.text = "✖ 敗北"
@@ -973,6 +1000,21 @@ func _build_ui() -> void:
 	_eta_label.add_theme_color_override("font_color", C_INK_FAINT)
 	_eta_label.add_theme_font_size_override("font_size", 12)
 	top_box.add_child(_eta_label)
+	# 新規ゲームの難度セレクタ (§14.5.2: 易/並/難。押下でその難度の新しい群れを始める。
+	# 自動開始は並のまま継続するので scene_smoke / autosave 復元を妨げない)。
+	var diff_label := Label.new()
+	diff_label.text = "   新規:"
+	diff_label.add_theme_color_override("font_color", C_INK_FAINT)
+	diff_label.add_theme_font_size_override("font_size", 12)
+	top_box.add_child(diff_label)
+	for cfg in [["易", 0], ["並", 1], ["難", 2]]:
+		var db := Button.new()
+		db.text = cfg[0]
+		db.add_theme_font_size_override("font_size", 12)
+		_style_button(db, false)
+		var lvl: int = cfg[1]
+		db.pressed.connect(func() -> void: _start_new_game(lvl))
+		top_box.add_child(db)
 	ui.add_child(top)
 
 	# --- 右パネル: 観察対象 + 巣の記録 ---
