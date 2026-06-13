@@ -132,6 +132,11 @@ var _dispatch_slider: HSlider
 var _dispatch_count: Label
 var _dispatch_button: Button
 var _dispatch_field_id: int = -1  # 対象の出現物 id (-1 = パネル非表示)
+# 防衛配分パネル (§3-17: 襲撃時のみ表示。巣口ごとのスライダー + 自動)
+var _defense_panel: PanelContainer
+var _defense_sliders: Array = []   # Array[HSlider] (巣口ごと)
+var _defense_auto_button: Button
+var _defense_syncing: bool = false  # 自動追従でスライダーを書き戻す間の value_changed 抑止
 
 func _ready() -> void:
 	params = SimParams.new()
@@ -177,6 +182,7 @@ func _process(delta: float) -> void:
 	_update_inspector()
 	_update_dispatch_panel()
 	_update_captive_ui()
+	_update_defense_panel()
 	# カメラ操作はシム停止中 (speed=0) でも独立して動く。
 	_process_keyboard_pan(delta)
 	_process_follow_camera(delta)
@@ -429,6 +435,10 @@ func _push_feed_event(e: Dictionary) -> void:
 			var fixer := _find_goblin(int(e.id))
 			_push_feed("event", "%s が壁のひびを泥で塗り固めた。"
 					% (GobNames.of(fixer) if fixer != null else "誰か"), int(e.id))
+		"breach_warn":
+			_push_feed("raid", "敵が壁を狙っている……割られる前に塞ぐ手を。")
+		"breach":
+			_push_feed("raid", "✖ 壁が打ち破られた! 突破口から敵が雪崩れ込む。")
 		"field_done":
 			_push_feed("event", "茂みを取り尽くした。")
 		"field_expire":
@@ -1118,6 +1128,74 @@ func _build_ui() -> void:
 	brow2.add_child(tear)
 	bbox.add_child(brow2)
 	ui.add_child(_bond_banner)
+
+	# --- 防衛配分パネル (§3-17。襲撃 (予兆/交戦) の間だけ表示。中央下・派遣より上) ---
+	_defense_panel = PanelContainer.new()
+	_defense_panel.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	_defense_panel.offset_left = -150.0
+	_defense_panel.offset_right = 150.0
+	_defense_panel.offset_top = -176.0
+	_defense_panel.offset_bottom = -48.0
+	_defense_panel.add_theme_stylebox_override("panel", _panel_style())
+	_defense_panel.visible = false
+	var defbox := VBoxContainer.new()
+	defbox.add_theme_constant_override("separation", 4)
+	_defense_panel.add_child(defbox)
+	defbox.add_child(_section_title("防 衛 配 分"))
+	# 巣口ごとに 1 本ずつスライダーを並べる (値 0..100 = 配分の生重み)。
+	_defense_sliders = []
+	for gi in range(world.map.gates.size()):
+		var grow := HBoxContainer.new()
+		grow.add_theme_constant_override("separation", 6)
+		var glabel := Label.new()
+		glabel.text = "巣口%d" % (gi + 1)
+		glabel.add_theme_color_override("font_color", C_INK_DIM)
+		glabel.add_theme_font_size_override("font_size", 12)
+		glabel.custom_minimum_size = Vector2(48, 0)
+		grow.add_child(glabel)
+		var gslider := HSlider.new()
+		gslider.min_value = 0
+		gslider.max_value = 100
+		gslider.step = 1
+		gslider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		gslider.value_changed.connect(func(_v: float) -> void: _on_defense_slider_changed())
+		grow.add_child(gslider)
+		defbox.add_child(grow)
+		_defense_sliders.append(gslider)
+	_defense_auto_button = Button.new()
+	_defense_auto_button.text = "自動 (敵に追従)"
+	_defense_auto_button.add_theme_font_size_override("font_size", 12)
+	_style_button(_defense_auto_button, true)
+	_defense_auto_button.pressed.connect(func() -> void:
+		controller.queue.append({"type": Controller.CommandType.DEFENSE_AUTO}))
+	defbox.add_child(_defense_auto_button)
+	ui.add_child(_defense_panel)
+
+## 防衛スライダー操作: 3 本の生重みを束ねて手動配分コマンドを送る (§3-17)。
+## 自動追従でスライダーを書き戻す間 (_defense_syncing) は無視する。
+func _on_defense_slider_changed() -> void:
+	if _defense_syncing:
+		return
+	var weights: Array = []
+	for s in _defense_sliders:
+		weights.append((s as HSlider).value)
+	controller.queue.append({"type": Controller.CommandType.SET_DEFENSE_ALLOC,
+			"weights": weights})
+
+## 防衛配分パネルの毎フレーム更新 (襲撃中のみ表示。自動中はスライダーを実配分へ追従)。
+func _update_defense_panel() -> void:
+	var show := world.outcome == World.Outcome.ONGOING and world.phase != World.Phase.PEACE
+	_defense_panel.visible = show
+	if not show:
+		return
+	_style_button(_defense_auto_button, not world.defense_alloc_manual)
+	# 自動中は実配分 (敵戦力比例) をスライダーへ反映する (操作は手動化のトリガー)。
+	if not world.defense_alloc_manual:
+		_defense_syncing = true
+		for i in range(_defense_sliders.size()):
+			if i < world.defense_alloc.size():
+				(_defense_sliders[i] as HSlider).value = round(world.defense_alloc[i] * 100.0)
+		_defense_syncing = false
 
 ## 側室ボタン: 選択中ゴブリンを婿/嫁に、異性の捕虜 (ゴブリン優先・なければ人間) を娶らせる。
 func _press_concubine() -> void:
