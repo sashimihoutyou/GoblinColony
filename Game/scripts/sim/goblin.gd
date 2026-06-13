@@ -64,6 +64,9 @@ var court_ticks: int = 0
 
 var is_unique: bool = false
 var downed_ticks: int = -1     # -1 = 倒れていない
+# §3-21 搬送: 倒れたユニークを担いでいる相手の id (-1 = 搬送していない)。
+# 搬送中は世界層が NEST へ向けて移動目標を上書きし、戦闘割り当てもブロックする。
+var carrying_id: int = -1
 var fear_safe_ticks: int = 0
 var child_born_tick: int = -1  # -1 = 成体
 var quarrel_cd: int = 0        # ケンカのクールダウン (tick。0 で発火可)
@@ -124,7 +127,7 @@ func snapshot() -> Dictionary:
 		"pregnant": pregnant, "pregnant_ticks": pregnant_ticks,
 		"mate_id": mate_id, "bereaved": bereaved, "pending_bond": pending_bond,
 		"courting_id": courting_id, "court_ticks": court_ticks,
-		"is_unique": is_unique, "downed_ticks": downed_ticks,
+		"is_unique": is_unique, "downed_ticks": downed_ticks, "carrying_id": carrying_id,
 		"fear_safe_ticks": fear_safe_ticks, "child_born_tick": child_born_tick,
 		"quarrel_cd": quarrel_cd,
 		"carrying_food": carrying_food, "guard_gate": guard_gate,

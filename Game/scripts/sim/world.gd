@@ -205,8 +205,10 @@ func tick_once() -> void:
 	_step_field()         # §11.5: 巣外の出現物の湧き・日没の店じまい
 	_step_guard_alarm()   # T5: 見張りが巣内の敵を発見したら警報 (寝た個体を叩き起こす)
 	_step_jobs()          # §3-12: ジョブ⇔個体の整合スイープ (中断・死亡・失効の一元化)
+	_step_carry_assign()  # §3-21: 倒れたユニークに担ぎ手を割り当てる (この tick の戦闘割当に反映)
 	_step_goblins()
 	_resolve_combat()
+	_step_carry_recover() # §3-21: 寝床に降ろされたユニークの HP 回復
 	_step_breeding()
 	_step_accidents()
 	_step_social()
@@ -743,8 +745,10 @@ func _step_goblins() -> void:
 		ctx.in_raid = in_raid
 		ctx.enemy_nearby = _enemy_near(g.pos(), 4)
 		# 側室/苗床ホストは戦線に出ない (子を産む役割に専念 / world.ts §3-6 と同条件)。
+		# §3-21: 搬送中の担ぎ手も戦線に吸われない (倒れたユニークの搬送を優先)。
 		ctx.assigned_to_combat = (g.sex == Goblin.Sex.MALE or g.is_unique) \
-				and g.role != Goblin.Role.CONCUBINE and g.role != Goblin.Role.NURSERY_HOST
+				and g.role != Goblin.Role.CONCUBINE and g.role != Goblin.Role.NURSERY_HOST \
+				and g.carrying_id < 0
 		# §11.5: 派遣中・運搬中も WORK 扱い (運搬は派遣解除後も配達を済ませる)。
 		# §3-12: ジョブを取得中、または取得できる未割当ジョブがあるときも WORK へ。
 		ctx.assigned_to_room = _has_room_assignment(g.id) or _is_forager(g) \
@@ -769,6 +773,13 @@ func _step_goblins() -> void:
 				# 集積所での食事 1 回ぶん一括消費 (即時満腹に対応)。
 				food = max(0.0, food - params.food_per_meal)
 
+		# §3-21: 搬送不能 (恐怖/瀕死/激昂/死亡) になったら被搬送者を置いていく。
+		# 次 tick の _step_carry_assign が別の担ぎ手を探す。
+		if g.carrying_id >= 0 and (g.state == Goblin.State.FEAR or g.state == Goblin.State.DYING \
+				or g.state == Goblin.State.ENRAGED or g.state == Goblin.State.DEAD):
+			_event({"t": "carry_drop", "carrier": g.id, "downed": g.carrying_id})
+			g.carrying_id = -1
+
 		if g.state == Goblin.State.DEAD or g.state == Goblin.State.KNOCKED_OUT:
 			continue
 		# WANDER への新規遷移か (食事後・起床後・戦闘解除後など)。前ステートの
@@ -777,6 +788,17 @@ func _step_goblins() -> void:
 		var target := _movement_target(g, in_raid, entered_wander)
 		if target != Vector2i(-1, -1):
 			_advance_along_path(g, target, _move_speed(g))
+
+		# §3-21: 搬送中は被搬送者を担ぎ手の座標へ引きずる。寝床タイルへ到達したら
+		# 降ろして (carrying_id=-1) 回復を開始させる (downed_ticks をリセット)。
+		if g.carrying_id >= 0:
+			var carried := _goblin_by_id(g.carrying_id)
+			if carried != null:
+				_place(carried, g.pos())
+				if map.room_type_at(g.x, g.y) == TileMapData.RoomType.NEST:
+					_event({"t": "carry_deliver", "carrier": g.id, "downed": carried.id})
+					g.carrying_id = -1
+					carried.downed_ticks = 0
 
 ## ステートに応じた移動速度 (タイル/tick)。子は遅く、戦闘・恐怖は駆け、瀕死は這う。
 func _move_speed(g: Goblin) -> float:
@@ -794,6 +816,10 @@ func _move_speed(g: Goblin) -> float:
 # 同じ部屋へ向かう個体が 1 タイルに積み重ならないよう、id ハッシュで
 # 部屋内の床スロットへ決定的に散らす (rng 不使用 = 消費順序を乱さない)。
 func _movement_target(g: Goblin, in_raid: bool, entered_wander: bool = false) -> Vector2i:
+	# §3-21 搬送: 倒れたユニークを担いでいる間は他の行動より優先し、最寄りの
+	# 寝床 (NEST) へ直行する (戦線召集・求愛・rally 等のいずれにも割り込まれない)。
+	if g.carrying_id >= 0:
+		return _nearest_nest_floor(g.pos())
 	# 防衛召集: 交戦中、戦線割り当ての個体は大広間 (トーテム) に集結して迎え撃ち、
 	# 視界内 (8 タイル) に踏み込んだ敵にだけ向かっていく。敵まで個別に駆けつけると
 	# 広い洞窟では各個撃破される (細い坑道へ 1 体ずつ吸い込まれて数の利を失う)。
@@ -1367,6 +1393,74 @@ func _step_guard_alarm() -> void:
 		g.night_sleep_done = true
 	_event({"t": "alarm", "id": alarm_guard.id})
 
+# --- ユニークの自動搬送 (§3-21) ---
+
+## 担ぎ手として選定できるか (非戦闘・手すき・未搬送・非ユニーク)。
+## 「雌 or 子 or 手すきの個体」は戦闘/恐怖/瀕死/激昂を除いた残り全体に等しい
+## (男性成体も平時や前線外なら担げる)。
+func _can_carry(c: Goblin) -> bool:
+	if c.state == Goblin.State.DEAD or c.state == Goblin.State.KNOCKED_OUT:
+		return false
+	if c.is_unique or c.carrying_id >= 0:
+		return false
+	if c.state == Goblin.State.COMBAT or c.state == Goblin.State.FEAR \
+			or c.state == Goblin.State.DYING or c.state == Goblin.State.ENRAGED:
+		return false
+	return true
+
+## 倒れたユニークへの担ぎ手割り当て (_step_goblins の直前。決定的・rng 不消費)。
+## - 担ぎ手の被搬送者が死亡/起立済みなら解放する。
+## - 担ぎ手のいない KNOCKED_OUT ユニークへ、最寄り (マンハッタン距離、同距離は
+##   id 昇順) の _can_carry な個体を 1 体だけ割り当てる。
+func _step_carry_assign() -> void:
+	# 被搬送者が死亡/復帰済みの担ぎ手を解放 (1 人の被搬送者に担ぎ手 1 人を維持)。
+	for c in goblins:
+		if c.carrying_id < 0:
+			continue
+		var carried := _goblin_by_id(c.carrying_id)
+		if carried == null or carried.state != Goblin.State.KNOCKED_OUT:
+			c.carrying_id = -1
+	for downed in goblins:
+		if downed.state != Goblin.State.KNOCKED_OUT:
+			continue
+		var has_carrier := false
+		for c in goblins:
+			if c.carrying_id == downed.id:
+				has_carrier = true
+				break
+		if has_carrier:
+			continue
+		var best: Goblin = null
+		var best_d := 999999
+		for c in goblins:
+			if c.id == downed.id or not _can_carry(c):
+				continue
+			var d := _manhattan(c.pos(), downed.pos())
+			if best == null or d < best_d or (d == best_d and c.id < best.id):
+				best_d = d
+				best = c
+		if best != null:
+			best.carrying_id = downed.id
+			_event({"t": "carry_start", "carrier": best.id, "downed": downed.id})
+
+## 寝床に降ろされた (carrying_id で誰にも担われていない) KNOCKED_OUT ユニークの
+## HP 回復 (既存の自然回復 hp_regen_per_tick に乗せる)。hp > 0 になれば次 tick の
+## state_machine が downed_ticks をリセットして通常ステートへ戻す。
+func _step_carry_recover() -> void:
+	for g in goblins:
+		if g.state != Goblin.State.KNOCKED_OUT:
+			continue
+		if map.room_type_at(g.x, g.y) != TileMapData.RoomType.NEST:
+			continue
+		var being_carried := false
+		for c in goblins:
+			if c.carrying_id == g.id:
+				being_carried = true
+				break
+		if being_carried:
+			continue
+		g.hp = min(g.max_hp, g.hp + params.hp_regen_per_tick)
+
 # 連続移動 (§3-0): 1 tick に speed タイルぶん waypoint へ前進する。
 # パス再計算は「目標が 3 タイル超動いた」か「パスが尽きてまだ目標に居ない」とき
 # だけに制限する (動く目標を毎 tick A* し直すと頭数×敵数で発散する)。
@@ -1480,6 +1574,9 @@ func _resolve_combat() -> void:
 
 func _can_fight(g: Goblin) -> bool:
 	if g.state == Goblin.State.DEAD or g.state == Goblin.State.KNOCKED_OUT:
+		return false
+	# §3-21: 搬送中の担ぎ手は戦線に吸われない (殴り合いより搬送を優先する)。
+	if g.carrying_id >= 0:
 		return false
 	# 激昂 (§4 名誉ある死): 恐怖も性別の縛りも越えて死ぬまで戦う。
 	if g.state == Goblin.State.ENRAGED:
@@ -2658,6 +2755,23 @@ func _room_slot(room_type: int, id: int) -> Vector2i:
 			if not tiles.is_empty():
 				return tiles[_slot_hash(id) % tiles.size()]
 	return _hall_slot(id)
+
+## §3-21 搬送: p から最も近い寝床 (NEST) の床タイル (マンハッタン距離。同距離は
+## 部屋・タイルの走査順で安定)。NEST が無ければ大広間スロットへ (rng 不使用)。
+func _nearest_nest_floor(p: Vector2i) -> Vector2i:
+	var best := Vector2i(-1, -1)
+	var bd := 999999
+	for i in range(map.rooms.size()):
+		if map.rooms[i].room_type != TileMapData.RoomType.NEST:
+			continue
+		for fp in _room_floors.get(i, []):
+			var d := _manhattan(p, fp)
+			if d < bd:
+				bd = d
+				best = fp
+	if best == Vector2i(-1, -1):
+		return _hall_slot(p.x * 73856093 ^ p.y * 19349663)
+	return best
 
 ## 集積所の周囲 8 タイルから空腹個体ごとの食事位置を選ぶ (積み重なり防止)。
 const OFFS8 := [
