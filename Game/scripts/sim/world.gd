@@ -41,7 +41,7 @@ var surge: float = 0.0         # 損耗時バフ残量 (§2.5 / KI-04)
 # (BUILD は room_type/w/h も持つ)。priority は小さいほど高優先。progress は 0..1 で
 # 中断後も保持し、別の個体が続きから再開できる。Haul/Pray/Craft/Guard は既存系
 # (運搬=スカラー完結・祈り=役職・製造=B8・警備=T5) が担うため型を設けない。
-enum JobType { MINE, BUILD, REPAIR }
+enum JobType { MINE, BUILD, REPAIR, DIG }
 var jobs: Array = []           # Array[Dictionary]
 var next_job_id: int = 0
 var over_cap_ticks: int = 0
@@ -1029,6 +1029,8 @@ func _job_work_rate(t: int) -> float:
 			return params.build_work_per_tick
 		JobType.REPAIR:
 			return params.repair_work_per_tick
+		JobType.DIG:
+			return params.dig_work_per_tick
 	return 0.0
 
 ## 取得中ジョブの WORK 移動目標。到着 (ジョブ矩形へチェビシェフ <=1) で進捗を
@@ -1087,6 +1089,15 @@ func _complete_job(j: Dictionary, g: Goblin) -> void:
 				_rebuild_floor_caches()
 			map.wall_hp[map.idx(j.x, j.y)] = MapTemplate.WALL_HP
 			_event({"t": "repair_done", "id": g.id, "x": j.x, "y": j.y})
+		JobType.DIG:
+			# 掘削完了 (§10 巣穴拡張): 壁を床化し、掘り出した土から少量の建材。
+			# 床化で経路・床キャッシュが変わるので採掘と同じ後処理を行う。
+			map.set_tile(j.x, j.y, TileMapData.TileType.FLOOR)
+			map.wall_hp[map.idx(j.x, j.y)] = 0  # もう壁ではない (修復対象にしない)
+			mud += params.dig_yield_mud
+			_invalidate_paths_through([{"x": j.x, "y": j.y}])
+			_rebuild_floor_caches()
+			_event({"t": "dig_done", "id": g.id, "x": j.x, "y": j.y})
 	jobs.erase(j)
 	g.job_id = -1
 
@@ -1100,6 +1111,35 @@ func designate_mine(x: int, y: int) -> bool:
 		return false
 	jobs.append({"id": next_job_id, "type": JobType.MINE, "x": x, "y": y,
 			"priority": 2, "assigned_id": -1, "progress": 0.0})
+	next_job_id += 1
+	return true
+
+## 掘削できる素の壁か (§10 巣穴拡張)。破壊可能 (マップ縁・トーテム至近を除く) で、
+## 8 近傍に EXTERIOR が一つも無く (外殻を破らない = 内側のみ。斜め接触も排除して
+## 角抜けでの開通も防ぐ)、かつ 8 近傍に巣内の歩ける床がある (ゴブリンが隣に立てて
+## 掘れる + 掘った床が巣に繋がる)。
+func _wall_diggable(p: Vector2i) -> bool:
+	if not _wall_breakable(p):
+		return false
+	var has_floor := false
+	for off in OFFS8:
+		var q: Vector2i = p + off
+		if map.get_tile(q.x, q.y) == TileMapData.TileType.EXTERIOR:
+			return false
+		if map.is_walkable(q.x, q.y) and _inside_nest(q):
+			has_floor = true
+	return has_floor
+
+## 掘削指定のトグル (§10。素の壁をタップ → 掘削ジョブ / 再タップで解除)。
+func designate_dig(x: int, y: int) -> bool:
+	for j in jobs:
+		if j.type == JobType.DIG and j.x == x and j.y == y:
+			_cancel_job(j)
+			return true
+	if not _wall_diggable(Vector2i(x, y)):
+		return false
+	jobs.append({"id": next_job_id, "type": JobType.DIG, "x": x, "y": y,
+			"priority": 3, "assigned_id": -1, "progress": 0.0})
 	next_job_id += 1
 	return true
 
@@ -1188,6 +1228,9 @@ func _job_valid(j: Dictionary) -> bool:
 			# 修復: 壁でなくなった (泥壁が溶けた等)・全快したら失効。
 			return map.get_tile(j.x, j.y) == TileMapData.TileType.WALL \
 					and map.wall_hp[map.idx(j.x, j.y)] < MapTemplate.WALL_HP
+		JobType.DIG:
+			# 掘削: 掘削可能な壁である限り有効 (敵のブリーチで床化したら失効)。
+			return _wall_diggable(Vector2i(j.x, j.y))
 		_:
 			return true
 

@@ -555,6 +555,11 @@ func _draw_jobs(ts: float) -> void:
 			World.JobType.MINE:
 				var r := Rect2(float(j.x) * ts + 1.0, float(j.y) * ts + 1.0, ts - 2.0, ts - 2.0)
 				draw_rect(r, Color(0.95, 0.75, 0.30, pulse), false, 1.5)
+			World.JobType.DIG:
+				# 掘削指定 (§10): 土色の破線風枠 + 進捗の塗り (採掘とは別色)。
+				var dr := Rect2(float(j.x) * ts + 1.0, float(j.y) * ts + 1.0, ts - 2.0, ts - 2.0)
+				draw_rect(dr, Color(0.55, 0.42, 0.26, 0.18 + 0.4 * clampf(float(j.progress), 0.0, 1.0)), true)
+				draw_rect(dr, Color(0.72, 0.56, 0.34, pulse), false, 1.5)
 			World.JobType.BUILD:
 				var br := Rect2(float(j.x) * ts, float(j.y) * ts,
 						float(j.w) * ts, float(j.h) * ts)

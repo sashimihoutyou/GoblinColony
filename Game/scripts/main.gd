@@ -488,6 +488,10 @@ func _push_feed_event(e: Dictionary) -> void:
 				_push_feed("birth", "%s が岩塊を掘り崩した。崩れた奥から宝石が転がり出た!" % miner_name, int(e.id))
 			else:
 				_push_feed("event", "%s が岩塊を掘り崩し、建材を積み上げた。" % miner_name, int(e.id))
+		"dig_done":
+			var digger := _find_goblin(int(e.id))
+			_push_feed("event", "%s が岩壁を掘り抜き、巣穴がひとつ広がった。"
+					% (GobNames.of(digger) if digger != null else "誰か"), int(e.id))
 		"build_start":
 			_push_feed("event", "%sの建設が始まった。地面に骨と泥で印が引かれる。"
 					% ROOM_TYPE_JP.get(int(e.room_type), "部屋"))
@@ -689,6 +693,7 @@ func _try_tile_order(pos: Vector2) -> void:
 		_push_feed("event", "採掘の指示を取り消した。" if had else "岩塊に採掘の印を付けた。")
 	elif t == TileMapData.TileType.WALL \
 			and world.map.wall_hp[world.map.idx(tp.x, tp.y)] < MapTemplate.WALL_HP:
+		# 傷んだ壁 → 修復 (掘削より優先。自分の壁を掘り崩さない)。
 		if world.mud < world.params.wall_repair_cost:
 			_push_feed("event", "壁を直す建材がない (必要 %.0f)。" % world.params.wall_repair_cost)
 			return
@@ -696,6 +701,19 @@ func _try_tile_order(pos: Vector2) -> void:
 			"type": Controller.CommandType.REPAIR_WALL, "x": tp.x, "y": tp.y,
 		})
 		_push_feed("event", "ひび割れた壁に修復の印を付けた。")
+	elif t == TileMapData.TileType.WALL and world._wall_diggable(tp):
+		# 素の壁 → 掘削 (§10 巣穴拡張)。トグル。
+		var had := false
+		for j in world.jobs:
+			if j.type == World.JobType.DIG and j.x == tp.x and j.y == tp.y:
+				had = true
+		controller.queue.append({
+			"type": Controller.CommandType.DESIGNATE_DIG, "x": tp.x, "y": tp.y,
+		})
+		_push_feed("event", "掘削の指示を取り消した。" if had else "岩壁に掘削の印を付けた。")
+	elif t == TileMapData.TileType.WALL:
+		# 掘れない壁 (外殻・トーテム至近)。
+		_push_feed("event", "この岩は固く掘り崩せない (外との境・トーテムの守り)。")
 
 ## 武装中の左クリック: 対象 (敵/ゴブリン/タイル) を指定して発動する。対象外クリックは
 ## 無視 (武装維持)。発動後も武装を保って連射でき、残高が尽きると自動解除する。

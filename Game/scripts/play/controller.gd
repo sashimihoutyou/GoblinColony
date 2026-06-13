@@ -17,6 +17,7 @@ enum CommandType {
 	CAST_MIRACLE,   # 奇跡発動 {miracle, x, y} or {miracle, target_id}
 	BUILD_ROOM,     # 建築 {room_type, x, y} (§3-15。x,y = 左上角)
 	DESIGNATE_MINE, # 採掘指定のトグル {x, y} (§3-12)
+	DESIGNATE_DIG,  # 掘削指定のトグル {x, y} (§10 巣穴拡張)
 	REPAIR_WALL,    # 壁修復の発注 {x, y} (§3-20)
 	DISPATCH,       # 派遣 {count, target}  (§11.5: target = 出現物 id)
 	SACRIFICE,      # 生贄 (対象不要。優先順位は world.sacrifice_captive() 側で決定)
@@ -69,6 +70,8 @@ func apply(world: World) -> void:
 				world.order_build(cmd.room_type, cmd.x, cmd.y)
 			CommandType.DESIGNATE_MINE:
 				world.designate_mine(cmd.x, cmd.y)
+			CommandType.DESIGNATE_DIG:
+				world.designate_dig(cmd.x, cmd.y)
 			CommandType.REPAIR_WALL:
 				world.order_repair(cmd.x, cmd.y)
 			CommandType.TAKE_CONCUBINE:
