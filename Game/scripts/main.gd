@@ -264,6 +264,13 @@ func _process(delta: float) -> void:
 			done += 1
 			if world.outcome != World.Outcome.ONGOING:
 				break
+	elif world.outcome == World.Outcome.ONGOING:
+		# 停止中 (speed=0) でもプレイヤーの指示はキュー経由で即時反映する。
+		# (commands は controller.queue に積まれ、通常は _step_one_tick の
+		#  controller.apply で消化されるが、停止中は tick が回らず溜まったまま
+		#  「捕虜操作・建築・派遣・防衛配分を押しても何も起きない」状態になる。)
+		# AI 配分 (decide) は tick に紐づくので呼ばず、プレイヤーのキュー消化のみ。
+		controller.apply(world)
 	# 描画は毎フレーム (tick 間も補間・粒子・炎が動く)。
 	# α = 次 tick までの端数 (固定タイムステップ補間。停止中は固定され静止)。
 	renderer.sel_kind = sel_kind
@@ -287,17 +294,18 @@ func _process(delta: float) -> void:
 	_process_keyboard_pan(delta)
 	_process_follow_camera(delta)
 
-## 矢印キー / WASD でのパン。画面スペースで一定速度になるよう zoom で割る。
-## パンしたら追従モードを解除する。
+## 矢印キーでのパン。画面スペースで一定速度になるよう zoom で割る。
+## パンしたら追従モードを解除する。WASD は奇跡ホットバー (Q W E R T Y G) と衝突する
+## ため割り当てない (W=パン虫の誤発動を防ぐ)。パンは矢印キー / 中ドラッグ / ホイール。
 func _process_keyboard_pan(delta: float) -> void:
 	var dir := Vector2.ZERO
-	if Input.is_physical_key_pressed(KEY_LEFT) or Input.is_physical_key_pressed(KEY_A):
+	if Input.is_physical_key_pressed(KEY_LEFT):
 		dir.x -= 1.0
-	if Input.is_physical_key_pressed(KEY_RIGHT) or Input.is_physical_key_pressed(KEY_D):
+	if Input.is_physical_key_pressed(KEY_RIGHT):
 		dir.x += 1.0
-	if Input.is_physical_key_pressed(KEY_UP) or Input.is_physical_key_pressed(KEY_W):
+	if Input.is_physical_key_pressed(KEY_UP):
 		dir.y -= 1.0
-	if Input.is_physical_key_pressed(KEY_DOWN) or Input.is_physical_key_pressed(KEY_S):
+	if Input.is_physical_key_pressed(KEY_DOWN):
 		dir.y += 1.0
 	if dir == Vector2.ZERO:
 		return
