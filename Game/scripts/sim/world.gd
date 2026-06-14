@@ -829,13 +829,22 @@ func _dispatch_pool() -> Array:
 func dispatch_pool_count() -> int:
 	return _dispatch_pool().size()
 
-## 襲撃発生・日没の自動帰還 (§11.5「予兆で帰路につく」の P1 簡易版: 即時解除)。
-## 派遣が解けた個体は WANDER の受け皿に落ち、夜なら睡眠で寝床へ歩いて戻る。
-## 運搬中の個体は配達を済ませてから手じまいする (_dispatch_target の規約)。
+## 襲撃予兆・日没での自動帰還 (§11.5「予兆フェーズで自動帰還を開始」)。
+## 派遣が解けた個体は WANDER の受け皿に落ち、in_raid なら次 tick から通常の
+## 防衛召集 (_defense_slot 等) に合流する。近い出現物の個体は予兆中に戻り切るが、
+## 遠い出現物の個体は道中が長く、襲撃の開始に間に合わず「遅れて到着」する
+## (締め出しではなく到着が遅れるだけ / §11.5)。運搬中 (carrying_food) の個体は
+## 配達を済ませてから手じまいする (_movement_target/_dispatch_target の規約)。
 func _recall_dispatched() -> void:
+	var recalled := 0
 	for g in goblins:
-		if g.dispatch_id >= 0 and not g.carrying_food:
-			g.dispatch_id = -1
+		if g.dispatch_id < 0 or g.carrying_food:
+			continue
+		g.dispatch_id = -1
+		g.field_returning = true  # UI 用: 帰路についた個体 (到着で自動クリア)
+		recalled += 1
+	if recalled > 0:
+		_event({"t": "field_recall", "count": recalled})
 
 func _field_by_id(id: int) -> FieldResource:
 	for f in field_resources:
@@ -905,6 +914,11 @@ func _step_goblins() -> void:
 		if target != Vector2i(-1, -1):
 			_advance_along_path(g, target, _move_speed(g))
 
+		# §11.5/A4: 帰路についた個体が巣内に着いたら「遅れて来る増援」表示を終了
+		# (UI 用フラグのみ。defense_slot 等への合流は通常の in_raid 召集が処理)。
+		if g.field_returning and _inside_nest(g.pos()):
+			g.field_returning = false
+
 		# §3-21: 搬送中は被搬送者を担ぎ手の座標へ引きずる。寝床タイルへ到達したら
 		# 降ろして (carrying_id=-1) 回復を開始させる (downed_ticks をリセット)。
 		if g.carrying_id >= 0:
@@ -936,6 +950,11 @@ func _movement_target(g: Goblin, in_raid: bool, entered_wander: bool = false) ->
 	# 寝床 (NEST) へ直行する (戦線召集・求愛・rally 等のいずれにも割り込まれない)。
 	if g.carrying_id >= 0:
 		return _nearest_nest_floor(g.pos())
+	# §11.5/A4: 運搬中 (carrying_food) の派遣個体は襲撃警報でも防衛召集に割り込まれず、
+	# まず集積所への配達を済ませる (_dispatch_target の規約)。配達後は dispatch_id が
+	# 解除され、次 tick から通常の in_raid 召集に合流する (「遅れて来る増援」)。
+	if in_raid and g.carrying_food and g.dispatch_id >= 0:
+		return _dispatch_target(g)
 	# 防衛召集: 交戦中、戦線割り当ての個体は大広間 (トーテム) に集結して迎え撃ち、
 	# 視界内 (8 タイル) に踏み込んだ敵にだけ向かっていく。敵まで個別に駆けつけると
 	# 広い洞窟では各個撃破される (細い坑道へ 1 体ずつ吸い込まれて数の利を失う)。
