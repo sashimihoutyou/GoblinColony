@@ -44,6 +44,19 @@ const STATE_COLORS := {
 	Goblin.State.KNOCKED_OUT: Color("6a4838"),
 }
 
+# --- 巣外の出現物 (§11.5): 種別ごとの実の色 (最小限の見分け。FORAGE は既存の
+# 琥珀色のまま)。塊の色は種別に関わらず暗緑のまま (茂み/廃墟/野営地の影として
+# 自然に見える)。---
+const FIELD_KIND_COLORS := {
+	FieldResource.Kind.FORAGE: Color("ffb454"),    # 琥珀 (既存)
+	FieldResource.Kind.ANIMAL: Color("c08a5a"),    # 獣の足跡の土色
+	FieldResource.Kind.TRAVELER: Color("cfe6ff"),  # 旅人の灯り (淡い青白)
+	FieldResource.Kind.WANDERER: Color("9adb6e"),  # 仲間色 (緑)
+	FieldResource.Kind.CAMP: Color("c0432e"),      # 敵性 (血色)
+	FieldResource.Kind.RUINS: Color("8a8070"),     # 瓦礫色 (灰)
+	FieldResource.Kind.MAIDEN: Color("e8a0b8"),    # アミナ色 (淡紅)
+}
+
 # --- 演出層の個体状態: id → {prev: Vector2, cur: Vector2, pos: Vector2, face: float} ---
 # tick 間は prev→cur を線形補間する (固定タイムステップ補間)。シムの fx/fy へ
 # 毎フレーム直接追従すると、座標が 4Hz (1x 時) でステップ更新されるため
@@ -534,11 +547,12 @@ func _draw() -> void:
 			if sel_id >= 0 and sel_id < _world.map.rooms.size():
 				var r: Dictionary = _world.map.rooms[sel_id]
 				draw_rect(Rect2(r.x * ts, r.y * ts, r.w * ts, r.h * ts), Color("e8dcc8", 0.85), false, 1.5)
-		4:  # 出現物: 琥珀の輪 (回収/日没で消えたら輪も消える)
+		4:  # 出現物: 種別色の輪 (回収/日没で消えたら輪も消える)
 			for f in _world.field_resources:
 				if f.id == sel_id:
+					var sel_col: Color = FIELD_KIND_COLORS.get(f.kind, COL_EMBER_BRIGHT)
 					draw_arc(_tile_center(f.pos()), ts * 0.7 + sin(_t * 5.0) * 1.2, 0, TAU, 24,
-						COL_EMBER_BRIGHT, 1.2)
+						sel_col, 1.2)
 					break
 
 ## ズーム下でも文字がにじまない draw_string。Camera2D の zoom はフォントの
@@ -621,25 +635,31 @@ func _draw_decor(d: Dictionary) -> void:
 		"text":
 			_draw_text_crisp(Vector2(d.x, d.y), d.txt, 8, d.color)
 
-## 巣外の出現物 (§11.5): 木の実の茂み。暗い緑の塊 + 残量ぶんの琥珀の実 +
-## 気づきやすいようゆっくり明滅する淡い輪 (すべて演出。シム状態に触れない)。
+## 巣外の出現物 (§11.5): 暗い塊 (茂み/廃墟/野営地などの影として共通) + 残量ぶんの
+## 種別色の粒 + 気づきやすいようゆっくり明滅する種別色の淡い輪 (すべて演出。
+## シム状態に触れない)。種別ごとの色分けは FIELD_KIND_COLORS (FORAGE は既存の
+## 琥珀色のまま不変)。distance=1 (遠い) はさらに外側にもう一重、薄い輪を足す。
 func _draw_field_resource(f: FieldResource) -> void:
 	var c := _tile_center(f.pos())
 	var ts := float(tile_size)
+	var kind_col: Color = FIELD_KIND_COLORS.get(f.kind, COL_EMBER_BRIGHT)
 	# 明滅する淡いハイライト輪 (約 3 秒周期)。
 	var pulse := 0.5 + 0.5 * sin(_t * 2.1)
-	draw_arc(c, ts * 0.75, 0, TAU, 20, Color(COL_EMBER_BRIGHT, 0.10 + 0.18 * pulse), 1.0)
-	# 茂み (3 つの塊で有機的に)。
+	draw_arc(c, ts * 0.75, 0, TAU, 20, Color(kind_col, 0.10 + 0.18 * pulse), 1.0)
+	if f.distance == 1:
+		# 遠方の出現物: もう一重外側に薄い輪を足して見分けやすくする。
+		draw_arc(c, ts * 1.05, 0, TAU, 24, Color(kind_col, 0.06 + 0.10 * pulse), 1.0)
+	# 塊 (3 つの塊で有機的に。茂み/廃墟/野営地などの影として共通)。
 	draw_circle(c + Vector2(-3.0, 1.0), 4.0, Color("2e4023"))
 	draw_circle(c + Vector2(3.0, 1.0), 3.6, Color("36492a"))
 	draw_circle(c + Vector2(0.0, -2.0), 4.2, Color("3f5430"))
-	# 実: 残量ぶんの琥珀の粒 (決定的配置。摘まれると減っていく)。
+	# 実: 残量ぶんの種別色の粒 (決定的配置。摘まれると減っていく)。
 	const BERRY_OFFS := [
 		Vector2(-4.0, -1.0), Vector2(3.0, -3.0), Vector2(0.0, 2.0),
 		Vector2(-2.0, -4.0), Vector2(4.0, 0.0),
 	]
 	for i in range(mini(f.amount, BERRY_OFFS.size())):
-		draw_circle(c + BERRY_OFFS[i], 1.3, COL_EMBER_BRIGHT)
+		draw_circle(c + BERRY_OFFS[i], 1.3, kind_col)
 
 func _draw_totem(m: TileMapData) -> void:
 	var c := _tile_center(m.totem)

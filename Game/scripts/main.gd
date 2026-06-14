@@ -45,6 +45,35 @@ const ROOM_TYPE_JP := {
 	TileMapData.RoomType.MUSHROOM: "キノコ農園", TileMapData.RoomType.WITCH: "まじない医",
 }
 
+# --- 巣外の出現物 (§11.5 外征)。種別の表示名・見つかったときの一言・
+# 派遣パネルでのリターン目安。CAMP のみ別途 _camp_difficulty_hint() で
+# 難度ヒントを足す。---
+const FIELD_KIND_JP := {
+	FieldResource.Kind.FORAGE: "木の実の茂み", FieldResource.Kind.ANIMAL: "獲物の気配",
+	FieldResource.Kind.TRAVELER: "旅人", FieldResource.Kind.WANDERER: "放浪ゴブリン",
+	FieldResource.Kind.CAMP: "敵性キャンプ", FieldResource.Kind.RUINS: "廃墟",
+	FieldResource.Kind.MAIDEN: "行き倒れの少女",
+}
+const FIELD_SPAWN_JP := {
+	FieldResource.Kind.FORAGE: "巣の外に木の実の茂みが見つかった (%d 食ぶん)。",
+	FieldResource.Kind.ANIMAL: "巣の外に獲物の気配がある (%d 頭ぶん)。",
+	FieldResource.Kind.TRAVELER: "巣の外に旅人が通りかかった。",
+	FieldResource.Kind.WANDERER: "巣の外をうろつく放浪ゴブリンを見かけた。",
+	FieldResource.Kind.CAMP: "巣の外に敵性キャンプの灯りが見える。",
+	FieldResource.Kind.RUINS: "巣の外に古い廃墟が見える (%d 山ぶん)。",
+	FieldResource.Kind.MAIDEN: "巣の外で行き倒れの少女を見つけた。",
+}
+const FIELD_RETURN_JP := {
+	FieldResource.Kind.FORAGE: "食料",
+	FieldResource.Kind.ANIMAL: "食料(多め)+捕虜の可能性",
+	FieldResource.Kind.TRAVELER: "宝石/薬草",
+	FieldResource.Kind.WANDERER: "頭数+1の可能性",
+	FieldResource.Kind.CAMP: "戦果(宝石+装備+捕虜) or 負傷",
+	FieldResource.Kind.RUINS: "建材+宝石の可能性",
+	FieldResource.Kind.MAIDEN: "保護(捕虜 or 新たな出会い)",
+}
+const FIELD_DISTANCE_JP := {0: "近い", 1: "遠い"}
+
 # --- 選択対象の種別 (将来の奇跡ターゲティングでも再利用)。renderer の pick_any() が
 # 返す int (0=なし/1=ゴブリン/2=敵/3=部屋/4=出現物) をこの enum へ写像する。---
 enum SelKind { NONE, GOBLIN, ENEMY, ROOM, FIELD }
@@ -500,9 +529,72 @@ func _push_feed_event(e: Dictionary) -> void:
 			if f != null:
 				_push_feed("love", "%s が寝床で身ごもった。" % GobNames.of(f), f.id)
 		"field_spawn":
-			_push_feed("event", "巣の外に木の実の茂みが見つかった (%d 食ぶん)。" % e.get("amount", 0))
+			var sp_kind: int = int(e.get("kind", FieldResource.Kind.FORAGE))
+			var sp_fmt: String = FIELD_SPAWN_JP.get(sp_kind, FIELD_SPAWN_JP[FieldResource.Kind.FORAGE])
+			if sp_fmt.find("%d") >= 0:
+				_push_feed("event", sp_fmt % e.get("amount", 0))
+			else:
+				_push_feed("event", sp_fmt)
 		"dispatch":
 			_push_feed("event", "%d 体が恵みを取りに巣を出た。" % e.get("count", 0))
+		"field_haul":
+			var fh_kind: int = int(e.get("kind", FieldResource.Kind.FORAGE))
+			var fh_who := GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))
+			match fh_kind:
+				FieldResource.Kind.ANIMAL:
+					_push_feed("event", "%s が獲物を狩り、食料を持ち帰った。" % fh_who, int(e.get("id", -1)))
+				FieldResource.Kind.RUINS:
+					_push_feed("event", "%s が廃墟から建材を持ち帰った。" % fh_who, int(e.get("id", -1)))
+				_:
+					_push_feed("event", "%s がキノコを集積所に運び込んだ。" % fh_who, int(e.get("id", -1)))
+		"field_captive":
+			var fc_who := GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))
+			_push_feed("event", "%s が狩りの最中に弱ったゴブリンを連れて帰った。捕虜が増えた。" % fc_who, int(e.get("id", -1)))
+		"field_gem":
+			var fg := _find_goblin(int(e.get("id", -1)))
+			var fg_who: String = GobNames.of(fg) if fg != null else "誰か"
+			_push_feed("birth", "%s が廃墟の瓦礫の中から宝石を見つけた!" % fg_who, int(e.get("id", -1)))
+		"field_trade":
+			var ft := _find_goblin(int(e.get("id", -1)))
+			var ft_who: String = GobNames.of(ft) if ft != null else "誰か"
+			if e.get("good", "") == "gems":
+				_push_feed("event", "%s が旅人と宝石を交換した。" % ft_who, int(e.get("id", -1)))
+			else:
+				_push_feed("event", "%s が旅人から薬草を譲り受けた。" % ft_who, int(e.get("id", -1)))
+		"field_faux_pas":
+			var fp := _find_goblin(int(e.get("id", -1)))
+			var fp_who: String = GobNames.of(fp) if fp != null else "誰か"
+			_push_feed("raid", "%s が旅人に粗相をしてしまった……人間たちとの間に緊張が走る。" % fp_who, int(e.get("id", -1)))
+		"wanderer_joined":
+			var wj_who := GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))
+			_push_feed("birth", "放浪していた %s が群れに加わった。" % wj_who, int(e.get("id", -1)))
+		"wanderer_left":
+			_push_feed("event", "放浪ゴブリンは去って行った。")
+		"field_maiden":
+			if e.get("amina", false):
+				_push_feed("love", "行き倒れの少女を連れて帰った。手厚く保護することにした。")
+			else:
+				_push_feed("event", "行き倒れの少女を連れて帰った。捕虜として保護した。")
+		"field_camp_win":
+			var captive_txt: String = "捕虜も連れて" if e.get("captive", false) else ""
+			_push_feed("birth", "★ 敵性キャンプを襲撃し、%s宝石と装備を持ち帰った!" % captive_txt)
+		"field_camp_loss":
+			var cl_id: int = int(e.get("id", -1))
+			var cl_g := _find_goblin(cl_id)
+			if cl_g != null:
+				_push_feed("raid", "敵性キャンプの襲撃は失敗……%s が傷を負って逃げ帰った。" % GobNames.of(cl_g), cl_id)
+			else:
+				_push_feed("raid", "敵性キャンプの襲撃は失敗し、何も持ち帰れなかった。")
+		"field_recall":
+			_push_feed("raid", "外に出ていた %d 体に、急いで帰るよう呼びかけた。" % e.get("count", 0))
+		"amina_foreshadow":
+			_push_feed("love", "保護した少女が、少しずつこちらに心を開きはじめている……。")
+		"amina_closed":
+			_push_feed("event", "少女との間にできかけていた何かは、もう戻らない。")
+		"amina_joined":
+			var am := _find_goblin(int(e.get("id", -1)))
+			var am_name: String = GobNames.of(am) if am != null else "少女"
+			_push_feed("love", "%s が心を開き、戦わない仲間として群れに加わった。" % am_name, int(e.get("id", -1)))
 		"mine_done":
 			var miner := _find_goblin(int(e.id))
 			var miner_name: String = GobNames.of(miner) if miner != null else "誰か"
@@ -1113,10 +1205,11 @@ func _build_ui() -> void:
 	# --- 派遣パネル (§11.5。中央下。出現物クリックで開く) ---
 	_dispatch_panel = PanelContainer.new()
 	_dispatch_panel.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	# 点アンカー (中央下) なので寸法はオフセットで明示する (260×102 px)。
-	_dispatch_panel.offset_left = -130.0
-	_dispatch_panel.offset_right = 130.0
-	_dispatch_panel.offset_top = -150.0
+	# 点アンカー (中央下) なので寸法はオフセットで明示する (280×128 px。
+	# 種別/距離/リターン目安の表示ぶん高さを少し広げた)。
+	_dispatch_panel.offset_left = -140.0
+	_dispatch_panel.offset_right = 140.0
+	_dispatch_panel.offset_top = -176.0
 	_dispatch_panel.offset_bottom = -48.0
 	_dispatch_panel.add_theme_stylebox_override("panel", _panel_style())
 	_dispatch_panel.visible = false
@@ -1135,7 +1228,8 @@ func _build_ui() -> void:
 	_dispatch_slider.step = 1
 	_dispatch_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_dispatch_slider.value_changed.connect(func(v: float) -> void:
-		_dispatch_count.text = "ゴブリン %d 体" % int(v))
+		_dispatch_count.text = "ゴブリン %d 体" % int(v)
+		_update_dispatch_panel())
 	srow.add_child(_dispatch_slider)
 	_dispatch_count = Label.new()
 	_dispatch_count.add_theme_color_override("font_color", C_EMBER_BRIGHT)
@@ -1389,6 +1483,24 @@ func _open_dispatch_panel(field_id: int) -> void:
 		_dispatch_button.disabled = true
 	_dispatch_count.text = "ゴブリン %d 体" % int(_dispatch_slider.value)
 	_dispatch_panel.visible = true
+	_update_dispatch_panel()
+
+## CAMP の手応えヒント (§11.5)。隊の実効戦力 (人数 + 装備ボーナス見込み) と
+## field_camp_strength を比べたおおまかな所感を返す。実際の勝率計算
+## (_resolve_camp の effective/(effective+strength)) の近似であり、装備の
+## 在庫状況までは見ない (出発時に揃わない場合もあるため目安にとどめる)。
+func _camp_difficulty_hint(headcount: int) -> String:
+	if headcount <= 0:
+		return ""
+	var effective: float = float(headcount) * (1.0 + world.params.equip_bonus * 0.5)
+	var strength: float = world.params.field_camp_strength
+	var ratio := effective / (effective + strength)
+	if ratio >= 0.6:
+		return " (手応え: 楽勝そう)"
+	elif ratio >= 0.35:
+		return " (手応え: 五分五分)"
+	else:
+		return " (手応え: 厳しそう)"
 
 func _close_dispatch_panel() -> void:
 	_dispatch_field_id = -1
@@ -1404,7 +1516,8 @@ func _confirm_dispatch() -> void:
 	_close_dispatch_panel()
 
 ## 毎フレーム: 対象の出現物が消えたら (回収完了・日没) パネルを自動で閉じ、
-## 残量・手すき表示を追従させる (スライダー値はいじらない)。
+## 残量・手すき表示を追従させる (スライダー値はいじらない)。種別名・距離・
+## リターン目安 (CAMP は手応えヒント付き) を併記する (§11.5)。
 func _update_dispatch_panel() -> void:
 	if _dispatch_panel == null or not _dispatch_panel.visible:
 		return
@@ -1412,10 +1525,18 @@ func _update_dispatch_panel() -> void:
 	if f == null:
 		_close_dispatch_panel()
 		return
+	var kind_name: String = FIELD_KIND_JP.get(f.kind, "出現物")
+	var dist_name: String = FIELD_DISTANCE_JP.get(f.distance, "近い")
+	var return_hint: String = FIELD_RETURN_JP.get(f.kind, "食料")
+	var lines: Array = []
+	lines.append("%s ・ %s ・ のこり %d" % [kind_name, dist_name, f.amount])
+	var hint_extra: String = ""
+	if f.kind == FieldResource.Kind.CAMP:
+		hint_extra = _camp_difficulty_hint(int(_dispatch_slider.value))
+	lines.append("リターン: %s%s" % [return_hint, hint_extra])
 	if _dispatch_button.disabled:
-		_dispatch_info.text = "のこり %d 食ぶん — 手すきのゴブリンがいない" % f.amount
-	else:
-		_dispatch_info.text = "のこり %d 食ぶん" % f.amount
+		lines.append("手すきのゴブリンがいない")
+	_dispatch_info.text = "\n".join(lines)
 
 func _refresh_speed_buttons() -> void:
 	for d in _speed_buttons:
