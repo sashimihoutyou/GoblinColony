@@ -315,6 +315,20 @@ func _schedule_next_raid() -> void:
 func _step_hostility_drift() -> void:
 	bunta_hostility = clampf(bunta_hostility + params.hostility_drift_per_tick_bunta, 0.0, 1.0)
 	kugyo_hostility = clampf(kugyo_hostility + params.hostility_drift_per_tick_kugyo, 0.0, 1.0)
+	_step_gems_hoard_drift()
+
+## §14/B5 宝石ため込みの火種: 保有が閾値を超えた量に応じて人間敵対度がじわじわ
+## 上昇する (閾値型・上限あり)。人間メーターは加害/ため込みでのみ動く設計 (自然
+## ドリフトは部族のみ §14.5.7) を保つ。rng を消費しない純算術。日境界で警告を 1 回出す。
+func _step_gems_hoard_drift() -> void:
+	var excess := gems - params.gems_hoard_threshold
+	if excess <= 0.0:
+		return
+	var rise := minf(excess * params.gems_hoard_hostility_per_excess_per_tick,
+			params.gems_hoard_hostility_max_per_tick)
+	human_hostility = clampf(human_hostility + rise, 0.0, 1.0)
+	if (tick % params.ticks_per_day) == 0:
+		_event({"t": "gems_hoard_warn", "gems": gems})
 
 ## 襲撃してくる勢力を抽選する純粋関数 (§13 3 勢力。world.ts pickRaidFaction と同式)。
 ## r は [0,1) の乱数 1 個。人間判定は従来式 (r < human) のまま = 既存の検証帯を
@@ -2884,6 +2898,19 @@ func tribute_captive(faction: String) -> bool:
 		else:
 			kugyo_hostility = clampf(kugyo_hostility - params.hostility_tribute_drop, 0.0, 1.0)
 	_event({"t": "tribute", "faction": faction})
+	return true
+
+## §14/§14.5.7/B5 宝石献上: 宝石を人間へ差し出して敵対度を下げ gems_tributed を立てる
+## (差し出せば和平の対価)。★ 宝石献上は人間個体への加害ではない (§14.5.7「無価値な
+## ため込み物の譲渡 = 非加害」) ため _commit_human_harm を呼ばない = 中立善を閉じない
+## (むしろ成立させる前向き行為)。在庫不足は no-op。
+func tribute_gems(amount: float) -> bool:
+	if outcome != Outcome.ONGOING or amount <= 0.0 or gems < amount:
+		return false
+	gems -= amount
+	human_hostility = clampf(human_hostility - amount * params.gems_tribute_hostility_drop_per_gem, 0.0, 1.0)
+	gems_tributed = true
+	_event({"t": "tribute_gems", "amount": amount})
 	return true
 
 # --- 奇跡の下働きヘルパ ---

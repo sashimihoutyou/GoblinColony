@@ -23,6 +23,7 @@ enum CommandType {
 	SACRIFICE,      # 生贄 (対象不要。優先順位は world.sacrifice_captive() 側で決定)
 	RELEASE_CAPTIVE,  # 人間捕虜の解放 {sex}
 	TRIBUTE,        # 朝貢 {faction} ("human"/"bunta"/"kugyo" §13 双方向化)
+	TRIBUTE_GEMS,   # 宝石献上 {amount} (§14/B5。非加害。gems_tributed を立てる)
 	TAKE_CONCUBINE,   # 奴隷妻化 {suitor_id, captive_sex, captive_is_human} (KI-19/§3-19)
 	APPROVE_BOND,     # 自然つがいの承認 {captive_id} (KI-21)
 	TEAR_APART_BOND,  # 自然つがいの引き離し {captive_id, cause} (KI-21)
@@ -66,6 +67,8 @@ func apply(world: World) -> void:
 				world.release_human_captive(cmd.sex)
 			CommandType.TRIBUTE:
 				world.tribute_captive(cmd.faction)
+			CommandType.TRIBUTE_GEMS:
+				world.tribute_gems(cmd.amount)
 			CommandType.BUILD_ROOM:
 				world.order_build(cmd.room_type, cmd.x, cmd.y)
 			CommandType.DESIGNATE_MINE:

@@ -103,6 +103,8 @@ var _build_buttons: Array = []  # Array[Dictionary] {btn: Button, rt: int}
 var _captive_panel: PanelContainer
 var _captive_info: Label
 var _concubine_button: Button
+var _gem_row: HBoxContainer        # 宝石献上の行 (§14/B5。gems 保有時のみ表示)
+var _gem_tribute_button: Button
 var _bond_banner: PanelContainer
 var _bond_label: Label
 var _bond_captive_id: int = -1  # バナーが対象にしている承認待ち側室の id
@@ -650,6 +652,11 @@ func _push_feed_event(e: Dictionary) -> void:
 				"human": "人間", "bunta": "ブン・タ＝タ族", "kugyo": "苦魚族",
 			}.get(e.get("faction", ""), "敵対勢力")
 			_push_feed("event", "%sへ捕虜を朝貢した。怒りがいくらか鎮まる。" % fac_txt)
+		"tribute_gems":
+			_push_feed("event", "宝石 %d を人間へ差し出した。和平の対価として怒りが和らぐ。"
+					% int(e.get("amount", 0)))
+		"gems_hoard_warn":
+			_push_feed("raid", "ため込んだ宝の山が人間の目を引いている……抱えるほど狙われる。")
 		"take_concubine":
 			var suitor := _find_goblin(int(e.get("suitor", -1)))
 			_push_feed("love", "%s が捕虜を側室に娶った。" \
@@ -1312,6 +1319,22 @@ func _build_ui() -> void:
 			controller.queue.append({"type": Controller.CommandType.TRIBUTE, "faction": fac}))
 		crow2.add_child(tb)
 	cbox.add_child(crow2)
+	# 宝石献上 (§14/B5。差し出せば和平の対価。非加害＝中立善を閉じない)。
+	_gem_row = HBoxContainer.new()
+	_gem_row.add_theme_constant_override("separation", 4)
+	var glabel := Label.new()
+	glabel.text = "宝石:"
+	glabel.add_theme_color_override("font_color", C_INK_DIM)
+	glabel.add_theme_font_size_override("font_size", 11)
+	_gem_row.add_child(glabel)
+	_gem_tribute_button = Button.new()
+	_gem_tribute_button.add_theme_font_size_override("font_size", 11)
+	_style_button(_gem_tribute_button, false)
+	_gem_tribute_button.pressed.connect(func() -> void:
+		controller.queue.append({"type": Controller.CommandType.TRIBUTE_GEMS,
+				"amount": world.params.gems_tribute_amount}))
+	_gem_row.add_child(_gem_tribute_button)
+	cbox.add_child(_gem_row)
 	ui.add_child(_captive_panel)
 
 	# --- つがい承認バナー (KI-21。承認待ちが出たときだけ中央上に出す) ---
@@ -1443,12 +1466,16 @@ func _press_concubine() -> void:
 func _update_captive_ui() -> void:
 	var total := world.cap_male_goblin + world.cap_female_goblin \
 			+ world.cap_male_human + world.cap_female_human
-	_captive_panel.visible = total >= 1.0
+	# 捕虜が居るか宝石を持っているとき外交パネルを出す (§14/B5: 宝石献上は捕虜と独立)。
+	_captive_panel.visible = total >= 1.0 or world.gems >= 1.0
 	if _captive_panel.visible:
 		_captive_info.text = "捕虜 — ゴブリン 雄%d 雌%d / 人間 雄%d 雌%d" % [
 			int(world.cap_male_goblin), int(world.cap_female_goblin),
 			int(world.cap_male_human), int(world.cap_female_human)]
 		_concubine_button.disabled = sel_kind != SelKind.GOBLIN
+		_gem_row.visible = world.gems >= 1.0
+		_gem_tribute_button.text = "宝石 %d を人間へ献上" % int(world.params.gems_tribute_amount)
+		_gem_tribute_button.disabled = world.gems < world.params.gems_tribute_amount
 	# 承認待ちの先頭 1 件をバナーに出す (複数いても順に処理される)。
 	var pending: Goblin = null
 	for g in world.goblins:

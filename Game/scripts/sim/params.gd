@@ -140,6 +140,19 @@ var hostility_tribute_drop: float = 0.1
 # 即時量なので変換不要 (world.ts kugyoBaseRaidShare)。
 var kugyo_base_raid_share: float = 0.7
 
+# --- 宝石の両刃 (§7・§14・§14.5.8・B5)。宝石はゴブリンに無価値・人間にのみ高価値の
+# 非対称通貨。抱えれば征伐の火種 (人間敵対度上乗せ)・差し出せば和平の対価 (敵対度低下 +
+# gems_tributed)。閾値型 (少量保持は罰さない §0) + 上限あり (青天井禁止)。
+# ★ 宝石献上は人間個体への加害ではない (§14.5.7)。harm_committed を立てない。
+var gems_hoard_threshold: float = 8.0   # これを超えた保有分が火種になる (閾値型)
+# 超過 1 個あたり 1 日に上げる人間敵対度 (日次→_init で per-tick)。上限でクランプ。
+var gems_hoard_hostility_per_excess_per_day: float = 0.004
+var gems_hoard_hostility_per_excess_per_tick: float
+var gems_hoard_hostility_max_per_day: float = 0.05   # ため込みドリフトの 1 日あたり上限
+var gems_hoard_hostility_max_per_tick: float
+var gems_tribute_amount: float = 5.0             # 1 回の献上で差し出す宝石量
+var gems_tribute_hostility_drop_per_gem: float = 0.02  # 献上 1 個あたりの人間敵対度低下 (即時)
+
 # --- トーテムランク (§3 / P3-04) ---
 # 累計信仰 (cum_faith) がしきい値を超えるとランクが上がる (減らない)。残高キャップ・
 # シャーマン任命枠・奇跡の性能/消費が連動する。しきい値は cycle.ts の RANK_THRESHOLDS
@@ -443,6 +456,8 @@ func _init() -> void:
 	male_captive_join_chance_per_tick = male_captive_join_chance_per_day / tpd
 	hostility_drift_per_tick_bunta = hostility_drift_per_day_bunta / tpd
 	hostility_drift_per_tick_kugyo = hostility_drift_per_day_kugyo / tpd
+	gems_hoard_hostility_per_excess_per_tick = gems_hoard_hostility_per_excess_per_day / tpd
+	gems_hoard_hostility_max_per_tick = gems_hoard_hostility_max_per_day / tpd
 	nursery_period_ticks = ticks_per_day * 2
 	captive_bond_chance_per_tick = captive_bond_chance_per_day / tpd
 	amina_hold_ticks = int(amina_hold_days * tpd)
