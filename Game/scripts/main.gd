@@ -8,6 +8,11 @@ extends Node2D
 
 const MS_PER_TICK := 375.0
 
+# --- 自動セーブ (C1 / GDD §14.5.1) ---
+# 確定的 tick スナップショット (world.snapshot()) を JSON で保存・復元する。
+# 実時間は含めない (KI-09)。タイミングは _step_one_tick 参照。
+const AUTOSAVE_PATH := "user://autosave.json"
+
 # --- Web 版と同じ配色 ---
 const C_BG_PANEL := Color(0.078, 0.067, 0.055, 0.92)
 const C_ROCK_LINE := Color(0.227, 0.196, 0.157, 0.5)
@@ -40,6 +45,35 @@ const ROOM_TYPE_JP := {
 	TileMapData.RoomType.MUSHROOM: "キノコ農園", TileMapData.RoomType.WITCH: "まじない医",
 }
 
+# --- 巣外の出現物 (§11.5 外征)。種別の表示名・見つかったときの一言・
+# 派遣パネルでのリターン目安。CAMP のみ別途 _camp_difficulty_hint() で
+# 難度ヒントを足す。---
+const FIELD_KIND_JP := {
+	FieldResource.Kind.FORAGE: "木の実の茂み", FieldResource.Kind.ANIMAL: "獲物の気配",
+	FieldResource.Kind.TRAVELER: "旅人", FieldResource.Kind.WANDERER: "放浪ゴブリン",
+	FieldResource.Kind.CAMP: "敵性キャンプ", FieldResource.Kind.RUINS: "廃墟",
+	FieldResource.Kind.MAIDEN: "行き倒れの少女",
+}
+const FIELD_SPAWN_JP := {
+	FieldResource.Kind.FORAGE: "巣の外に木の実の茂みが見つかった (%d 食ぶん)。",
+	FieldResource.Kind.ANIMAL: "巣の外に獲物の気配がある (%d 頭ぶん)。",
+	FieldResource.Kind.TRAVELER: "巣の外に旅人が通りかかった。",
+	FieldResource.Kind.WANDERER: "巣の外をうろつく放浪ゴブリンを見かけた。",
+	FieldResource.Kind.CAMP: "巣の外に敵性キャンプの灯りが見える。",
+	FieldResource.Kind.RUINS: "巣の外に古い廃墟が見える (%d 山ぶん)。",
+	FieldResource.Kind.MAIDEN: "巣の外で行き倒れの少女を見つけた。",
+}
+const FIELD_RETURN_JP := {
+	FieldResource.Kind.FORAGE: "食料",
+	FieldResource.Kind.ANIMAL: "食料(多め)+捕虜の可能性",
+	FieldResource.Kind.TRAVELER: "宝石/薬草",
+	FieldResource.Kind.WANDERER: "頭数+1の可能性",
+	FieldResource.Kind.CAMP: "戦果(宝石+装備+捕虜) or 負傷",
+	FieldResource.Kind.RUINS: "建材+宝石の可能性",
+	FieldResource.Kind.MAIDEN: "保護(捕虜 or 新たな出会い)",
+}
+const FIELD_DISTANCE_JP := {0: "近い", 1: "遠い"}
+
 # --- 選択対象の種別 (将来の奇跡ターゲティングでも再利用)。renderer の pick_any() が
 # 返す int (0=なし/1=ゴブリン/2=敵/3=部屋/4=出現物) をこの enum へ写像する。---
 enum SelKind { NONE, GOBLIN, ENEMY, ROOM, FIELD }
@@ -69,6 +103,8 @@ var _build_buttons: Array = []  # Array[Dictionary] {btn: Button, rt: int}
 var _captive_panel: PanelContainer
 var _captive_info: Label
 var _concubine_button: Button
+var _gem_row: HBoxContainer        # 宝石献上の行 (§14/B5。gems 保有時のみ表示)
+var _gem_tribute_button: Button
 var _bond_banner: PanelContainer
 var _bond_label: Label
 var _bond_captive_id: int = -1  # バナーが対象にしている承認待ち側室の id
@@ -132,6 +168,11 @@ var _dispatch_slider: HSlider
 var _dispatch_count: Label
 var _dispatch_button: Button
 var _dispatch_field_id: int = -1  # 対象の出現物 id (-1 = パネル非表示)
+# 防衛配分パネル (§3-17: 襲撃時のみ表示。巣口ごとのスライダー + 自動)
+var _defense_panel: PanelContainer
+var _defense_sliders: Array = []   # Array[HSlider] (巣口ごと)
+var _defense_auto_button: Button
+var _defense_syncing: bool = false  # 自動追従でスライダーを書き戻す間の value_changed 抑止
 
 func _ready() -> void:
 	params = SimParams.new()
@@ -143,10 +184,74 @@ func _ready() -> void:
 	renderer = $Renderer
 	renderer.tile_size = 16
 
+	var restored := _load_autosave()
+
 	_build_ui()
 	_update_camera()
 	get_viewport().size_changed.connect(_update_camera)
-	_push_feed("event", "巣が築かれた。%d 体のゴブリンと族長。" % params.start_goblins)
+	if restored:
+		_push_feed("event", "巣の記録を復元した (%d 日目)。" % world.day)
+	else:
+		_push_feed("event", "巣が築かれた。%d 体のゴブリンと族長。" % params.start_goblins)
+
+## 指定難度で新しい群れを始める (§14.5.2)。world を作り直し、古いセーブを消す
+## (前の群れのセーブで即終了画面に戻らないように)。演出層の選択状態もリセット。
+func _start_new_game(diff: int) -> void:
+	_delete_autosave()
+	world = World.new()
+	world.difficulty = diff
+	world.setup(params)
+	speed = 1.0
+	_armed = -1
+	_armed_build = -1
+	sel_kind = SelKind.NONE
+	sel_id = -1
+	_follow_id = -1
+	_outcome_label.visible = false
+	_feed.clear()
+	_feed_lines.clear()
+	var diff_jp: String = ["易", "並", "難"][clampi(diff, 0, 2)]
+	_push_feed("event", "新しい群れ (難度: %s)。%d 体のゴブリンと族長。" % [diff_jp, params.start_goblins])
+	_refresh_speed_buttons()
+	_refresh_miracle_buttons()
+	_refresh_build_buttons()
+
+## 自動セーブの復元 (C1)。user://autosave.json が存在し、有効な JSON の
+## World.snapshot() であれば world に復元する。存在しない・壊れている場合は
+## 何もせず新規開始のまま (setup() 済みの world を使う)。
+func _load_autosave() -> bool:
+	if not FileAccess.file_exists(AUTOSAVE_PATH):
+		return false
+	var f := FileAccess.open(AUTOSAVE_PATH, FileAccess.READ)
+	if f == null:
+		return false
+	var text := f.get_as_text()
+	f.close()
+	var parsed = JSON.parse_string(text)
+	if typeof(parsed) != TYPE_DICTIONARY:
+		return false
+	world.restore(parsed)
+	return true
+
+## 自動セーブの書き出し (C1)。world.snapshot() を JSON 化して保存する
+## (実時間は含めない / KI-09)。
+func _save_autosave() -> void:
+	var f := FileAccess.open(AUTOSAVE_PATH, FileAccess.WRITE)
+	if f == null:
+		return
+	# JSON 既定精度で書く。Godot の JSON/var_to_str はいずれも任意 double の
+	# テキスト往復をバイト一致できない (17 桁出力を parse が 16 桁へ丸める) ため、
+	# バイト一致は追わず「ロード後に自己無矛盾で決定的」を保証する設計とする
+	# (KI-09 のバイト一致はライブ dict 往復 = parity 側で担保。autosave は
+	# 既定精度の冪等点へ倒し、再ロードで同じ未来を再現する / test_save.gd)。
+	f.store_string(JSON.stringify(world.snapshot()))
+	f.close()
+
+## 自動セーブの削除 (C1)。勝敗確定後に呼び、古いセーブで再開して即敗北画面に
+## なる事態を防ぐ。
+func _delete_autosave() -> void:
+	if FileAccess.file_exists(AUTOSAVE_PATH):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(AUTOSAVE_PATH))
 
 func _process(delta: float) -> void:
 	if world.outcome == World.Outcome.ONGOING and speed > 0.0:
@@ -177,6 +282,7 @@ func _process(delta: float) -> void:
 	_update_inspector()
 	_update_dispatch_panel()
 	_update_captive_ui()
+	_update_defense_panel()
 	# カメラ操作はシム停止中 (speed=0) でも独立して動く。
 	_process_keyboard_pan(delta)
 	_process_follow_camera(delta)
@@ -221,16 +327,31 @@ func _process_follow_camera(delta: float) -> void:
 func _step_one_tick() -> void:
 	controller.decide(world)
 	controller.apply(world)
+	var day_boundary := (world.tick % params.ticks_per_day) == (params.ticks_per_day - 1)
 	world.tick_once()
 	# シムの構造化イベントをフィードと演出へ翻訳する。
 	# on_tick より先に処理する: 死亡/巣立ちバーストは演出層に残る直前の
 	# 補間位置 (_last_pos_of) を使うため、その個体が on_tick で除去される前に拾う。
+	var raid_ended := false
+	var game_over := false
 	for e in world.last_events:
 		_push_feed_event(e)
 		renderer.on_event(e)
+		var et: String = e.get("t", "")
+		if et == "raid_end":
+			raid_ended = true
+		elif et == "victory" or et == "defeat":
+			game_over = true
 	# tick 確定後に演出層の補間ターゲット (prev→cur) を更新する。
 	# (1 フレームに複数 tick 回る場合も毎回。O(個体数) の座標コピーのみ)
 	renderer.on_tick(world)
+	# 自動セーブ (C1 / GDD §14.5.1): 日境界・襲撃終了 (PEACE 遷移) で保存する。
+	# 交戦中はセーブしない (直前の安定点に倒す)。勝敗確定後は古いセーブを消す
+	# (再開時に即敗北/勝利画面にならないように)。
+	if game_over:
+		_delete_autosave()
+	elif world.phase != World.Phase.COMBAT and (day_boundary or raid_ended):
+		_save_autosave()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
@@ -410,9 +531,72 @@ func _push_feed_event(e: Dictionary) -> void:
 			if f != null:
 				_push_feed("love", "%s が寝床で身ごもった。" % GobNames.of(f), f.id)
 		"field_spawn":
-			_push_feed("event", "巣の外に木の実の茂みが見つかった (%d 食ぶん)。" % e.get("amount", 0))
+			var sp_kind: int = int(e.get("kind", FieldResource.Kind.FORAGE))
+			var sp_fmt: String = FIELD_SPAWN_JP.get(sp_kind, FIELD_SPAWN_JP[FieldResource.Kind.FORAGE])
+			if sp_fmt.find("%d") >= 0:
+				_push_feed("event", sp_fmt % e.get("amount", 0))
+			else:
+				_push_feed("event", sp_fmt)
 		"dispatch":
 			_push_feed("event", "%d 体が恵みを取りに巣を出た。" % e.get("count", 0))
+		"field_haul":
+			var fh_kind: int = int(e.get("kind", FieldResource.Kind.FORAGE))
+			var fh_who := GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))
+			match fh_kind:
+				FieldResource.Kind.ANIMAL:
+					_push_feed("event", "%s が獲物を狩り、食料を持ち帰った。" % fh_who, int(e.get("id", -1)))
+				FieldResource.Kind.RUINS:
+					_push_feed("event", "%s が廃墟から建材を持ち帰った。" % fh_who, int(e.get("id", -1)))
+				_:
+					_push_feed("event", "%s がキノコを集積所に運び込んだ。" % fh_who, int(e.get("id", -1)))
+		"field_captive":
+			var fc_who := GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))
+			_push_feed("event", "%s が狩りの最中に弱ったゴブリンを連れて帰った。捕虜が増えた。" % fc_who, int(e.get("id", -1)))
+		"field_gem":
+			var fg := _find_goblin(int(e.get("id", -1)))
+			var fg_who: String = GobNames.of(fg) if fg != null else "誰か"
+			_push_feed("birth", "%s が廃墟の瓦礫の中から宝石を見つけた!" % fg_who, int(e.get("id", -1)))
+		"field_trade":
+			var ft := _find_goblin(int(e.get("id", -1)))
+			var ft_who: String = GobNames.of(ft) if ft != null else "誰か"
+			if e.get("good", "") == "gems":
+				_push_feed("event", "%s が旅人と宝石を交換した。" % ft_who, int(e.get("id", -1)))
+			else:
+				_push_feed("event", "%s が旅人から薬草を譲り受けた。" % ft_who, int(e.get("id", -1)))
+		"field_faux_pas":
+			var fp := _find_goblin(int(e.get("id", -1)))
+			var fp_who: String = GobNames.of(fp) if fp != null else "誰か"
+			_push_feed("raid", "%s が旅人に粗相をしてしまった……人間たちとの間に緊張が走る。" % fp_who, int(e.get("id", -1)))
+		"wanderer_joined":
+			var wj_who := GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))
+			_push_feed("birth", "放浪していた %s が群れに加わった。" % wj_who, int(e.get("id", -1)))
+		"wanderer_left":
+			_push_feed("event", "放浪ゴブリンは去って行った。")
+		"field_maiden":
+			if e.get("amina", false):
+				_push_feed("love", "行き倒れの少女を連れて帰った。手厚く保護することにした。")
+			else:
+				_push_feed("event", "行き倒れの少女を連れて帰った。捕虜として保護した。")
+		"field_camp_win":
+			var captive_txt: String = "捕虜も連れて" if e.get("captive", false) else ""
+			_push_feed("birth", "★ 敵性キャンプを襲撃し、%s宝石と装備を持ち帰った!" % captive_txt)
+		"field_camp_loss":
+			var cl_id: int = int(e.get("id", -1))
+			var cl_g := _find_goblin(cl_id)
+			if cl_g != null:
+				_push_feed("raid", "敵性キャンプの襲撃は失敗……%s が傷を負って逃げ帰った。" % GobNames.of(cl_g), cl_id)
+			else:
+				_push_feed("raid", "敵性キャンプの襲撃は失敗し、何も持ち帰れなかった。")
+		"field_recall":
+			_push_feed("raid", "外に出ていた %d 体に、急いで帰るよう呼びかけた。" % e.get("count", 0))
+		"amina_foreshadow":
+			_push_feed("love", "保護した少女が、少しずつこちらに心を開きはじめている……。")
+		"amina_closed":
+			_push_feed("event", "少女との間にできかけていた何かは、もう戻らない。")
+		"amina_joined":
+			var am := _find_goblin(int(e.get("id", -1)))
+			var am_name: String = GobNames.of(am) if am != null else "少女"
+			_push_feed("love", "%s が心を開き、戦わない仲間として群れに加わった。" % am_name, int(e.get("id", -1)))
 		"mine_done":
 			var miner := _find_goblin(int(e.id))
 			var miner_name: String = GobNames.of(miner) if miner != null else "誰か"
@@ -420,6 +604,10 @@ func _push_feed_event(e: Dictionary) -> void:
 				_push_feed("birth", "%s が岩塊を掘り崩した。崩れた奥から宝石が転がり出た!" % miner_name, int(e.id))
 			else:
 				_push_feed("event", "%s が岩塊を掘り崩し、建材を積み上げた。" % miner_name, int(e.id))
+		"dig_done":
+			var digger := _find_goblin(int(e.id))
+			_push_feed("event", "%s が岩壁を掘り抜き、巣穴がひとつ広がった。"
+					% (GobNames.of(digger) if digger != null else "誰か"), int(e.id))
 		"build_start":
 			_push_feed("event", "%sの建設が始まった。地面に骨と泥で印が引かれる。"
 					% ROOM_TYPE_JP.get(int(e.room_type), "部屋"))
@@ -429,6 +617,10 @@ func _push_feed_event(e: Dictionary) -> void:
 			var fixer := _find_goblin(int(e.id))
 			_push_feed("event", "%s が壁のひびを泥で塗り固めた。"
 					% (GobNames.of(fixer) if fixer != null else "誰か"), int(e.id))
+		"breach_warn":
+			_push_feed("raid", "敵が壁を狙っている……割られる前に塞ぐ手を。")
+		"breach":
+			_push_feed("raid", "✖ 壁が打ち破られた! 突破口から敵が雪崩れ込む。")
 		"field_done":
 			_push_feed("event", "茂みを取り尽くした。")
 		"field_expire":
@@ -460,6 +652,11 @@ func _push_feed_event(e: Dictionary) -> void:
 				"human": "人間", "bunta": "ブン・タ＝タ族", "kugyo": "苦魚族",
 			}.get(e.get("faction", ""), "敵対勢力")
 			_push_feed("event", "%sへ捕虜を朝貢した。怒りがいくらか鎮まる。" % fac_txt)
+		"tribute_gems":
+			_push_feed("event", "宝石 %d を人間へ差し出した。和平の対価として怒りが和らぐ。"
+					% int(e.get("amount", 0)))
+		"gems_hoard_warn":
+			_push_feed("raid", "ため込んだ宝の山が人間の目を引いている……抱えるほど狙われる。")
 		"take_concubine":
 			var suitor := _find_goblin(int(e.get("suitor", -1)))
 			_push_feed("love", "%s が捕虜を側室に娶った。" \
@@ -617,6 +814,7 @@ func _try_tile_order(pos: Vector2) -> void:
 		_push_feed("event", "採掘の指示を取り消した。" if had else "岩塊に採掘の印を付けた。")
 	elif t == TileMapData.TileType.WALL \
 			and world.map.wall_hp[world.map.idx(tp.x, tp.y)] < MapTemplate.WALL_HP:
+		# 傷んだ壁 → 修復 (掘削より優先。自分の壁を掘り崩さない)。
 		if world.mud < world.params.wall_repair_cost:
 			_push_feed("event", "壁を直す建材がない (必要 %.0f)。" % world.params.wall_repair_cost)
 			return
@@ -624,6 +822,19 @@ func _try_tile_order(pos: Vector2) -> void:
 			"type": Controller.CommandType.REPAIR_WALL, "x": tp.x, "y": tp.y,
 		})
 		_push_feed("event", "ひび割れた壁に修復の印を付けた。")
+	elif t == TileMapData.TileType.WALL and world._wall_diggable(tp):
+		# 素の壁 → 掘削 (§10 巣穴拡張)。トグル。
+		var had := false
+		for j in world.jobs:
+			if j.type == World.JobType.DIG and j.x == tp.x and j.y == tp.y:
+				had = true
+		controller.queue.append({
+			"type": Controller.CommandType.DESIGNATE_DIG, "x": tp.x, "y": tp.y,
+		})
+		_push_feed("event", "掘削の指示を取り消した。" if had else "岩壁に掘削の印を付けた。")
+	elif t == TileMapData.TileType.WALL:
+		# 掘れない壁 (外殻・トーテム至近)。
+		_push_feed("event", "この岩は固く掘り崩せない (外との境・トーテムの守り)。")
 
 ## 武装中の左クリック: 対象 (敵/ゴブリン/タイル) を指定して発動する。対象外クリックは
 ## 無視 (武装維持)。発動後も武装を保って連射でき、残高が尽きると自動解除する。
@@ -712,6 +923,10 @@ func _update_status() -> void:
 	if world.totem_hp < params.totem_hp_max:
 		totem_txt = "  ⚠トーテム %.0f/%.0f" % [world.totem_hp, params.totem_hp_max]
 	var res_txt := "  建材 %.0f" % world.mud
+	if world.equipment > 0.0:
+		res_txt += "  装備 %.0f" % world.equipment
+	if world.herb > 0.0:
+		res_txt += "  薬草 %.0f" % world.herb
 	if world.gems > 0.0:
 		res_txt += "  宝石 %.0f" % world.gems
 	var captive_txt := ""
@@ -752,9 +967,14 @@ func _update_status() -> void:
 	for mb in _miracle_buttons:
 		var mdef: Dictionary = mb.def
 		(mb.btn as Button).disabled = (_armed != int(mdef.m)) and world.faith < _miracle_cost(mdef)
-	# 勝敗バナー。
+	# 勝敗バナー。勝利時は到達ルート (§13 4 ルート / A3) を添える。
 	if world.outcome == World.Outcome.VICTORY:
-		_outcome_label.text = "★ 勝利 — 規定日数を生き延びた!"
+		var route_txt: String = {
+			0: "ゴブリン連合は人間の総攻撃を退けた",
+			1: "敵でも友でもなく — 人間との和平が成った",
+			2: "宝石を差し出し、人間に飼われる道を選んだ",
+		}.get(world.ending_route(), "")
+		_outcome_label.text = "★ 勝利 — %s" % route_txt
 		_outcome_label.visible = true
 	elif world.outcome == World.Outcome.DEFEAT:
 		_outcome_label.text = "✖ 敗北"
@@ -879,6 +1099,21 @@ func _build_ui() -> void:
 	_eta_label.add_theme_color_override("font_color", C_INK_FAINT)
 	_eta_label.add_theme_font_size_override("font_size", 12)
 	top_box.add_child(_eta_label)
+	# 新規ゲームの難度セレクタ (§14.5.2: 易/並/難。押下でその難度の新しい群れを始める。
+	# 自動開始は並のまま継続するので scene_smoke / autosave 復元を妨げない)。
+	var diff_label := Label.new()
+	diff_label.text = "   新規:"
+	diff_label.add_theme_color_override("font_color", C_INK_FAINT)
+	diff_label.add_theme_font_size_override("font_size", 12)
+	top_box.add_child(diff_label)
+	for cfg in [["易", 0], ["並", 1], ["難", 2]]:
+		var db := Button.new()
+		db.text = cfg[0]
+		db.add_theme_font_size_override("font_size", 12)
+		_style_button(db, false)
+		var lvl: int = cfg[1]
+		db.pressed.connect(func() -> void: _start_new_game(lvl))
+		top_box.add_child(db)
 	ui.add_child(top)
 
 	# --- 右パネル: 観察対象 + 巣の記録 ---
@@ -920,10 +1155,13 @@ func _build_ui() -> void:
 	_outcome_label.visible = false
 	ui.add_child(_outcome_label)
 
-	# --- 左下: 速度コントロール ---
+	# --- 左下: 速度コントロール + 奇跡 (下段) / 建築 (上段) ---
+	# 2 本の HBox は高さを明示して横帯に分離する (offset_bottom 未設定だと両方とも
+	# 画面下端まで伸びて矩形が重なり、後追加の建築バーが速度/奇跡のクリックを奪う)。
 	var bar := HBoxContainer.new()
 	bar.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	bar.offset_top = -40.0
+	bar.offset_top = -38.0
+	bar.offset_bottom = -8.0
 	bar.offset_left = 8.0
 	bar.add_theme_constant_override("separation", 4)
 	for cfg in [["‖ 停止", 0.0], ["▶ 1x", 1.0], ["▶▶ 3x", 3.0]]:
@@ -947,10 +1185,11 @@ func _build_ui() -> void:
 		bar.add_child(mb)
 		_miracle_buttons.append({"btn": mb, "def": def})
 	ui.add_child(bar)
-	# 建築バー (§3-15)。速度バーの上段。押下で建築モード (ゴースト追従 → クリック確定)。
+	# 建築バー (§3-15)。速度バーの上段 (重ならない横帯)。押下で建築モード。
 	var build_bar := HBoxContainer.new()
 	build_bar.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	build_bar.offset_top = -76.0
+	build_bar.offset_top = -74.0
+	build_bar.offset_bottom = -42.0
 	build_bar.offset_left = 8.0
 	build_bar.add_theme_constant_override("separation", 4)
 	var build_label := Label.new()
@@ -973,10 +1212,11 @@ func _build_ui() -> void:
 	# --- 派遣パネル (§11.5。中央下。出現物クリックで開く) ---
 	_dispatch_panel = PanelContainer.new()
 	_dispatch_panel.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	# 点アンカー (中央下) なので寸法はオフセットで明示する (260×102 px)。
-	_dispatch_panel.offset_left = -130.0
-	_dispatch_panel.offset_right = 130.0
-	_dispatch_panel.offset_top = -150.0
+	# 点アンカー (中央下) なので寸法はオフセットで明示する (280×128 px。
+	# 種別/距離/リターン目安の表示ぶん高さを少し広げた)。
+	_dispatch_panel.offset_left = -140.0
+	_dispatch_panel.offset_right = 140.0
+	_dispatch_panel.offset_top = -176.0
 	_dispatch_panel.offset_bottom = -48.0
 	_dispatch_panel.add_theme_stylebox_override("panel", _panel_style())
 	_dispatch_panel.visible = false
@@ -995,7 +1235,8 @@ func _build_ui() -> void:
 	_dispatch_slider.step = 1
 	_dispatch_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_dispatch_slider.value_changed.connect(func(v: float) -> void:
-		_dispatch_count.text = "ゴブリン %d 体" % int(v))
+		_dispatch_count.text = "ゴブリン %d 体" % int(v)
+		_update_dispatch_panel())
 	srow.add_child(_dispatch_slider)
 	_dispatch_count = Label.new()
 	_dispatch_count.add_theme_color_override("font_color", C_EMBER_BRIGHT)
@@ -1078,6 +1319,22 @@ func _build_ui() -> void:
 			controller.queue.append({"type": Controller.CommandType.TRIBUTE, "faction": fac}))
 		crow2.add_child(tb)
 	cbox.add_child(crow2)
+	# 宝石献上 (§14/B5。差し出せば和平の対価。非加害＝中立善を閉じない)。
+	_gem_row = HBoxContainer.new()
+	_gem_row.add_theme_constant_override("separation", 4)
+	var glabel := Label.new()
+	glabel.text = "宝石:"
+	glabel.add_theme_color_override("font_color", C_INK_DIM)
+	glabel.add_theme_font_size_override("font_size", 11)
+	_gem_row.add_child(glabel)
+	_gem_tribute_button = Button.new()
+	_gem_tribute_button.add_theme_font_size_override("font_size", 11)
+	_style_button(_gem_tribute_button, false)
+	_gem_tribute_button.pressed.connect(func() -> void:
+		controller.queue.append({"type": Controller.CommandType.TRIBUTE_GEMS,
+				"amount": world.params.gems_tribute_amount}))
+	_gem_row.add_child(_gem_tribute_button)
+	cbox.add_child(_gem_row)
 	ui.add_child(_captive_panel)
 
 	# --- つがい承認バナー (KI-21。承認待ちが出たときだけ中央上に出す) ---
@@ -1119,6 +1376,74 @@ func _build_ui() -> void:
 	bbox.add_child(brow2)
 	ui.add_child(_bond_banner)
 
+	# --- 防衛配分パネル (§3-17。襲撃 (予兆/交戦) の間だけ表示。中央下・派遣より上) ---
+	_defense_panel = PanelContainer.new()
+	_defense_panel.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	_defense_panel.offset_left = -150.0
+	_defense_panel.offset_right = 150.0
+	_defense_panel.offset_top = -176.0
+	_defense_panel.offset_bottom = -48.0
+	_defense_panel.add_theme_stylebox_override("panel", _panel_style())
+	_defense_panel.visible = false
+	var defbox := VBoxContainer.new()
+	defbox.add_theme_constant_override("separation", 4)
+	_defense_panel.add_child(defbox)
+	defbox.add_child(_section_title("防 衛 配 分"))
+	# 巣口ごとに 1 本ずつスライダーを並べる (値 0..100 = 配分の生重み)。
+	_defense_sliders = []
+	for gi in range(world.map.gates.size()):
+		var grow := HBoxContainer.new()
+		grow.add_theme_constant_override("separation", 6)
+		var glabel := Label.new()
+		glabel.text = "巣口%d" % (gi + 1)
+		glabel.add_theme_color_override("font_color", C_INK_DIM)
+		glabel.add_theme_font_size_override("font_size", 12)
+		glabel.custom_minimum_size = Vector2(48, 0)
+		grow.add_child(glabel)
+		var gslider := HSlider.new()
+		gslider.min_value = 0
+		gslider.max_value = 100
+		gslider.step = 1
+		gslider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		gslider.value_changed.connect(func(_v: float) -> void: _on_defense_slider_changed())
+		grow.add_child(gslider)
+		defbox.add_child(grow)
+		_defense_sliders.append(gslider)
+	_defense_auto_button = Button.new()
+	_defense_auto_button.text = "自動 (敵に追従)"
+	_defense_auto_button.add_theme_font_size_override("font_size", 12)
+	_style_button(_defense_auto_button, true)
+	_defense_auto_button.pressed.connect(func() -> void:
+		controller.queue.append({"type": Controller.CommandType.DEFENSE_AUTO}))
+	defbox.add_child(_defense_auto_button)
+	ui.add_child(_defense_panel)
+
+## 防衛スライダー操作: 3 本の生重みを束ねて手動配分コマンドを送る (§3-17)。
+## 自動追従でスライダーを書き戻す間 (_defense_syncing) は無視する。
+func _on_defense_slider_changed() -> void:
+	if _defense_syncing:
+		return
+	var weights: Array = []
+	for s in _defense_sliders:
+		weights.append((s as HSlider).value)
+	controller.queue.append({"type": Controller.CommandType.SET_DEFENSE_ALLOC,
+			"weights": weights})
+
+## 防衛配分パネルの毎フレーム更新 (襲撃中のみ表示。自動中はスライダーを実配分へ追従)。
+func _update_defense_panel() -> void:
+	var show := world.outcome == World.Outcome.ONGOING and world.phase != World.Phase.PEACE
+	_defense_panel.visible = show
+	if not show:
+		return
+	_style_button(_defense_auto_button, not world.defense_alloc_manual)
+	# 自動中は実配分 (敵戦力比例) をスライダーへ反映する (操作は手動化のトリガー)。
+	if not world.defense_alloc_manual:
+		_defense_syncing = true
+		for i in range(_defense_sliders.size()):
+			if i < world.defense_alloc.size():
+				(_defense_sliders[i] as HSlider).value = round(world.defense_alloc[i] * 100.0)
+		_defense_syncing = false
+
 ## 側室ボタン: 選択中ゴブリンを婿/嫁に、異性の捕虜 (ゴブリン優先・なければ人間) を娶らせる。
 func _press_concubine() -> void:
 	var suitor := _find_goblin(sel_id) if sel_kind == SelKind.GOBLIN else null
@@ -1141,12 +1466,16 @@ func _press_concubine() -> void:
 func _update_captive_ui() -> void:
 	var total := world.cap_male_goblin + world.cap_female_goblin \
 			+ world.cap_male_human + world.cap_female_human
-	_captive_panel.visible = total >= 1.0
+	# 捕虜が居るか宝石を持っているとき外交パネルを出す (§14/B5: 宝石献上は捕虜と独立)。
+	_captive_panel.visible = total >= 1.0 or world.gems >= 1.0
 	if _captive_panel.visible:
 		_captive_info.text = "捕虜 — ゴブリン 雄%d 雌%d / 人間 雄%d 雌%d" % [
 			int(world.cap_male_goblin), int(world.cap_female_goblin),
 			int(world.cap_male_human), int(world.cap_female_human)]
 		_concubine_button.disabled = sel_kind != SelKind.GOBLIN
+		_gem_row.visible = world.gems >= 1.0
+		_gem_tribute_button.text = "宝石 %d を人間へ献上" % int(world.params.gems_tribute_amount)
+		_gem_tribute_button.disabled = world.gems < world.params.gems_tribute_amount
 	# 承認待ちの先頭 1 件をバナーに出す (複数いても順に処理される)。
 	var pending: Goblin = null
 	for g in world.goblins:
@@ -1181,6 +1510,24 @@ func _open_dispatch_panel(field_id: int) -> void:
 		_dispatch_button.disabled = true
 	_dispatch_count.text = "ゴブリン %d 体" % int(_dispatch_slider.value)
 	_dispatch_panel.visible = true
+	_update_dispatch_panel()
+
+## CAMP の手応えヒント (§11.5)。隊の実効戦力 (人数 + 装備ボーナス見込み) と
+## field_camp_strength を比べたおおまかな所感を返す。実際の勝率計算
+## (_resolve_camp の effective/(effective+strength)) の近似であり、装備の
+## 在庫状況までは見ない (出発時に揃わない場合もあるため目安にとどめる)。
+func _camp_difficulty_hint(headcount: int) -> String:
+	if headcount <= 0:
+		return ""
+	var effective: float = float(headcount) * (1.0 + world.params.equip_bonus * 0.5)
+	var strength: float = world.params.field_camp_strength
+	var ratio := effective / (effective + strength)
+	if ratio >= 0.6:
+		return " (手応え: 楽勝そう)"
+	elif ratio >= 0.35:
+		return " (手応え: 五分五分)"
+	else:
+		return " (手応え: 厳しそう)"
 
 func _close_dispatch_panel() -> void:
 	_dispatch_field_id = -1
@@ -1196,7 +1543,8 @@ func _confirm_dispatch() -> void:
 	_close_dispatch_panel()
 
 ## 毎フレーム: 対象の出現物が消えたら (回収完了・日没) パネルを自動で閉じ、
-## 残量・手すき表示を追従させる (スライダー値はいじらない)。
+## 残量・手すき表示を追従させる (スライダー値はいじらない)。種別名・距離・
+## リターン目安 (CAMP は手応えヒント付き) を併記する (§11.5)。
 func _update_dispatch_panel() -> void:
 	if _dispatch_panel == null or not _dispatch_panel.visible:
 		return
@@ -1204,10 +1552,18 @@ func _update_dispatch_panel() -> void:
 	if f == null:
 		_close_dispatch_panel()
 		return
+	var kind_name: String = FIELD_KIND_JP.get(f.kind, "出現物")
+	var dist_name: String = FIELD_DISTANCE_JP.get(f.distance, "近い")
+	var return_hint: String = FIELD_RETURN_JP.get(f.kind, "食料")
+	var lines: Array = []
+	lines.append("%s ・ %s ・ のこり %d" % [kind_name, dist_name, f.amount])
+	var hint_extra: String = ""
+	if f.kind == FieldResource.Kind.CAMP:
+		hint_extra = _camp_difficulty_hint(int(_dispatch_slider.value))
+	lines.append("リターン: %s%s" % [return_hint, hint_extra])
 	if _dispatch_button.disabled:
-		_dispatch_info.text = "のこり %d 食ぶん — 手すきのゴブリンがいない" % f.amount
-	else:
-		_dispatch_info.text = "のこり %d 食ぶん" % f.amount
+		lines.append("手すきのゴブリンがいない")
+	_dispatch_info.text = "\n".join(lines)
 
 func _refresh_speed_buttons() -> void:
 	for d in _speed_buttons:

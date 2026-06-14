@@ -132,6 +132,18 @@ export interface WorldParams {
   faithPerTickPerShaman: number;
   shamanRatio: number; // 頭数のうちシャーマンに回す比率 (KI-03)
   faithCap: number; // 信仰残高の上限 (§3 青天井防止)
+
+  // --- 食料従属 (§2.5・B3: 増殖の食料在庫への従属) ---
+  // foodStock (在庫・食事回数) は生存頭数比例で生産/消費する。在庫/頭数の
+  // 比率が閾値を割ると求愛成立率を抑制 + 流産率が上がり、閾値を超えると
+  // 求愛成立率に控えめなバフが乗る (surge/foodBuff と同じ枠で加算)。
+  foodProducePerTick: number; // 1個体・1tickあたりの食料生産量
+  foodConsumePerTick: number; // 1個体・1tickあたりの食料消費量
+  foodPerCapitaShortage: number; // 在庫/頭数がこれ未満なら食料不足
+  foodPerCapitaSurplus: number; // 在庫/頭数がこれ超なら食料過剰
+  foodShortageCourtMult: number; // 不足時、求愛成立率に乗じる係数 (<1)
+  foodSurplusCourtBonus: number; // 過剰時、求愛成立率の乗数へ加える上乗せ
+  foodShortageMiscarryChancePerTick: number; // 不足時、妊娠個体が1tickに流産する確率
 }
 
 /**
@@ -316,5 +328,15 @@ export function makeWorldParams(ticksPerDay = TICKS_PER_DAY_BASE): WorldParams {
       (b.FAITH_PER_SHAMAN * (b.RAID_INTERVAL / 3)) / ticksPerDay,
     shamanRatio: b.SHAMAN_RATIO,
     faithCap: b.BASE_CAP,
+
+    // 食料従属 (§2.5・B3)。生産/消費は日次の1人(体)あたり量を tick 次へ (KI-02)。
+    // 閾値・乗数・上乗せは比率/即時係数なので解像度に依らず不変。
+    foodProducePerTick: b.FOOD_PRODUCE_PER_CAPITA / ticksPerDay,
+    foodConsumePerTick: b.FOOD_CONSUME_PER_CAPITA / ticksPerDay,
+    foodPerCapitaShortage: b.FOOD_PER_CAPITA_SHORTAGE,
+    foodPerCapitaSurplus: b.FOOD_PER_CAPITA_SURPLUS,
+    foodShortageCourtMult: b.FOOD_SHORTAGE_COURT_MULT,
+    foodSurplusCourtBonus: b.FOOD_SURPLUS_COURT_BONUS,
+    foodShortageMiscarryChancePerTick: b.FOOD_SHORTAGE_MISCARRY_CHANCE / ticksPerDay,
   };
 }
