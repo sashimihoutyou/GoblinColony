@@ -1394,12 +1394,12 @@ func _build_ui() -> void:
 	for gi in range(world.map.gates.size()):
 		var grow := HBoxContainer.new()
 		grow.add_theme_constant_override("separation", 6)
-		var glabel := Label.new()
-		glabel.text = "巣口%d" % (gi + 1)
-		glabel.add_theme_color_override("font_color", C_INK_DIM)
-		glabel.add_theme_font_size_override("font_size", 12)
-		glabel.custom_minimum_size = Vector2(48, 0)
-		grow.add_child(glabel)
+		var gate_label := Label.new()
+		gate_label.text = "巣口%d" % (gi + 1)
+		gate_label.add_theme_color_override("font_color", C_INK_DIM)
+		gate_label.add_theme_font_size_override("font_size", 12)
+		gate_label.custom_minimum_size = Vector2(48, 0)
+		grow.add_child(gate_label)
 		var gslider := HSlider.new()
 		gslider.min_value = 0
 		gslider.max_value = 100
