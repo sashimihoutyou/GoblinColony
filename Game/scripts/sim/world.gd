@@ -91,6 +91,19 @@ var amina_joined: bool = false    # アミナが加入したか (→ A4)
 # 難度 (易=0/並=1/難=2)。world.setup で初期敵対度・助走窓に効く (§14.5.2)。
 var difficulty: int = 1
 
+# --- §14 アミナ装置 (A4)。MAIDEN を保護し、消費せず保持し続けると懐く。---
+enum AminaState {
+	NONE = 0,      # まだ MAIDEN に遭遇していない
+	HOLDING = 1,   # 保護中 (cap_female_human に 1 名分含む)。harm_committed が
+	               # 立つと CLOSED へ遷移し不可逆に終わる (§14 不可逆)。
+	JOINED = 2,    # 懐いて加入済み (amina_joined=true、ユニーク個体が群れに居る)
+	CLOSED = 3,    # 保持中に harm_committed が立ち、懐きの目が閉じた (再挑戦不可)
+}
+var amina_state: int = AminaState.NONE
+var amina_hold_ticks_left: int = -1       # HOLDING 中の残りティック (-1 = 非保持)
+var amina_foreshadow_emitted: bool = false  # 「懐き予兆」を発火済みか (1 回だけ)
+var amina_goblin_id: int = -1             # JOINED 後のユニーク個体 id (-1 = 未加入)
+
 # 苗床の確定生産タイマー (tick。§2.5/§3-19。B2 第二増分)。母体が居る間だけ進み、
 # nursery_period_ticks に達すると出産処理して 0 へ戻す (world.ts nurseryTimer)。
 var nursery_timer: float = 0.0
@@ -151,6 +164,11 @@ func setup(p: SimParams) -> void:
 	harm_committed = false
 	gems_tributed = false
 	amina_joined = false
+	# A4: アミナ装置をリセット (§14)。
+	amina_state = AminaState.NONE
+	amina_hold_ticks_left = -1
+	amina_foreshadow_emitted = false
+	amina_goblin_id = -1
 	var d := clampi(difficulty, 0, 2)
 	human_hostility = float(p.start_human_hostility_by_diff[d])
 	bunta_hostility = float(p.start_tribe_hostility_by_diff[d])
@@ -243,6 +261,7 @@ func tick_once() -> void:
 	_step_social()
 	_step_captives()      # §2.5/KI-17: 雄ゴブリン捕虜の平時自動加入
 	_step_captive_bonding()  # §3-19/KI-21: 捕虜との自然つがい化 (承認待ち)
+	_step_amina()         # §14/A4: 行き倒れの少女を保持し続けると懐く (アミナ装置)
 	_step_forage()        # T4: キノコ床の再生長を進める (食料加算は採集者の運搬で行う)
 	_step_food()
 	_step_workshops()     # §7/B6: キノコ農園→薬草 / 泥鍛冶屋→装備
@@ -757,7 +776,8 @@ func _roll_field_kind() -> int:
 func dispatch_to_field(resource_id: int, count: int) -> int:
 	if not is_day() or phase != Phase.PEACE or count <= 0:
 		return 0
-	if _field_by_id(resource_id) == null:
+	var f := _field_by_id(resource_id)
+	if f == null:
 		return 0
 	var pool := _dispatch_pool()
 	var n: int = mini(count, pool.size())
@@ -765,7 +785,25 @@ func dispatch_to_field(resource_id: int, count: int) -> int:
 		pool[i].dispatch_id = resource_id
 	if n > 0:
 		_event({"t": "dispatch", "count": n, "resource_id": resource_id})
+		if f.kind == FieldResource.Kind.CAMP:
+			_equip_dispatched(resource_id)
 	return n
+
+## §11.5 戦闘系 (CAMP) の出発前装備 (§9 装備動線の流用 / B8)。今回送り出した
+## 個体のうち未装備の男性/ユニーク (族長等) を id 昇順で共有装備在庫から
+## 装備する。在庫が尽きたら手ぶら (素手) のまま出発する。
+func _equip_dispatched(resource_id: int) -> void:
+	var squad: Array = []
+	for g in goblins:
+		if g.dispatch_id == resource_id and not g.equipped \
+				and (g.sex == Goblin.Sex.MALE or g.is_unique):
+			squad.append(g)
+	squad.sort_custom(func(a, b): return a.id < b.id)
+	for g in squad:
+		if equipment < 1.0:
+			break
+		equipment -= 1.0
+		g.equipped = true
 
 ## 派遣に出せる手すきの成体 (forage_bias 降順・同値 id 昇順で決定的)。
 ## UI のスライダー上限 (dispatch_pool_count) と dispatch_to_field が同じ条件を見る。
@@ -805,6 +843,11 @@ func _field_by_id(id: int) -> FieldResource:
 			return f
 	return null
 
+## A4/§14: アミナ (JOINED 後のユニーク個体) かどうか。非戦闘判定の唯一の入口
+## (KI-01 の精神。amina_goblin_id が単一の真実源)。
+func _is_amina(g: Goblin) -> bool:
+	return amina_goblin_id >= 0 and g.id == amina_goblin_id
+
 # --- ゴブリンの移動 (§3-0 ステート対応) ---
 func _step_goblins() -> void:
 	var in_raid := phase == Phase.COMBAT and not enemies.is_empty()
@@ -818,7 +861,8 @@ func _step_goblins() -> void:
 		# 側室/苗床ホストは戦線に出ない (子を産む役割に専念 / world.ts §3-6 と同条件)。
 		# §3-21: 搬送中の担ぎ手も戦線に吸われない (倒れたユニークの搬送を優先)。
 		# B4/spec 3-17: まじない医は後衛に控え、白兵の戦線へは吸われない。
-		ctx.assigned_to_combat = (g.sex == Goblin.Sex.MALE or g.is_unique) \
+		# A4: アミナは is_unique=true (事故死無効・保護対象) だが非戦闘 (§14)。
+		ctx.assigned_to_combat = (g.sex == Goblin.Sex.MALE or g.is_unique) and not _is_amina(g) \
 				and g.role != Goblin.Role.CONCUBINE and g.role != Goblin.Role.NURSERY_HOST \
 				and g.role != Goblin.Role.WITCH_DOCTOR and g.carrying_id < 0
 		# §11.5: 派遣中・運搬中も WORK 扱い (運搬は派遣解除後も配達を済ませる)。
@@ -905,6 +949,9 @@ func _movement_target(g: Goblin, in_raid: bool, entered_wander: bool = false) ->
 		# 遠距離治療する (_step_medic)。
 		if g.role == Goblin.Role.WITCH_DOCTOR:
 			return _medic_slot(g)
+		# A4: アミナは is_unique=true でも非戦闘 (§14)。避難スロットへ。
+		if _is_amina(g):
+			return _sanctuary_slot(g.id)
 		if (g.sex == Goblin.Sex.MALE or g.is_unique) and not g.is_child():
 			# 戦線 (§3-17): 平素は配分重みに従い巣口の防衛ラインで迎え撃つ
 			# (隘路は数の利を殺せる)。敵がトーテム至近まで踏み込んだら従来の
@@ -1030,13 +1077,16 @@ func _forage_target(g: Goblin) -> Vector2i:
 # §11.5 派遣の WORK 移動目標。出現物⇔集積所を往復する (_forage_target と同じ
 # 「到着判定で副作用」規約)。出現物が消えたら (取り尽くし/日没)、運搬中の一食を
 # 届けてから派遣を解除する (KI-20「ジョブを抱えて消えない」と同じ思想)。
+#
+# A4: 種別ごとにリターンを固定する (§11.5 表)。FORAGE は既存コードパスを一切
+# 変えない (ベースライン厳守)。ANIMAL/RUINS は「採取量を消費して持ち帰る」運搬
+# 型で FORAGE と同じ往復規約を共有 (carry_kind で値を切り替えるのみ)。
+# TRAVELER/WANDERER/CAMP/MAIDEN は 1 回の到着で即時解決する一発勝負型。
 func _dispatch_target(g: Goblin) -> Vector2i:
 	var f := _field_by_id(g.dispatch_id)
 	if g.carrying_food:
 		if _at_storage(g.pos()):
-			food += params.field_carry_value
-			g.carrying_food = false
-			_event({"t": "field_haul", "id": g.id, "sex": g.sex})
+			_deliver_field_carry(g, f)
 			if f == null:
 				g.dispatch_id = -1
 			return Vector2i(-1, -1)
@@ -1045,15 +1095,147 @@ func _dispatch_target(g: Goblin) -> Vector2i:
 		g.dispatch_id = -1
 		return Vector2i(-1, -1)
 	if maxi(abs(g.x - f.x), abs(g.y - f.y)) <= 1:
-		# 到着: 一食ぶん摘み取り、運搬状態へ。取り尽くしたら出現物を畳む
-		# (他の派遣個体は次 tick に f == null を見て手ぶらで巣へ戻る)。
-		f.amount -= 1
-		g.carrying_food = true
-		if f.amount <= 0:
-			field_resources.erase(f)
-			_event({"t": "field_done", "id": f.id, "x": f.x, "y": f.y})
+		match f.kind:
+			FieldResource.Kind.FORAGE, FieldResource.Kind.ANIMAL, FieldResource.Kind.RUINS:
+				# 到着: 一食/一山ぶん摘み取り、運搬状態へ。取り尽くしたら出現物を畳む
+				# (他の派遣個体は次 tick に f == null を見て手ぶらで巣へ戻る)。
+				f.amount -= 1
+				g.carrying_food = true
+				if f.amount <= 0:
+					field_resources.erase(f)
+					_event({"t": "field_done", "id": f.id, "x": f.x, "y": f.y})
+			_:
+				# TRAVELER/WANDERER/CAMP/MAIDEN: 到着で即時解決する一発勝負 (§11.5)。
+				_resolve_field_encounter(g, f)
 		return Vector2i(-1, -1)
 	return f.pos()
+
+## 運搬中の派遣個体が集積所へ到着したときのリターン適用 (FORAGE/ANIMAL/RUINS)。
+## f は取り尽くされていれば null (この一往復ぶんの種別記憶が無いため、最後に
+## 摘んだ瞬間の f.kind は分からない → carrying_kind を個体側に持たせず、
+## f が存在する限り f.kind を見る。null のときは取り尽くし済みなので FORAGE
+## 相当 (food) として処理する旧仕様を踏襲しても実害はない (最後の 1 回のみ)。
+func _deliver_field_carry(g: Goblin, f: FieldResource) -> void:
+	g.carrying_food = false
+	var kind := f.kind if f != null else FieldResource.Kind.FORAGE
+	match kind:
+		FieldResource.Kind.ANIMAL:
+			food += params.field_animal_carry_value
+			_event({"t": "field_haul", "id": g.id, "sex": g.sex, "kind": kind})
+			if rng.next_float() < params.field_animal_captive_chance:
+				cap_male_goblin += 1.0
+				_event({"t": "field_captive", "id": g.id, "kind": kind, "human": false})
+		FieldResource.Kind.RUINS:
+			mud += params.field_ruins_mud_value
+			_event({"t": "field_haul", "id": g.id, "sex": g.sex, "kind": kind})
+			if rng.next_float() < params.field_ruins_gem_chance:
+				gems += params.field_ruins_gem_value
+				_event({"t": "field_gem", "id": g.id, "kind": kind})
+		_:
+			food += params.field_carry_value
+			_event({"t": "field_haul", "id": g.id, "sex": g.sex, "kind": kind})
+
+## TRAVELER/WANDERER/CAMP/MAIDEN: 出現物へ到着した瞬間に結果を確定する一発勝負
+## (§11.5「準・自動解決」)。解決後は出現物を畳み、関係個体の派遣を解除する。
+func _resolve_field_encounter(g: Goblin, f: FieldResource) -> void:
+	match f.kind:
+		FieldResource.Kind.TRAVELER:
+			_resolve_traveler(g, f)
+		FieldResource.Kind.WANDERER:
+			_resolve_wanderer(g, f)
+		FieldResource.Kind.CAMP:
+			_resolve_camp(f)
+			return  # _resolve_camp が関係個体全員の dispatch_id を解除する
+		FieldResource.Kind.MAIDEN:
+			_resolve_maiden(g, f)
+	field_resources.erase(f)
+	g.dispatch_id = -1
+
+## TRAVELER: 交易 (B5 までの最小実装)。gems か herb を少量持ち帰る。
+## 業の漏れ (§13): 既存ロールの後に追加の 1 ロールで低確率の粗相 → human_hostility 上昇。
+func _resolve_traveler(g: Goblin, f: FieldResource) -> void:
+	if rng.next_float() < params.field_traveler_gem_chance:
+		gems += params.field_traveler_gem_value
+		_event({"t": "field_trade", "id": g.id, "good": "gems"})
+	else:
+		herb += params.field_traveler_herb_value
+		_event({"t": "field_trade", "id": g.id, "good": "herb"})
+	if rng.next_float() < params.field_traveler_faux_pas_chance:
+		human_hostility = clampf(human_hostility + params.field_traveler_faux_pas_hostility, 0.0, 1.0)
+		_event({"t": "field_faux_pas", "id": g.id})
+
+## WANDERER: ゴブリンの放浪者。帰還 (到着) のタイミングで加入確率を判定し、
+## 加入なら新規ゴブリンを群れに加える (部族差 / §2.5)。
+func _resolve_wanderer(g: Goblin, f: FieldResource) -> void:
+	var chance := params.field_wanderer_join_chance_other
+	if f.tribe == "bunta":
+		chance = params.field_wanderer_join_chance_bunta
+	elif f.tribe == "kugyo":
+		chance = params.field_wanderer_join_chance_kugyo
+	if rng.next_float() < chance:
+		var sex := Goblin.Sex.MALE if rng.next_float() < 0.5 else Goblin.Sex.FEMALE
+		var recruit := _make_goblin(sex, Goblin.Role.NONE, Goblin.Origin.CAPTIVE_JOINED)
+		_place(recruit, _nearest_nest_floor(g.pos()))
+		goblins.append(recruit)
+		_event({"t": "wanderer_joined", "id": recruit.id, "sex": sex, "tribe": f.tribe})
+	else:
+		_event({"t": "wanderer_left", "x": f.x, "y": f.y, "tribe": f.tribe})
+
+## MAIDEN: 行き倒れの少女。アミナ装置が未発動 (NONE) なら専用に保護する
+## (cap_female_human には加えない = 通常の消費系 / 自然つがい化のプールから
+## 外し、特定個体として _step_amina が保持・観察する / §14)。装置が既に
+## 発動済み (HOLDING/JOINED/CLOSED) なら、2 人目以降は通常の人間雌捕虜として
+## 普通にプールへ加わる (アミナは 1 人だけ / §14)。
+func _resolve_maiden(g: Goblin, f: FieldResource) -> void:
+	if amina_state == AminaState.NONE:
+		amina_state = AminaState.HOLDING
+		amina_hold_ticks_left = params.amina_hold_ticks
+		amina_foreshadow_emitted = false
+		_event({"t": "field_maiden", "id": g.id, "x": f.x, "y": f.y, "amina": true})
+	else:
+		cap_female_human += 1.0
+		_event({"t": "field_maiden", "id": g.id, "x": f.x, "y": f.y, "amina": false})
+
+## CAMP: 敵性キャンプ。出発前に共有装備在庫から武装済み (dispatch 時)。到着の瞬間に
+## 派遣人数 vs キャンプ戦力で勝敗を決める (§11.5「人数は成否に効く」)。
+## 複数体が同じ出現物に派遣されていても解決は 1 回のみ (最初の到着個体が代表)。
+## RNG 消費は 1 float (勝敗) のみ。勝利時の宝石/装備/捕虜ロールは追加で固定順に
+## 消費する。敗北は即・致命にしない (HP 減のみ、死亡なし / §0)。
+func _resolve_camp(f: FieldResource) -> void:
+	var squad: Array = []
+	for g in goblins:
+		if g.dispatch_id == f.id:
+			squad.append(g)
+	var headcount := squad.size()
+	# B8: 装備済みの個体は equip_bonus ぶん実効戦力が上乗せされる (出発前装備
+	# _equip_dispatched と整合)。
+	var effective := 0.0
+	for g in squad:
+		effective += 1.0 + (params.equip_bonus if g.equipped else 0.0)
+	var win_chance := clampf(
+		effective / (effective + params.field_camp_strength),
+		params.field_camp_win_chance_min, params.field_camp_win_chance_max)
+	var win := rng.next_float() < win_chance
+	if win:
+		gems += params.field_camp_win_gem_value
+		equipment += params.field_camp_win_equip_value
+		var got_captive := rng.next_float() < params.field_camp_win_captive_chance
+		if got_captive:
+			cap_male_goblin += 1.0
+		_event({"t": "field_camp_win", "headcount": headcount, "captive": got_captive})
+	else:
+		# 即・致命にしない: 隊の中で最も手前 (id 最小) の 1 体だけが負傷する。
+		squad.sort_custom(func(a, b): return a.id < b.id)
+		if not squad.is_empty():
+			var hurt: Goblin = squad[0]
+			var dmg := params.field_camp_loss_hp_min + rng.next_float() * params.field_camp_loss_hp_spread
+			hurt.hp = max(1.0, hurt.hp - dmg)
+			_event({"t": "field_camp_loss", "headcount": headcount, "id": hurt.id, "dmg": dmg})
+		else:
+			_event({"t": "field_camp_loss", "headcount": headcount, "id": -1, "dmg": 0.0})
+	for g in squad:
+		g.dispatch_id = -1
+	field_resources.erase(f)
 
 func _work_target(g: Goblin) -> Vector2i:
 	# §11.5 派遣: 出現物の回収はキノコ採集より優先 (プレイヤーの明示指示)。
@@ -1716,7 +1898,9 @@ func _can_fight(g: Goblin) -> bool:
 	if g.state == Goblin.State.FEAR or g.state == Goblin.State.DYING:
 		return false
 	# 雌は戦線に立たない (恐怖閾値が高い / 産み手の保護 §8)。
-	if g.sex == Goblin.Sex.FEMALE and not g.is_unique:
+	# A4: アミナは is_unique=true でも非戦闘 (§14。保護対象として is_unique を
+	# 使うが戦闘力は持たせない)。
+	if g.sex == Goblin.Sex.FEMALE and (not g.is_unique or _is_amina(g)):
 		return false
 	return true
 
@@ -2217,6 +2401,37 @@ func tear_apart_bond(captive_id: int, cause: String) -> bool:
 		mate.death_logged = true
 		_event({"t": "death", "id": mate.id, "sex": mate.sex, "cause": cause})
 	return true
+
+# --- §14 アミナ装置 (A4): 行き倒れの少女を保持し続けると懐く ---
+## HOLDING 中のみ進行。harm_committed が立てば不可逆に CLOSED へ (§14)。
+## 保持期間の半ばで「懐き予兆」を 1 回だけ発火し、満了で JOINED (ユニーク加入)。
+func _step_amina() -> void:
+	if amina_state != AminaState.HOLDING:
+		return
+	if harm_committed:
+		# §14 不可逆: 保持中に人間捕虜への加害 (生贄/苗床/朝貢/奴隷妻) が
+		# どれか 1 件でも起きたら懐きの目は閉じる (この MAIDEN も対象に含む扱い)。
+		amina_state = AminaState.CLOSED
+		amina_hold_ticks_left = -1
+		_event({"t": "amina_closed", "reason": "harm_committed"})
+		return
+	if not amina_foreshadow_emitted \
+			and amina_hold_ticks_left <= int(float(params.amina_hold_ticks) * params.amina_foreshadow_frac):
+		amina_foreshadow_emitted = true
+		_event({"t": "amina_foreshadow"})
+	amina_hold_ticks_left -= 1
+	if amina_hold_ticks_left > 0:
+		return
+	# 満了: 懐いて加入。人間だが戦闘力を持たないユニーク扱い (FEMALE は _can_fight /
+	# _movement_target の既存分岐で非戦闘になる。is_unique は事故死無効のみに効く)。
+	var amina := _make_goblin(Goblin.Sex.FEMALE, Goblin.Role.NONE, Goblin.Origin.CAPTIVE_JOINED)
+	amina.is_unique = true
+	_place(amina, _random_nest_floor())
+	goblins.append(amina)
+	amina_goblin_id = amina.id
+	amina_state = AminaState.JOINED
+	amina_joined = true
+	_event({"t": "amina_joined", "id": amina.id})
 
 # --- キノコ採集 (T4): キノコ床の再生長 ---
 # 摘み取られたスポット (forage_regrow[i] > 0) を毎 tick デクリメントする。
@@ -3121,6 +3336,8 @@ func snapshot() -> Dictionary:
 		"bunta_hostility": bunta_hostility, "kugyo_hostility": kugyo_hostility,
 		"harm_committed": harm_committed, "gems_tributed": gems_tributed,
 		"amina_joined": amina_joined, "difficulty": difficulty,
+		"amina_state": amina_state, "amina_hold_ticks_left": amina_hold_ticks_left,
+		"amina_foreshadow_emitted": amina_foreshadow_emitted, "amina_goblin_id": amina_goblin_id,
 		"nursery_timer": nursery_timer,
 		"outcome": outcome, "next_goblin_id": next_goblin_id,
 		"next_enemy_id": next_enemy_id, "next_mite_id": next_mite_id,
@@ -3179,6 +3396,10 @@ func restore(d: Dictionary) -> void:
 	gems_tributed = d.get("gems_tributed", false)
 	amina_joined = d.get("amina_joined", false)
 	difficulty = int(d.get("difficulty", 1))
+	amina_state = int(d.get("amina_state", AminaState.NONE))
+	amina_hold_ticks_left = int(d.get("amina_hold_ticks_left", -1))
+	amina_foreshadow_emitted = d.get("amina_foreshadow_emitted", false)
+	amina_goblin_id = int(d.get("amina_goblin_id", -1))
 	nursery_timer = d.get("nursery_timer", 0.0)
 	outcome = d.outcome; next_goblin_id = d.next_goblin_id
 	next_enemy_id = d.next_enemy_id; next_mite_id = d.next_mite_id
