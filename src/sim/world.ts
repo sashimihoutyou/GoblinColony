@@ -90,6 +90,8 @@ export function initWorld(
     phase: "peace",
     surge: 0,
     foodBuff: 0,
+    // 在庫/頭数 = 1.0 (不足0.5/過剰2.0の中間 = 中立) で開始 (§2.5・B3)。
+    foodStock: opts.startGoblins,
     overCapTicks: 0,
     // 初回大規模襲撃は和平間隔 (敵対度 0) ぶん先に予約 (自動スケジューラ §11)。
     nextBigRaidTick: Math.max(1, Math.round(raidIntervalDays(0, p) * p.ticksPerDay)),
@@ -144,9 +146,16 @@ export function stepWorld(prev: WorldState, p: WorldParams): WorldState {
 
   w.tick += 1;
 
+  // --- 0. 食料在庫の生産/消費 (§2.5・B3: 増殖の食料従属の土台) ---
+  // RNG を消費しない純算術なので最初に置いても消費順序に影響しない。
+  // この tick の在庫を以後の個体コンテキスト・繁殖の食料判定が読む。
+  stepFoodStock(w, p);
+
   // --- 1. 個体ステート遷移 ---
   const inRaid = w.phase === "combat";
   const enemyNearby = inRaid && w.enemiesRemaining > 0;
+  // 在庫がある (= 餓死していない) かどうか。Hungry 個体の空腹解消に使う (§2.5・B3)。
+  const foodAvailable = w.foodStock > 0;
   for (let i = 0; i < w.goblins.length; i++) {
     const g = w.goblins[i];
     if (g.state === GoblinState.Dead) continue;
@@ -160,7 +169,7 @@ export function stepWorld(prev: WorldState, p: WorldParams): WorldState {
       assignedToCombat:
         g.sex === Sex.Male && !isChild(g, p) &&
         g.role !== Role.NurseryHost && g.role !== Role.Concubine,
-      foodAvailable: true, // 第一期は食料を潤沢と仮定 (生産部屋は後段)
+      foodAvailable,
     };
     const before = w.goblins[i].state;
     w.goblins[i] = stepGoblin(g, ctx, p.sm);
@@ -288,6 +297,27 @@ export function stepWorld(prev: WorldState, p: WorldParams): WorldState {
 }
 
 /**
+ * 食料在庫の生産/消費 (§2.5・B3: 増殖の食料従属の土台)。
+ * 第一期は採餌部屋を持たないため、生存頭数比例の生産/消費で在庫を近似する
+ * (Godot の food と同概念。単位 = 食事回数)。RNG を消費しない純算術。
+ * 下限0でクランプ (負債なし)。上限は設けない (過剰側は per-capita で判定するため
+ * 頭数が増えれば自然に過剰判定が緩む)。
+ */
+function stepFoodStock(w: WorldState, p: WorldParams): void {
+  const pop = livePop(w);
+  w.foodStock = Math.max(0, w.foodStock + pop * (p.foodProducePerTick - p.foodConsumePerTick));
+}
+
+/**
+ * 在庫/頭数 (食事回数 per capita)。頭数0なら不足側に寄せる (0)。
+ */
+function foodPerCapita(w: WorldState): number {
+  const pop = livePop(w);
+  if (pop <= 0) return 0;
+  return w.foodStock / pop;
+}
+
+/**
  * 信仰蓄積 (§3) と苗床の確定生産 (§2.5)。
  * 信仰: 頭数比例のシャーマンが毎 tick 蓄積、上限でキャップ (青天井防止 §3)。
  * 苗床: 産み手は雌の捕虜 (胎を産み手とする部屋 / §2.5 異種交配)。雄は産めない。
@@ -366,6 +396,11 @@ function birthNurseryChildren(w: WorldState, p: WorldParams, count: number, kOff
  * 一定順序で消費する。
  */
 function stepReproduction(w: WorldState, rng: Rng, p: WorldParams): void {
+  // 在庫/頭数 (§2.5・B3)。不足/過剰の判定に使う (求愛成立率・流産率)。
+  const perCapita = foodPerCapita(w);
+  const foodShortage = perCapita < p.foodPerCapitaShortage;
+  const foodSurplus = perCapita > p.foodPerCapitaSurplus;
+
   // id → index の対応 (相手参照に使う)。
   const idx = new Map<number, number>();
   w.goblins.forEach((g, i) => idx.set(g.id, i));
@@ -398,8 +433,14 @@ function stepReproduction(w: WorldState, rng: Rng, p: WorldParams): void {
 
     // 妊娠の進行 → 出産 (雌のみ・確定 2 日後)
     if (g.pregnant) {
-      // 飢え/瀕死で流産 (食料従属 §2.5)
+      // 飢え/瀕死で流産 (個体の欲求ゲージ・既存の流産経路 §2.5)
       if (g.hunger >= 0.95 || g.hp / g.maxHp < p.sm.dyingHpFrac) {
+        w.goblins[i] = { ...g, pregnant: false, pregnantTicks: 0 };
+        continue;
+      }
+      // 巣全体が食料不足のとき、確率的に流産する (在庫への従属 §2.5・B3)。
+      // 不足でなければ rng を消費しない (既存の RNG 消費順序を変えない)。
+      if (foodShortage && rng.nextFloat() < p.foodShortageMiscarryChancePerTick) {
         w.goblins[i] = { ...g, pregnant: false, pregnantTicks: 0 };
         continue;
       }
@@ -486,9 +527,14 @@ function stepReproduction(w: WorldState, rng: Rng, p: WorldParams): void {
     const isMated = female.mateId === target.id;
     // 損耗バフ (surge) と食料バフ (foodBuff) が求愛成功率を底上げ (§2.5/KI-05)。
     // マクロの breedMult = 1 + surge + foodBuff に対応 (World は重みを 0.5 に割る)。
+    // 食料在庫 (§2.5・B3): 過剰なら控えめな上乗せ、不足なら全体に乗算で抑制
+    // (流産だけでなく「そもそも妊娠が成立しにくい」を表現)。
+    const foodMult = foodShortage ? p.foodShortageCourtMult : 1;
+    const foodSurplusAdd = foodSurplus ? p.foodSurplusCourtBonus : 0;
     const chance =
       (p.courtBaseChance * (0.5 + compat) + favBonus + (isMated ? p.matedCourtBonus : 0)) *
-      (1 + w.surge * 0.5 + w.foodBuff * 0.5);
+      (1 + w.surge * 0.5 + w.foodBuff * 0.5 + foodSurplusAdd) *
+      foodMult;
     if (rng.nextFloat() < chance) {
       // 成立: 両者を寝床での性行為へ (matingTicks=0, 相手 id をセット)。
       const ti = idx.get(target.id)!;

@@ -87,6 +87,18 @@ export interface SimParams {
   SACRIFICE_FAITH: number;
   HUMAN_CAPTIVE_FRAC: number; // 人間捕虜の割合 (中立ルートでは生贄/苗床不可 §13)
 
+  // --- 食料従属 (§2.5・B3): 増殖が頭数比の食料在庫に従属する ---
+  // 第一期は採餌部屋を持たないため、生存頭数比例の簡易生産/消費で
+  // 「在庫 (食事回数)」を近似する。1日あたりの量で定義し (KI-02)、
+  // World 層が tick 次へ変換する。生産>消費なのでデフォルトは緩やかな余剰側。
+  FOOD_PRODUCE_PER_CAPITA: number; // 1人(体)あたりの1日の食料生産量
+  FOOD_CONSUME_PER_CAPITA: number; // 1人(体)あたりの1日の食料消費量
+  FOOD_PER_CAPITA_SHORTAGE: number; // 在庫/頭数がこれ未満なら食料不足
+  FOOD_PER_CAPITA_SURPLUS: number; // 在庫/頭数がこれ超なら食料過剰
+  FOOD_SHORTAGE_COURT_MULT: number; // 不足時の求愛成立率の乗算 (<1: 抑制)
+  FOOD_SURPLUS_COURT_BONUS: number; // 過剰時に求愛成立率へ加える上乗せ (surge/foodBuffと同枠)
+  FOOD_SHORTAGE_MISCARRY_CHANCE: number; // 不足時、妊娠個体が1日に流産する確率
+
   SEED: number;
 }
 
@@ -146,5 +158,15 @@ export const baseParams: SimParams = {
   MIXED_TARGET_FRAC: 0.8,
   SACRIFICE_FAITH: 15.0,
   HUMAN_CAPTIVE_FRAC: 0.0,
+  // 食料従属 (§2.5・B3): 生産 > 消費でわずかに余剰側に倒し (1.0 = 中立)、
+  // 平時は緩やかに食料バフ域へ寄る。不足 (在庫/頭数<0.5) は事故・襲撃の連続損耗で
+  // 起こりうる程度の差にし、第一期の安定帯 (KI-22) を崩さない保守的な値。
+  FOOD_PRODUCE_PER_CAPITA: 1.2,
+  FOOD_CONSUME_PER_CAPITA: 1.0,
+  FOOD_PER_CAPITA_SHORTAGE: 0.5,
+  FOOD_PER_CAPITA_SURPLUS: 2.0,
+  FOOD_SHORTAGE_COURT_MULT: 0.5,
+  FOOD_SURPLUS_COURT_BONUS: 0.15,
+  FOOD_SHORTAGE_MISCARRY_CHANCE: 0.1,
   SEED: 0,
 };

@@ -453,6 +453,8 @@ func _draw() -> void:
 		var grown: bool = (i < m.forage_regrow.size()) and m.forage_regrow[i] == 0
 		_draw_forage(_tile_center(m.forage_spots[i] as Vector2i), i, grown)
 
+	# --- 破壊予告 (§3-20)。壁破壊役が狙う壁を脈動する警告色でハイライト ---
+	_draw_breach_warnings(ts)
 	# --- ジョブ指示 (§3-12) + 建築ゴースト (§3-15)。動的状態なので直接描く ---
 	_draw_jobs(ts)
 	if not build_ghost.is_empty():
@@ -553,6 +555,11 @@ func _draw_jobs(ts: float) -> void:
 			World.JobType.MINE:
 				var r := Rect2(float(j.x) * ts + 1.0, float(j.y) * ts + 1.0, ts - 2.0, ts - 2.0)
 				draw_rect(r, Color(0.95, 0.75, 0.30, pulse), false, 1.5)
+			World.JobType.DIG:
+				# 掘削指定 (§10): 土色の破線風枠 + 進捗の塗り (採掘とは別色)。
+				var dr := Rect2(float(j.x) * ts + 1.0, float(j.y) * ts + 1.0, ts - 2.0, ts - 2.0)
+				draw_rect(dr, Color(0.55, 0.42, 0.26, 0.18 + 0.4 * clampf(float(j.progress), 0.0, 1.0)), true)
+				draw_rect(dr, Color(0.72, 0.56, 0.34, pulse), false, 1.5)
 			World.JobType.BUILD:
 				var br := Rect2(float(j.x) * ts, float(j.y) * ts,
 						float(j.w) * ts, float(j.h) * ts)
@@ -564,6 +571,21 @@ func _draw_jobs(ts: float) -> void:
 			World.JobType.REPAIR:
 				var rr := Rect2(float(j.x) * ts + 2.0, float(j.y) * ts + 2.0, ts - 4.0, ts - 4.0)
 				draw_rect(rr, Color(0.60, 0.85, 0.95, pulse * 0.8), false, 1.5)
+
+## 破壊予告 (§3-20)。狙われている壁を赤い脈動でハイライトし、残り tick (秒目安) を
+## 添える。eta が短いほど明滅が速く強くなる (「割られる前にもう一枚」の緊張)。
+func _draw_breach_warnings(ts: float) -> void:
+	for bw in _world.breach_warnings:
+		var eta: int = int(bw.eta_ticks)
+		var urgency := clampf(1.0 - float(eta) / 120.0, 0.2, 1.0)  # 0.5 日で最大
+		var pulse := 0.35 + 0.4 * urgency * (0.5 + 0.5 * sin(_t * (3.0 + 5.0 * urgency)))
+		var r := Rect2(float(bw.x) * ts, float(bw.y) * ts, ts, ts)
+		draw_rect(r, Color(0.85, 0.20, 0.12, pulse * 0.5), true)
+		draw_rect(r, Color(0.95, 0.35, 0.20, pulse), false, 2.0)
+		# 残り秒の目安 (1 tick = MS_PER_TICK。ざっくり tick/3 ≒ 秒)。
+		var secs := maxi(1, int(round(float(eta) / 2.67)))
+		_draw_text_crisp(Vector2((bw.x + 0.5) * ts, float(bw.y) * ts - 3.0),
+				"⚠%d" % secs, 9.0, Color(0.98, 0.55, 0.35), HORIZONTAL_ALIGNMENT_CENTER, 40.0)
 
 func _draw_text_crisp(at: Vector2, txt: String, size: float, color: Color,
 		align: HorizontalAlignment = HORIZONTAL_ALIGNMENT_CENTER, width: float = 60.0) -> void:

@@ -8,6 +8,11 @@ extends Node2D
 
 const MS_PER_TICK := 375.0
 
+# --- 自動セーブ (C1 / GDD §14.5.1) ---
+# 確定的 tick スナップショット (world.snapshot()) を JSON で保存・復元する。
+# 実時間は含めない (KI-09)。タイミングは _step_one_tick 参照。
+const AUTOSAVE_PATH := "user://autosave.json"
+
 # --- Web 版と同じ配色 ---
 const C_BG_PANEL := Color(0.078, 0.067, 0.055, 0.92)
 const C_ROCK_LINE := Color(0.227, 0.196, 0.157, 0.5)
@@ -132,6 +137,11 @@ var _dispatch_slider: HSlider
 var _dispatch_count: Label
 var _dispatch_button: Button
 var _dispatch_field_id: int = -1  # 対象の出現物 id (-1 = パネル非表示)
+# 防衛配分パネル (§3-17: 襲撃時のみ表示。巣口ごとのスライダー + 自動)
+var _defense_panel: PanelContainer
+var _defense_sliders: Array = []   # Array[HSlider] (巣口ごと)
+var _defense_auto_button: Button
+var _defense_syncing: bool = false  # 自動追従でスライダーを書き戻す間の value_changed 抑止
 
 func _ready() -> void:
 	params = SimParams.new()
@@ -143,10 +153,74 @@ func _ready() -> void:
 	renderer = $Renderer
 	renderer.tile_size = 16
 
+	var restored := _load_autosave()
+
 	_build_ui()
 	_update_camera()
 	get_viewport().size_changed.connect(_update_camera)
-	_push_feed("event", "巣が築かれた。%d 体のゴブリンと族長。" % params.start_goblins)
+	if restored:
+		_push_feed("event", "巣の記録を復元した (%d 日目)。" % world.day)
+	else:
+		_push_feed("event", "巣が築かれた。%d 体のゴブリンと族長。" % params.start_goblins)
+
+## 指定難度で新しい群れを始める (§14.5.2)。world を作り直し、古いセーブを消す
+## (前の群れのセーブで即終了画面に戻らないように)。演出層の選択状態もリセット。
+func _start_new_game(diff: int) -> void:
+	_delete_autosave()
+	world = World.new()
+	world.difficulty = diff
+	world.setup(params)
+	speed = 1.0
+	_armed = -1
+	_armed_build = -1
+	sel_kind = SelKind.NONE
+	sel_id = -1
+	_follow_id = -1
+	_outcome_label.visible = false
+	_feed.clear()
+	_feed_lines.clear()
+	var diff_jp: String = ["易", "並", "難"][clampi(diff, 0, 2)]
+	_push_feed("event", "新しい群れ (難度: %s)。%d 体のゴブリンと族長。" % [diff_jp, params.start_goblins])
+	_refresh_speed_buttons()
+	_refresh_miracle_buttons()
+	_refresh_build_buttons()
+
+## 自動セーブの復元 (C1)。user://autosave.json が存在し、有効な JSON の
+## World.snapshot() であれば world に復元する。存在しない・壊れている場合は
+## 何もせず新規開始のまま (setup() 済みの world を使う)。
+func _load_autosave() -> bool:
+	if not FileAccess.file_exists(AUTOSAVE_PATH):
+		return false
+	var f := FileAccess.open(AUTOSAVE_PATH, FileAccess.READ)
+	if f == null:
+		return false
+	var text := f.get_as_text()
+	f.close()
+	var parsed = JSON.parse_string(text)
+	if typeof(parsed) != TYPE_DICTIONARY:
+		return false
+	world.restore(parsed)
+	return true
+
+## 自動セーブの書き出し (C1)。world.snapshot() を JSON 化して保存する
+## (実時間は含めない / KI-09)。
+func _save_autosave() -> void:
+	var f := FileAccess.open(AUTOSAVE_PATH, FileAccess.WRITE)
+	if f == null:
+		return
+	# JSON 既定精度で書く。Godot の JSON/var_to_str はいずれも任意 double の
+	# テキスト往復をバイト一致できない (17 桁出力を parse が 16 桁へ丸める) ため、
+	# バイト一致は追わず「ロード後に自己無矛盾で決定的」を保証する設計とする
+	# (KI-09 のバイト一致はライブ dict 往復 = parity 側で担保。autosave は
+	# 既定精度の冪等点へ倒し、再ロードで同じ未来を再現する / test_save.gd)。
+	f.store_string(JSON.stringify(world.snapshot()))
+	f.close()
+
+## 自動セーブの削除 (C1)。勝敗確定後に呼び、古いセーブで再開して即敗北画面に
+## なる事態を防ぐ。
+func _delete_autosave() -> void:
+	if FileAccess.file_exists(AUTOSAVE_PATH):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(AUTOSAVE_PATH))
 
 func _process(delta: float) -> void:
 	if world.outcome == World.Outcome.ONGOING and speed > 0.0:
@@ -177,6 +251,7 @@ func _process(delta: float) -> void:
 	_update_inspector()
 	_update_dispatch_panel()
 	_update_captive_ui()
+	_update_defense_panel()
 	# カメラ操作はシム停止中 (speed=0) でも独立して動く。
 	_process_keyboard_pan(delta)
 	_process_follow_camera(delta)
@@ -221,16 +296,31 @@ func _process_follow_camera(delta: float) -> void:
 func _step_one_tick() -> void:
 	controller.decide(world)
 	controller.apply(world)
+	var day_boundary := (world.tick % params.ticks_per_day) == (params.ticks_per_day - 1)
 	world.tick_once()
 	# シムの構造化イベントをフィードと演出へ翻訳する。
 	# on_tick より先に処理する: 死亡/巣立ちバーストは演出層に残る直前の
 	# 補間位置 (_last_pos_of) を使うため、その個体が on_tick で除去される前に拾う。
+	var raid_ended := false
+	var game_over := false
 	for e in world.last_events:
 		_push_feed_event(e)
 		renderer.on_event(e)
+		var et: String = e.get("t", "")
+		if et == "raid_end":
+			raid_ended = true
+		elif et == "victory" or et == "defeat":
+			game_over = true
 	# tick 確定後に演出層の補間ターゲット (prev→cur) を更新する。
 	# (1 フレームに複数 tick 回る場合も毎回。O(個体数) の座標コピーのみ)
 	renderer.on_tick(world)
+	# 自動セーブ (C1 / GDD §14.5.1): 日境界・襲撃終了 (PEACE 遷移) で保存する。
+	# 交戦中はセーブしない (直前の安定点に倒す)。勝敗確定後は古いセーブを消す
+	# (再開時に即敗北/勝利画面にならないように)。
+	if game_over:
+		_delete_autosave()
+	elif world.phase != World.Phase.COMBAT and (day_boundary or raid_ended):
+		_save_autosave()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
@@ -420,6 +510,10 @@ func _push_feed_event(e: Dictionary) -> void:
 				_push_feed("birth", "%s が岩塊を掘り崩した。崩れた奥から宝石が転がり出た!" % miner_name, int(e.id))
 			else:
 				_push_feed("event", "%s が岩塊を掘り崩し、建材を積み上げた。" % miner_name, int(e.id))
+		"dig_done":
+			var digger := _find_goblin(int(e.id))
+			_push_feed("event", "%s が岩壁を掘り抜き、巣穴がひとつ広がった。"
+					% (GobNames.of(digger) if digger != null else "誰か"), int(e.id))
 		"build_start":
 			_push_feed("event", "%sの建設が始まった。地面に骨と泥で印が引かれる。"
 					% ROOM_TYPE_JP.get(int(e.room_type), "部屋"))
@@ -429,6 +523,10 @@ func _push_feed_event(e: Dictionary) -> void:
 			var fixer := _find_goblin(int(e.id))
 			_push_feed("event", "%s が壁のひびを泥で塗り固めた。"
 					% (GobNames.of(fixer) if fixer != null else "誰か"), int(e.id))
+		"breach_warn":
+			_push_feed("raid", "敵が壁を狙っている……割られる前に塞ぐ手を。")
+		"breach":
+			_push_feed("raid", "✖ 壁が打ち破られた! 突破口から敵が雪崩れ込む。")
 		"field_done":
 			_push_feed("event", "茂みを取り尽くした。")
 		"field_expire":
@@ -617,6 +715,7 @@ func _try_tile_order(pos: Vector2) -> void:
 		_push_feed("event", "採掘の指示を取り消した。" if had else "岩塊に採掘の印を付けた。")
 	elif t == TileMapData.TileType.WALL \
 			and world.map.wall_hp[world.map.idx(tp.x, tp.y)] < MapTemplate.WALL_HP:
+		# 傷んだ壁 → 修復 (掘削より優先。自分の壁を掘り崩さない)。
 		if world.mud < world.params.wall_repair_cost:
 			_push_feed("event", "壁を直す建材がない (必要 %.0f)。" % world.params.wall_repair_cost)
 			return
@@ -624,6 +723,19 @@ func _try_tile_order(pos: Vector2) -> void:
 			"type": Controller.CommandType.REPAIR_WALL, "x": tp.x, "y": tp.y,
 		})
 		_push_feed("event", "ひび割れた壁に修復の印を付けた。")
+	elif t == TileMapData.TileType.WALL and world._wall_diggable(tp):
+		# 素の壁 → 掘削 (§10 巣穴拡張)。トグル。
+		var had := false
+		for j in world.jobs:
+			if j.type == World.JobType.DIG and j.x == tp.x and j.y == tp.y:
+				had = true
+		controller.queue.append({
+			"type": Controller.CommandType.DESIGNATE_DIG, "x": tp.x, "y": tp.y,
+		})
+		_push_feed("event", "掘削の指示を取り消した。" if had else "岩壁に掘削の印を付けた。")
+	elif t == TileMapData.TileType.WALL:
+		# 掘れない壁 (外殻・トーテム至近)。
+		_push_feed("event", "この岩は固く掘り崩せない (外との境・トーテムの守り)。")
 
 ## 武装中の左クリック: 対象 (敵/ゴブリン/タイル) を指定して発動する。対象外クリックは
 ## 無視 (武装維持)。発動後も武装を保って連射でき、残高が尽きると自動解除する。
@@ -712,6 +824,10 @@ func _update_status() -> void:
 	if world.totem_hp < params.totem_hp_max:
 		totem_txt = "  ⚠トーテム %.0f/%.0f" % [world.totem_hp, params.totem_hp_max]
 	var res_txt := "  建材 %.0f" % world.mud
+	if world.equipment > 0.0:
+		res_txt += "  装備 %.0f" % world.equipment
+	if world.herb > 0.0:
+		res_txt += "  薬草 %.0f" % world.herb
 	if world.gems > 0.0:
 		res_txt += "  宝石 %.0f" % world.gems
 	var captive_txt := ""
@@ -752,9 +868,14 @@ func _update_status() -> void:
 	for mb in _miracle_buttons:
 		var mdef: Dictionary = mb.def
 		(mb.btn as Button).disabled = (_armed != int(mdef.m)) and world.faith < _miracle_cost(mdef)
-	# 勝敗バナー。
+	# 勝敗バナー。勝利時は到達ルート (§13 4 ルート / A3) を添える。
 	if world.outcome == World.Outcome.VICTORY:
-		_outcome_label.text = "★ 勝利 — 規定日数を生き延びた!"
+		var route_txt: String = {
+			0: "ゴブリン連合は人間の総攻撃を退けた",
+			1: "敵でも友でもなく — 人間との和平が成った",
+			2: "宝石を差し出し、人間に飼われる道を選んだ",
+		}.get(world.ending_route(), "")
+		_outcome_label.text = "★ 勝利 — %s" % route_txt
 		_outcome_label.visible = true
 	elif world.outcome == World.Outcome.DEFEAT:
 		_outcome_label.text = "✖ 敗北"
@@ -879,6 +1000,21 @@ func _build_ui() -> void:
 	_eta_label.add_theme_color_override("font_color", C_INK_FAINT)
 	_eta_label.add_theme_font_size_override("font_size", 12)
 	top_box.add_child(_eta_label)
+	# 新規ゲームの難度セレクタ (§14.5.2: 易/並/難。押下でその難度の新しい群れを始める。
+	# 自動開始は並のまま継続するので scene_smoke / autosave 復元を妨げない)。
+	var diff_label := Label.new()
+	diff_label.text = "   新規:"
+	diff_label.add_theme_color_override("font_color", C_INK_FAINT)
+	diff_label.add_theme_font_size_override("font_size", 12)
+	top_box.add_child(diff_label)
+	for cfg in [["易", 0], ["並", 1], ["難", 2]]:
+		var db := Button.new()
+		db.text = cfg[0]
+		db.add_theme_font_size_override("font_size", 12)
+		_style_button(db, false)
+		var lvl: int = cfg[1]
+		db.pressed.connect(func() -> void: _start_new_game(lvl))
+		top_box.add_child(db)
 	ui.add_child(top)
 
 	# --- 右パネル: 観察対象 + 巣の記録 ---
@@ -920,10 +1056,13 @@ func _build_ui() -> void:
 	_outcome_label.visible = false
 	ui.add_child(_outcome_label)
 
-	# --- 左下: 速度コントロール ---
+	# --- 左下: 速度コントロール + 奇跡 (下段) / 建築 (上段) ---
+	# 2 本の HBox は高さを明示して横帯に分離する (offset_bottom 未設定だと両方とも
+	# 画面下端まで伸びて矩形が重なり、後追加の建築バーが速度/奇跡のクリックを奪う)。
 	var bar := HBoxContainer.new()
 	bar.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	bar.offset_top = -40.0
+	bar.offset_top = -38.0
+	bar.offset_bottom = -8.0
 	bar.offset_left = 8.0
 	bar.add_theme_constant_override("separation", 4)
 	for cfg in [["‖ 停止", 0.0], ["▶ 1x", 1.0], ["▶▶ 3x", 3.0]]:
@@ -947,10 +1086,11 @@ func _build_ui() -> void:
 		bar.add_child(mb)
 		_miracle_buttons.append({"btn": mb, "def": def})
 	ui.add_child(bar)
-	# 建築バー (§3-15)。速度バーの上段。押下で建築モード (ゴースト追従 → クリック確定)。
+	# 建築バー (§3-15)。速度バーの上段 (重ならない横帯)。押下で建築モード。
 	var build_bar := HBoxContainer.new()
 	build_bar.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	build_bar.offset_top = -76.0
+	build_bar.offset_top = -74.0
+	build_bar.offset_bottom = -42.0
 	build_bar.offset_left = 8.0
 	build_bar.add_theme_constant_override("separation", 4)
 	var build_label := Label.new()
@@ -1118,6 +1258,74 @@ func _build_ui() -> void:
 	brow2.add_child(tear)
 	bbox.add_child(brow2)
 	ui.add_child(_bond_banner)
+
+	# --- 防衛配分パネル (§3-17。襲撃 (予兆/交戦) の間だけ表示。中央下・派遣より上) ---
+	_defense_panel = PanelContainer.new()
+	_defense_panel.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	_defense_panel.offset_left = -150.0
+	_defense_panel.offset_right = 150.0
+	_defense_panel.offset_top = -176.0
+	_defense_panel.offset_bottom = -48.0
+	_defense_panel.add_theme_stylebox_override("panel", _panel_style())
+	_defense_panel.visible = false
+	var defbox := VBoxContainer.new()
+	defbox.add_theme_constant_override("separation", 4)
+	_defense_panel.add_child(defbox)
+	defbox.add_child(_section_title("防 衛 配 分"))
+	# 巣口ごとに 1 本ずつスライダーを並べる (値 0..100 = 配分の生重み)。
+	_defense_sliders = []
+	for gi in range(world.map.gates.size()):
+		var grow := HBoxContainer.new()
+		grow.add_theme_constant_override("separation", 6)
+		var glabel := Label.new()
+		glabel.text = "巣口%d" % (gi + 1)
+		glabel.add_theme_color_override("font_color", C_INK_DIM)
+		glabel.add_theme_font_size_override("font_size", 12)
+		glabel.custom_minimum_size = Vector2(48, 0)
+		grow.add_child(glabel)
+		var gslider := HSlider.new()
+		gslider.min_value = 0
+		gslider.max_value = 100
+		gslider.step = 1
+		gslider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		gslider.value_changed.connect(func(_v: float) -> void: _on_defense_slider_changed())
+		grow.add_child(gslider)
+		defbox.add_child(grow)
+		_defense_sliders.append(gslider)
+	_defense_auto_button = Button.new()
+	_defense_auto_button.text = "自動 (敵に追従)"
+	_defense_auto_button.add_theme_font_size_override("font_size", 12)
+	_style_button(_defense_auto_button, true)
+	_defense_auto_button.pressed.connect(func() -> void:
+		controller.queue.append({"type": Controller.CommandType.DEFENSE_AUTO}))
+	defbox.add_child(_defense_auto_button)
+	ui.add_child(_defense_panel)
+
+## 防衛スライダー操作: 3 本の生重みを束ねて手動配分コマンドを送る (§3-17)。
+## 自動追従でスライダーを書き戻す間 (_defense_syncing) は無視する。
+func _on_defense_slider_changed() -> void:
+	if _defense_syncing:
+		return
+	var weights: Array = []
+	for s in _defense_sliders:
+		weights.append((s as HSlider).value)
+	controller.queue.append({"type": Controller.CommandType.SET_DEFENSE_ALLOC,
+			"weights": weights})
+
+## 防衛配分パネルの毎フレーム更新 (襲撃中のみ表示。自動中はスライダーを実配分へ追従)。
+func _update_defense_panel() -> void:
+	var show := world.outcome == World.Outcome.ONGOING and world.phase != World.Phase.PEACE
+	_defense_panel.visible = show
+	if not show:
+		return
+	_style_button(_defense_auto_button, not world.defense_alloc_manual)
+	# 自動中は実配分 (敵戦力比例) をスライダーへ反映する (操作は手動化のトリガー)。
+	if not world.defense_alloc_manual:
+		_defense_syncing = true
+		for i in range(_defense_sliders.size()):
+			if i < world.defense_alloc.size():
+				(_defense_sliders[i] as HSlider).value = round(world.defense_alloc[i] * 100.0)
+		_defense_syncing = false
 
 ## 側室ボタン: 選択中ゴブリンを婿/嫁に、異性の捕虜 (ゴブリン優先・なければ人間) を娶らせる。
 func _press_concubine() -> void:

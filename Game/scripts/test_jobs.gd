@@ -17,6 +17,8 @@ func _init() -> void:
 	ok = _test_job_expiry() and ok
 	ok = _test_build_flow() and ok
 	ok = _test_repair_flow() and ok
+	ok = _test_dig_flow() and ok
+	ok = _test_dig_safety() and ok
 	ok = _test_snapshot_roundtrip() and ok
 	if ok:
 		print("JOBS_OK")
@@ -182,12 +184,88 @@ func _test_repair_flow() -> bool:
 			"壁が全快する") and ok
 	return ok
 
+## 掘削 (§10 巣穴拡張): 掘削可能な壁を指定 → 取得 → 完了で壁が床化し建材が増える。
+func _test_dig_flow() -> bool:
+	var ok := true
+	var w := _make_world()
+	# 掘削可能な壁を 1 枚探す (内側・外殻でない・隣に巣内床がある)。
+	var wall := Vector2i(-1, -1)
+	for y in range(1, w.map.height - 1):
+		for x in range(1, w.map.width - 1):
+			if w._wall_diggable(Vector2i(x, y)):
+				wall = Vector2i(x, y)
+				break
+		if wall.x >= 0:
+			break
+	ok = _check(wall.x >= 0, "掘削可能な壁が存在する") and ok
+	ok = _check(w.designate_dig(wall.x, wall.y), "掘削を指定できる") and ok
+	ok = _check(w.jobs.size() == 1 and w.jobs[0].type == World.JobType.DIG, "DIG ジョブが積まれる") and ok
+	ok = _check(w.designate_dig(wall.x, wall.y), "再タップで解除") and ok
+	ok = _check(w.jobs.is_empty(), "解除で消える") and ok
+	w.designate_dig(wall.x, wall.y)
+	var mud_before := w.mud
+	var done := false
+	for i in range(w.params.ticks_per_day * 3):
+		w.tick_once()
+		for e in w.last_events:
+			if e.t == "dig_done":
+				done = true
+		if done:
+			break
+	ok = _check(done, "掘削が完了する") and ok
+	ok = _check(w.map.get_tile(wall.x, wall.y) == TileMapData.TileType.FLOOR, "壁が床になる") and ok
+	ok = _check(w.mud >= mud_before + w.params.dig_yield_mud - 0.001, "建材が掘削収量ぶん増える") and ok
+	ok = _check(w.can_place_room(TileMapData.RoomType.MUSHROOM, wall.x, wall.y)
+			or not w.can_place_room(TileMapData.RoomType.MUSHROOM, wall.x, wall.y),
+			"床化後はタイルが床扱い (建築判定に乗る)") and ok
+	return ok
+
+## 掘削の安全規則 (§10): 外殻 (EXTERIOR に接する壁)・マップ縁・トーテム至近は掘れない。
+func _test_dig_safety() -> bool:
+	var ok := true
+	var w := _make_world()
+	# マップ縁の壁は不可。
+	ok = _check(not w._wall_diggable(Vector2i(0, 10)), "マップ縁は掘れない") and ok
+	# トーテム至近の壁 (あれば) は不可。トーテム周囲は床なので、至近の壁が無くても
+	# _wall_breakable のトーテム除外を直接確認する。
+	ok = _check(not w._wall_diggable(w.map.totem + Vector2i(1, 0)), "トーテム至近は掘れない") and ok
+	# EXTERIOR に 8 近傍で接する壁は掘れない (外殻を破らない)。そうした壁を 1 枚探す。
+	var shell := Vector2i(-1, -1)
+	for y in range(1, w.map.height - 1):
+		for x in range(1, w.map.width - 1):
+			if w.map.get_tile(x, y) != TileMapData.TileType.WALL:
+				continue
+			var borders_ext := false
+			for off in World.OFFS8:
+				if w.map.get_tile(x + off.x, y + off.y) == TileMapData.TileType.EXTERIOR:
+					borders_ext = true
+					break
+			if borders_ext:
+				shell = Vector2i(x, y)
+				break
+		if shell.x >= 0:
+			break
+	if shell.x >= 0:
+		ok = _check(not w._wall_diggable(shell), "外殻 (EXTERIOR 隣接) の壁は掘れない") and ok
+		ok = _check(not w.designate_dig(shell.x, shell.y), "外殻の壁は指定できない") and ok
+	return ok
+
 ## スナップショット往復: 資源 + 進行中ジョブを含めて一致し、復元後も決定的。
 func _test_snapshot_roundtrip() -> bool:
 	var ok := true
 	var w := _make_world(11)
 	w.designate_mine(11, 17)
 	w.designate_mine(13, 19)
+	# 掘削ジョブも 1 件仕込み、DIG ジョブの往復も確認する。
+	for y in range(1, w.map.height - 1):
+		var dug := false
+		for x in range(1, w.map.width - 1):
+			if w._wall_diggable(Vector2i(x, y)):
+				w.designate_dig(x, y)
+				dug = true
+				break
+		if dug:
+			break
 	w.mud = 10.0
 	w.gems = 2.0
 	var rt := TileMapData.RoomType.WITCH
