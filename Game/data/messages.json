@@ -1,0 +1,124 @@
+{
+  "_note": "イベントフィード（巣の記録）の文面とラベル。演出層テキスト。編集自由。プレースホルダは {name} {other} {who} {count} {alive} {amount} {pct} {room} {kind} {faction} {sex} {captive} {difficulty} {day} 形式（GDScript String.format）。コードは TextDB.msg(key, {...}) / TextDB.label(group, key) で参照する（Game/scripts/render/text_db.gd）。",
+
+  "events": {
+    "raid": "襲撃! {who} {count} 体が巣口に迫る。",
+    "raid_final": "ラストバトル! {who} {count} 体が押し寄せる!",
+    "raid_small": "小競り合い: 敵 {count} 体 (恵み)。",
+    "raid_end": "襲撃を退けた。生存 {alive} 体。",
+    "surge": "群れが本能で奮い立つ (損耗 {pct}%)。",
+
+    "death_accident": "{name} が事故で死んだ。",
+    "death_combat": "{name} が戦いで散った。",
+    "fledge": "{name} が巣立っていった。",
+    "birth": "{name} が {count} 匹の子を産んだ。",
+    "birth_nursery": "苗床で子が {count} 体、泥の中から這い出した。",
+    "grow": "{name} が一人前に育った。",
+
+    "mite_eaten": "{name} がパン虫を捕まえて食べた。",
+    "fumble_dropped": "{name} が転んでキノコを取り落とした。",
+    "fumble": "{name} がすっ転んだ。",
+    "forage": "{name} がキノコを集積所に運び込んだ。",
+
+    "guard": "{name} が巣口の見張りに就いた。",
+    "alarm": "見張りの {name} が警報を上げた!",
+    "quarrel": "{name} と {other} がケンカを始めた!",
+    "court": "{name} が {other} を寝床に誘った。",
+    "mating": "{name} と {other} が寝床にこもった。",
+    "pregnant": "{name} が寝床で身ごもった。",
+
+    "dispatch": "{count} 体が恵みを取りに巣を出た。",
+    "field_spawn_forage": "巣の外に木の実の茂みが見つかった ({amount} 食ぶん)。",
+    "field_spawn_animal": "巣の外に獲物の気配がある ({amount} 頭ぶん)。",
+    "field_spawn_traveler": "巣の外に旅人が通りかかった。",
+    "field_spawn_wanderer": "巣の外をうろつく放浪ゴブリンを見かけた。",
+    "field_spawn_camp": "巣の外に敵性キャンプの灯りが見える。",
+    "field_spawn_ruins": "巣の外に古い廃墟が見える ({amount} 山ぶん)。",
+    "field_spawn_maiden": "巣の外で行き倒れの少女を見つけた。",
+
+    "field_haul_animal": "{name} が獲物を狩り、食料を持ち帰った。",
+    "field_haul_ruins": "{name} が廃墟から建材を持ち帰った。",
+    "field_haul": "{name} がキノコを集積所に運び込んだ。",
+    "field_captive": "{name} が狩りの最中に弱ったゴブリンを連れて帰った。捕虜が増えた。",
+    "field_gem": "{name} が廃墟の瓦礫の中から宝石を見つけた!",
+    "field_trade_gems": "{name} が旅人と宝石を交換した。",
+    "field_trade": "{name} が旅人から薬草を譲り受けた。",
+    "field_faux_pas": "{name} が旅人に粗相をしてしまった……人間たちとの間に緊張が走る。",
+    "wanderer_joined": "放浪していた {name} が群れに加わった。",
+    "wanderer_left": "放浪ゴブリンは去って行った。",
+    "field_maiden_amina": "行き倒れの少女を連れて帰った。手厚く保護することにした。",
+    "field_maiden": "行き倒れの少女を連れて帰った。捕虜として保護した。",
+    "field_camp_win": "★ 敵性キャンプを襲撃し、{captive}宝石と装備を持ち帰った!",
+    "field_camp_loss": "敵性キャンプの襲撃は失敗……{name} が傷を負って逃げ帰った。",
+    "field_camp_loss_none": "敵性キャンプの襲撃は失敗し、何も持ち帰れなかった。",
+    "field_recall": "外に出ていた {count} 体に、急いで帰るよう呼びかけた。",
+    "field_done": "茂みを取り尽くした。",
+    "field_expire": "日が暮れ、外の恵みは闇に消えた。",
+
+    "amina_foreshadow": "保護した少女が、少しずつこちらに心を開きはじめている……。",
+    "amina_closed": "少女との間にできかけていた何かは、もう戻らない。",
+    "amina_joined": "{name} が心を開き、戦わない仲間として群れに加わった。",
+
+    "mine_done_gem": "{name} が岩塊を掘り崩した。崩れた奥から宝石が転がり出た!",
+    "mine_done": "{name} が岩塊を掘り崩し、建材を積み上げた。",
+    "dig_done": "{name} が岩壁を掘り抜き、巣穴がひとつ広がった。",
+    "build_start": "{room}の建設が始まった。地面に骨と泥で印が引かれる。",
+    "build_done": "{room}が完成した!",
+    "repair_done": "{name} が壁のひびを泥で塗り固めた。",
+    "breach_warn": "敵が壁を狙っている……割られる前に塞ぐ手を。",
+    "breach": "✖ 壁が打ち破られた! 突破口から敵が雪崩れ込む。",
+
+    "victory": "★ ラストバトルを撃退 — 勝利!",
+    "defeat_totem": "✖ トーテムが砕かれた — 敗北……",
+    "defeat": "✖ 群れは全滅した — 敗北……",
+
+    "captive_gain": "撃退の戦果として{who}の捕虜を得た。",
+    "captive_joined": "捕らわれていた{name} が群れに加わった。",
+    "sacrifice": "{kind}を生贄に捧げ、信仰が高まった。",
+    "release_captive": "人間の{sex}捕虜を解放した。敵対度が和らいだ。",
+    "tribute": "{faction}へ捕虜を朝貢した。怒りがいくらか鎮まる。",
+    "tribute_gems": "宝石 {amount} を人間へ差し出した。和平の対価として怒りが和らぐ。",
+    "gems_hoard_warn": "ため込んだ宝の山が人間の目を引いている……抱えるほど狙われる。",
+    "take_concubine": "{name} が捕虜を側室に娶った。",
+    "pending_bond": "捕虜と寄り添う影がある……つがいを認めるか、引き離すか。",
+    "approve_bond": "つがいが認められた。捕虜は今日から巣の一員だ。",
+
+    "restore": "巣の記録を復元した ({day} 日目)。",
+    "new_game": "巣が築かれた。{count} 体のゴブリンと族長。",
+    "new_game_difficulty": "新しい群れ (難度: {difficulty})。{count} 体のゴブリンと族長。"
+  },
+
+  "labels": {
+    "raid_who": {
+      "human": "人間の討伐隊",
+      "kugyo": "苦魚族の群れ",
+      "bunta": "ブン・タ＝タ族の群れ",
+      "_default": "敵対氏族の群れ"
+    },
+    "tribute_faction": {
+      "human": "人間",
+      "bunta": "ブン・タ＝タ族",
+      "kugyo": "苦魚族",
+      "_default": "敵対勢力"
+    },
+    "sacrifice_kind": {
+      "male_goblin": "ゴブリンの雄捕虜",
+      "female_goblin": "ゴブリンの雌捕虜",
+      "male_human": "人間の雄捕虜",
+      "female_human": "人間の雌捕虜",
+      "_default": "捕虜"
+    },
+    "captive_who": {
+      "human": "人間",
+      "goblin": "ゴブリン"
+    },
+    "sex": {
+      "male": "雄",
+      "female": "雌"
+    },
+    "camp_captive": {
+      "yes": "捕虜も連れて",
+      "no": ""
+    }
+  }
+}
