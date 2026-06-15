@@ -74,6 +74,10 @@ Unity / Godot 等のゲームエンジンには依存しない純 TypeScript + C
 | フリーモード / サンドボックスモード | 通常モード確立後 |
 | Python ↔ TS parity チェック（ALL_MATCH） | cycle 層の照合ハーネス未実装 |
 
+> 注（追記）: 上表のうち **§13 外交の双方向化・食料生産の増殖従属・parity チェック** は起草後に
+> 前倒しで実装済み（`backlog.md` B1/B3 + `npm run parity:check`=ALL_MATCH）。本表は spec 起草時点の
+> 計画スナップショットで、現状の残タスクは `backlog.md` が一次情報。
+
 ---
 
 ## 3. 確定メカニクス一覧
