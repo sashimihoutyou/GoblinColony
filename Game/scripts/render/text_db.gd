@@ -79,13 +79,41 @@ static func names(key: String) -> Array:
 	return (arr as Array) if typeof(arr) == TYPE_ARRAY else []
 
 # ── イベントフィード文面 (messages.json) ────────────────────
-## イベントキーのテンプレを fields で埋めて返す。無ければ fallback (+ 警告)。
-static func msg(key: String, fields: Dictionary = {}, fallback: String = "") -> String:
+## イベントキーの生テンプレ (文字列 or 文字列配列) を返す。無ければ null。
+static func _event_raw(key: String) -> Variant:
 	ensure_loaded()
 	var events: Variant = _messages.get("events", {})
 	if typeof(events) != TYPE_DICTIONARY:
+		return null
+	return (events as Dictionary).get(key, null)
+
+## イベントキーのテンプレを fields で埋めて返す。無ければ fallback (+ 警告)。
+## 値が配列 (variant 複数) のときは決定的に先頭を使う (rng 不要・テスト/非演出向け)。
+## ランダムに散らしたいときは msg_pick を使う (演出 RNG を渡す)。
+static func msg(key: String, fields: Dictionary = {}, fallback: String = "") -> String:
+	var tpl: Variant = _event_raw(key)
+	if typeof(tpl) == TYPE_ARRAY:
+		var a := tpl as Array
+		if a.is_empty():
+			push_warning("TextDB: イベント文面が空配列 key=" + key)
+			return fallback
+		return String(a[0]).format(fields)
+	if typeof(tpl) != TYPE_STRING:
+		push_warning("TextDB: イベント文面が無い key=" + key)
 		return fallback
-	var tpl: Variant = (events as Dictionary).get(key, null)
+	return String(tpl).format(fields)
+
+## イベント文面の variant を rng で 1 つ選んで fields で埋める (演出 RNG を渡すこと)。
+## 値が配列なら候補から散らし、単一文字列ならそれを使う。無ければ fallback (+ 警告)。
+## シム RNG は決して渡さないこと (フィードは演出層 / KI-09)。
+static func msg_pick(key: String, rng: RandomNumberGenerator, fields: Dictionary = {}, fallback: String = "") -> String:
+	var tpl: Variant = _event_raw(key)
+	if typeof(tpl) == TYPE_ARRAY:
+		var a := tpl as Array
+		if a.is_empty():
+			push_warning("TextDB: イベント文面が空配列 key=" + key)
+			return fallback
+		return String(a[rng.randi() % a.size()]).format(fields)
 	if typeof(tpl) != TYPE_STRING:
 		push_warning("TextDB: イベント文面が無い key=" + key)
 		return fallback

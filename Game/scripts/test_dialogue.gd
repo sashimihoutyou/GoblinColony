@@ -10,13 +10,17 @@ extends SceneTree
 const CHATTER_CATEGORIES := [
 	"child", "hungry", "sleep", "work", "wander", "fear",
 	"combat", "enraged", "courting", "mating", "pregnant", "chatter_pair",
+	# 性別別 (発言者の性別と矛盾させない / 寝床・交尾・捕虜系)。
+	"courting_m", "courting_f", "mating_m", "mating_f",
+	"concubine_m", "concubine_f", "pending_bond_m", "pending_bond_f",
+	"nursery",
 ]
 
 const EVENT_KEYS := [
 	"raid", "raid_final", "raid_small", "raid_end", "surge",
 	"death_accident", "death_combat", "fledge", "birth", "birth_nursery", "grow",
 	"mite_eaten", "fumble_dropped", "fumble", "forage", "guard", "alarm",
-	"quarrel", "court", "mating", "pregnant", "dispatch",
+	"quarrel", "court", "court_timeout", "mating", "pregnant", "dispatch",
 	"field_spawn_forage", "field_spawn_animal", "field_spawn_traveler",
 	"field_spawn_wanderer", "field_spawn_camp", "field_spawn_ruins", "field_spawn_maiden",
 	"field_haul_animal", "field_haul_ruins", "field_haul", "field_captive", "field_gem",
@@ -30,6 +34,11 @@ const EVENT_KEYS := [
 	"pending_bond", "approve_bond", "restore", "new_game", "new_game_difficulty",
 ]
 
+# 性別別カテゴリ。発言者の性別と一人称が矛盾しないことを機械的に保証する。
+# 雌カテゴリに男性一人称『俺』、雄カテゴリに女性一人称が混ざっていないか検査する。
+const FEMALE_CATEGORIES := ["courting_f", "mating_f", "concubine_f", "pending_bond_f", "pregnant"]
+const MALE_CATEGORIES := ["courting_m", "mating_m", "concubine_m", "pending_bond_m"]
+
 func _init() -> void:
 	TextDB.reload()
 	var ok := true
@@ -39,6 +48,7 @@ func _init() -> void:
 	ok = _test_event_keys() and ok
 	ok = _test_format() and ok
 	ok = _test_compose() and ok
+	ok = _test_gender_voice() and ok
 	if ok:
 		print("DIALOGUE_OK")
 		quit(0)
@@ -147,23 +157,50 @@ func _test_format() -> bool:
 		print("  format: OK (例: %s)" % s1)
 	return ok
 
+## 性別別カテゴリの一人称が、発言者の性別と矛盾しないこと。
+## 雌カテゴリ (妊娠含む) に男性一人称『俺』、雄カテゴリに女性一人称『あたい/あたし』が
+## 混ざっていないかを検査する。共有カテゴリ (hungry/work 等) はゴブリン共通口調なので対象外。
+func _test_gender_voice() -> bool:
+	var ok := true
+	for cat in FEMALE_CATEGORIES:
+		for v in TextDB.chatter_lines(cat):
+			var line := String(v)
+			if line.find("俺") >= 0:
+				print("  FAIL: 雌カテゴリ '%s' に男性一人称『俺』: %s" % [cat, line])
+				ok = false
+	for cat in MALE_CATEGORIES:
+		for v in TextDB.chatter_lines(cat):
+			var line := String(v)
+			if line.find("あたい") >= 0 or line.find("あたし") >= 0:
+				print("  FAIL: 雄カテゴリ '%s' に女性一人称: %s" % [cat, line])
+				ok = false
+	if ok:
+		print("  gender-voice: OK (雌%d/雄%d カテゴリ)" % [FEMALE_CATEGORIES.size(), MALE_CATEGORIES.size()])
+	return ok
+
 ## R-18 地の文の合成 (data/adult.json / ランダム表記)。非空・スロット取りこぼし無し・
-## {name}/{other} 解決を確認。未知グラマは "" を返す。
+## {name}/{other} 解決を確認。性別別 (雄/雌) + つがい両者 + 苗床の各グラマを検証。
+## 未知グラマは "" を返す。
 func _test_compose() -> bool:
 	var ok := true
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 777
-	var solo := TextDB.compose("mating_explicit", rng, {"name": "ゴブA"})
-	if solo.is_empty() or solo.find("{") >= 0:
-		print("  FAIL: compose mating_explicit → '%s'" % solo)
-		ok = false
+	for gk in ["mating_explicit_m", "mating_explicit_f"]:
+		var solo := TextDB.compose(gk, rng, {"name": "ゴブA"})
+		if solo.is_empty() or solo.find("{") >= 0:
+			print("  FAIL: compose %s → '%s'" % [gk, solo])
+			ok = false
 	var pair := TextDB.compose("mating_explicit_pair", rng, {"name": "ゴブA", "other": "ゴブB"})
 	if pair.is_empty() or pair.find("{") >= 0:
 		print("  FAIL: compose mating_explicit_pair → '%s'" % pair)
+		ok = false
+	var nursery := TextDB.compose("nursery_explicit", rng, {})
+	if nursery.is_empty() or nursery.find("{") >= 0:
+		print("  FAIL: compose nursery_explicit → '%s'" % nursery)
 		ok = false
 	if TextDB.compose("does_not_exist", rng, {}) != "":
 		print("  FAIL: compose unknown grammar should return ''")
 		ok = false
 	if ok:
-		print("  compose: OK (例: %s)" % solo)
+		print("  compose: OK (例: %s)" % nursery)
 	return ok
