@@ -12,9 +12,11 @@ class_name TextDB
 
 const DIALOGUE_PATH := "res://data/dialogue.json"
 const MESSAGES_PATH := "res://data/messages.json"
+const ADULT_PATH := "res://data/adult.json"
 
 static var _dialogue: Dictionary = {}
 static var _messages: Dictionary = {}
+static var _adult: Dictionary = {}
 static var _loaded := false
 
 ## JSON を 1 つ読み込む。無い/壊れていれば空辞書 + 警告 (クラッシュさせない)。
@@ -40,6 +42,7 @@ static func ensure_loaded() -> void:
 		return
 	_dialogue = _load_json(DIALOGUE_PATH)
 	_messages = _load_json(MESSAGES_PATH)
+	_adult = _load_json(ADULT_PATH)
 	_loaded = true
 
 ## テスト/ホットリロード用に再読込を強制する。
@@ -103,3 +106,31 @@ static func label(group: String, key: String, fallback: String = "") -> String:
 	if gd.has("_default"):
 		return String(gd["_default"])
 	return fallback
+
+# ── R-18 地の文の合成 (adult.json / ランダム表記) ────────────
+## フラグメント文法から 1 行を合成する: grammar_key の templates から 1 つ選び、{slot} を
+## 同名リストのランダムな 1 語で差し込み、最後に fields ({name}/{other}) を format で埋める。
+## 演出 RNG のみ消費 (KI-09)。文法/テンプレ/データが無ければ "" (呼び出し側で通常文面へ)。
+## "templates" と "_" 始まりのキーはスロット扱いしない。スロット語に {} を入れないこと。
+static func compose(grammar_key: String, rng: RandomNumberGenerator, fields: Dictionary = {}) -> String:
+	ensure_loaded()
+	var g: Variant = _adult.get(grammar_key, {})
+	if typeof(g) != TYPE_DICTIONARY:
+		return ""
+	var gd := g as Dictionary
+	var templates: Variant = gd.get("templates", [])
+	if typeof(templates) != TYPE_ARRAY or (templates as Array).is_empty():
+		return ""
+	var out := String((templates as Array)[rng.randi() % (templates as Array).size()])
+	for slot in gd.keys():
+		var sname := String(slot)
+		if sname == "templates" or sname.begins_with("_"):
+			continue
+		var token := "{" + sname + "}"
+		if out.find(token) < 0:
+			continue
+		var arr: Variant = gd[slot]
+		if typeof(arr) != TYPE_ARRAY or (arr as Array).is_empty():
+			continue
+		out = out.replace(token, String((arr as Array)[rng.randi() % (arr as Array).size()]))
+	return out.format(fields)

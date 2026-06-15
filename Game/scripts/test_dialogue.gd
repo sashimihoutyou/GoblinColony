@@ -38,6 +38,7 @@ func _init() -> void:
 	ok = _test_names() and ok
 	ok = _test_event_keys() and ok
 	ok = _test_format() and ok
+	ok = _test_compose() and ok
 	if ok:
 		print("DIALOGUE_OK")
 		quit(0)
@@ -144,4 +145,25 @@ func _test_format() -> bool:
 		ok = false
 	if ok:
 		print("  format: OK (例: %s)" % s1)
+	return ok
+
+## R-18 地の文の合成 (data/adult.json / ランダム表記)。非空・スロット取りこぼし無し・
+## {name}/{other} 解決を確認。未知グラマは "" を返す。
+func _test_compose() -> bool:
+	var ok := true
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 777
+	var solo := TextDB.compose("mating_explicit", rng, {"name": "ゴブA"})
+	if solo.is_empty() or solo.find("{") >= 0:
+		print("  FAIL: compose mating_explicit → '%s'" % solo)
+		ok = false
+	var pair := TextDB.compose("mating_explicit_pair", rng, {"name": "ゴブA", "other": "ゴブB"})
+	if pair.is_empty() or pair.find("{") >= 0:
+		print("  FAIL: compose mating_explicit_pair → '%s'" % pair)
+		ok = false
+	if TextDB.compose("does_not_exist", rng, {}) != "":
+		print("  FAIL: compose unknown grammar should return ''")
+		ok = false
+	if ok:
+		print("  compose: OK (例: %s)" % solo)
 	return ok
