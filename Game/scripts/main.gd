@@ -542,21 +542,29 @@ func _push_feed_event(e: Dictionary) -> void:
 			var cm := _find_goblin(int(e.get("m", -1)))
 			var cfn: String = GobNames.of(cf) if cf != null else "雌ゴブリン"
 			var cmn: String = GobNames.of(cm) if cm != null else "雄ゴブリン"
-			_push_feed("love", TextDB.msg("court", {"name": cfn, "other": cmn}), int(e.get("f", -1)))
+			_push_feed("love", TextDB.msg_pick("court", _conv_rng, {"name": cfn, "other": cmn}), int(e.get("f", -1)))
 		"mating":
 			var mf := _find_goblin(int(e.get("f", -1)))
 			var mm := _find_goblin(int(e.get("m", -1)))
 			var mfn: String = GobNames.of(mf) if mf != null else "雌ゴブリン"
 			var mmn: String = GobNames.of(mm) if mm != null else "雄ゴブリン"
-			# R-18 ON ならつがい成立の瞬間を露骨な地の文に (OFF/データ不在は通常文面へ)。
+			# R-18 ON ならつがい成立の瞬間を露骨な地の文に ({name}=雌・{other}=雄で雄を能動側に)。
+			# OFF/データ不在は通常文面 (variant から散らす) へ。
 			var mtext := TextDB.compose("mating_explicit_pair", _conv_rng, {"name": mfn, "other": mmn}) if _explicit_on else ""
 			if mtext == "":
-				mtext = TextDB.msg("mating", {"name": mfn, "other": mmn})
+				mtext = TextDB.msg_pick("mating", _conv_rng, {"name": mfn, "other": mmn})
 			_push_feed("love", mtext, int(e.get("f", -1)))
 		"pregnant":
 			var f := _find_goblin(int(e.get("id", -1)))
 			if f != null:
-				_push_feed("love", TextDB.msg("pregnant", {"name": GobNames.of(f)}), f.id)
+				_push_feed("love", TextDB.msg_pick("pregnant", _conv_rng, {"name": GobNames.of(f)}), f.id)
+		"court_timeout":
+			# 求愛の待ちぼうけ (誘った雌が起点)。{name}=雌・{other}=雄で性別整合の文面。
+			var tf := _find_goblin(int(e.get("f", -1)))
+			var tm := _find_goblin(int(e.get("m", -1)))
+			var tfn: String = GobNames.of(tf) if tf != null else "雌ゴブリン"
+			var tmn: String = GobNames.of(tm) if tm != null else "雄ゴブリン"
+			_push_feed("event", TextDB.msg_pick("court_timeout", _conv_rng, {"name": tfn, "other": tmn}), int(e.get("f", -1)))
 		"field_spawn":
 			var sp_kind: int = int(e.get("kind", FieldResource.Kind.FORAGE))
 			_push_feed("event", TextDB.msg("field_spawn_" + String(FIELD_KEY.get(sp_kind, "forage")), {"amount": e.get("amount", 0)}))
@@ -647,31 +655,31 @@ func _push_feed_event(e: Dictionary) -> void:
 			_push_feed("raid", TextDB.msg(dfkey))
 		"captive_gain":
 			var cg_who := TextDB.label("captive_who", "human" if e.get("human", false) else "goblin")
-			_push_feed("event", TextDB.msg("captive_gain", {"who": cg_who}))
+			_push_feed("event", TextDB.msg_pick("captive_gain", _conv_rng, {"who": cg_who}))
 		"captive_joined":
-			_push_feed("event", TextDB.msg("captive_joined", {"name": GobNames.name_of(int(e.get("id", -1)), Goblin.Sex.MALE)}), int(e.get("id", -1)))
+			_push_feed("event", TextDB.msg_pick("captive_joined", _conv_rng, {"name": GobNames.name_of(int(e.get("id", -1)), Goblin.Sex.MALE)}), int(e.get("id", -1)))
 		"sacrifice":
 			var kind_txt := TextDB.label("sacrifice_kind", String(e.get("kind", "")), "捕虜")
-			_push_feed("event", TextDB.msg("sacrifice", {"kind": kind_txt}))
+			_push_feed("event", TextDB.msg_pick("sacrifice", _conv_rng, {"kind": kind_txt}))
 		"release_captive":
 			var sex_txt := TextDB.label("sex", "male" if int(e.get("sex", 0)) == Goblin.Sex.MALE else "female")
-			_push_feed("event", TextDB.msg("release_captive", {"sex": sex_txt}))
+			_push_feed("event", TextDB.msg_pick("release_captive", _conv_rng, {"sex": sex_txt}))
 		"tribute":
 			var fac_txt := TextDB.label("tribute_faction", String(e.get("faction", "")), "敵対勢力")
-			_push_feed("event", TextDB.msg("tribute", {"faction": fac_txt}))
+			_push_feed("event", TextDB.msg_pick("tribute", _conv_rng, {"faction": fac_txt}))
 		"tribute_gems":
 			_push_feed("event", TextDB.msg("tribute_gems", {"amount": int(e.get("amount", 0))}))
 		"gems_hoard_warn":
 			_push_feed("raid", TextDB.msg("gems_hoard_warn"))
 		"take_concubine":
 			var suitor := _find_goblin(int(e.get("suitor", -1)))
-			_push_feed("love", TextDB.msg("take_concubine", {"name": GobNames.of(suitor) if suitor != null else "誰か"}), int(e.get("suitor", -1)))
+			_push_feed("love", TextDB.msg_pick("take_concubine", _conv_rng, {"name": GobNames.of(suitor) if suitor != null else "誰か"}), int(e.get("suitor", -1)))
 		"pending_bond":
-			_push_feed("love", TextDB.msg("pending_bond"), int(e.get("id", -1)))
+			_push_feed("love", TextDB.msg_pick("pending_bond", _conv_rng), int(e.get("id", -1)))
 		"approve_bond":
-			_push_feed("love", TextDB.msg("approve_bond"), int(e.get("id", -1)))
+			_push_feed("love", TextDB.msg_pick("approve_bond", _conv_rng), int(e.get("id", -1)))
 		"birth_nursery":
-			_push_feed("birth", TextDB.msg("birth_nursery", {"count": int(e.get("count", 1))}))
+			_push_feed("birth", TextDB.msg_pick("birth_nursery", _conv_rng, {"count": int(e.get("count", 1))}))
 
 const FEED_COLORS := {
 	"raid": "e06a50", "event": "e8943a", "birth": "9adb6e",
@@ -710,6 +718,13 @@ func _maybe_emit_conversation() -> void:
 			pool.append(g)
 	if pool.is_empty():
 		return
+	# 苗床が稼働中ならたまに苗床アンビエンス (情景 + 母体/見物の台詞) を差し込む。
+	if _nursery_active() and _conv_rng.randf() < 0.18:
+		var nline := _nursery_line(pool)
+		if nline != "" and nline != _conv_last_text:
+			_conv_last_text = nline
+			_push_feed("love", nline)
+		return
 	var who: Goblin = pool[_conv_rng.randi() % pool.size()]
 	var line := _conversation_line(who, GobNames.of(who))
 	if line == "" or line == _conv_last_text:
@@ -717,45 +732,84 @@ func _maybe_emit_conversation() -> void:
 	_conv_last_text = line
 	_push_feed("talk", line, who.id)
 
+## 苗床が稼働中か (NURSERY 部屋 + 雌捕虜の母体が居る)。演出判定のみ・RNG 非消費。
+func _nursery_active() -> bool:
+	var hosts: float = world.cap_female_goblin
+	if world.params.human_nursery_allowed:
+		hosts += world.cap_female_human
+	if hosts < 1.0:
+		return false
+	for r in world.map.rooms:
+		if r.room_type == TileMapData.RoomType.NURSERY:
+			return true
+	return false
+
+## 苗床アンビエンスを 1 行返す。R-18 ON のときは露骨な地の文 (nursery_explicit) を合成し、
+## それ以外は通常の nursery 台詞表から引く ({name} は見物役の生きた成体を 1 体充てる /
+## 地の文・母体台詞は {name} を使わない)。演出 RNG のみ消費 (KI-09)。
+func _nursery_line(pool: Array) -> String:
+	if _explicit_on:
+		var ex := TextDB.compose("nursery_explicit", _conv_rng, {})
+		if ex != "":
+			return ex
+	var who := ""
+	if not pool.is_empty():
+		who = GobNames.of(pool[_conv_rng.randi() % pool.size()])
+	return TextDB.pick_chatter("nursery", _conv_rng, {"name": who})
+
 ## 個体の観測状態から会話カテゴリを決め、セリフ表 (data/dialogue.json) から 1 行引く。
 ## セリフ本体は JSON を編集するだけで増減できる。候補は演出 RNG (_conv_rng) で選び、
 ## シム RNG (world.rng) は一切消費しない (KI-09)。
 func _conversation_line(g: Goblin, who: String) -> String:
-	var category: String
+	# 一過性の重要状態を上位優先で判定する。寝床・交尾・捕虜系は性別で台詞を分け、
+	# 発言者の性別と矛盾しないようにする (_pick_gendered が _m/_f を選ぶ)。
 	if g.is_child():
-		category = "child"
-	elif g.pregnant:
-		category = "pregnant"
-	elif g.mating_ticks >= 0:
-		category = "mating"
-	elif g.courting_id >= 0:
-		category = "courting"
-	else:
-		match g.state:
-			Goblin.State.HUNGRY:
-				category = "hungry"
-			Goblin.State.SLEEP:
-				category = "sleep"
-			Goblin.State.WORK:
-				category = "work"
-			Goblin.State.FEAR:
-				category = "fear"
-			Goblin.State.COMBAT:
-				category = "combat"
-			Goblin.State.ENRAGED:
-				category = "enraged"
-			_:
-				# WANDER ほか: 隣に誰かいれば 2 体の雑談、いなければ環境フレーバー。
-				var other := _nearby_chatter(g)
-				if other != null:
-					return TextDB.pick_chatter("chatter_pair", _conv_rng, {"name": who, "other": GobNames.of(other)})
-				category = "wander"
-	# R-18 ON のときは交尾中の地の文を合成で露骨にする (成体のつがいのみ・子供は対象外)。
-	if _explicit_on and not g.is_child() and category == "mating":
-		var ex := TextDB.compose("mating_explicit", _conv_rng, {"name": who})
-		if ex != "":
-			return ex
-	return TextDB.pick_chatter(category, _conv_rng, {"name": who})
+		return TextDB.pick_chatter("child", _conv_rng, {"name": who})
+	if g.pregnant:
+		# 妊娠は雌のみ。pregnant は雌声で書かれているのでサフィックス不要。
+		return TextDB.pick_chatter("pregnant", _conv_rng, {"name": who})
+	if g.mating_ticks >= 0:
+		# R-18 ON は性別別の露骨な地の文を合成する (雄=能動 mating_explicit_m /
+		# 雌=受け mating_explicit_f)。成体のつがいのみ・子供は上で除外済み。
+		if _explicit_on:
+			var ex_key := "mating_explicit_f" if g.sex == Goblin.Sex.FEMALE else "mating_explicit_m"
+			var ex := TextDB.compose(ex_key, _conv_rng, {"name": who})
+			if ex != "":
+				return ex
+		return _pick_gendered("mating", g, who)
+	if g.courting_id >= 0:
+		return _pick_gendered("courting", g, who)
+	if g.pending_bond:
+		return _pick_gendered("pending_bond", g, who)  # つがい承認待ちの捕虜/娶り主
+	match g.state:
+		Goblin.State.HUNGRY:
+			return TextDB.pick_chatter("hungry", _conv_rng, {"name": who})
+		Goblin.State.SLEEP:
+			return TextDB.pick_chatter("sleep", _conv_rng, {"name": who})
+		Goblin.State.WORK:
+			return TextDB.pick_chatter("work", _conv_rng, {"name": who})
+		Goblin.State.FEAR:
+			return TextDB.pick_chatter("fear", _conv_rng, {"name": who})
+		Goblin.State.COMBAT:
+			return TextDB.pick_chatter("combat", _conv_rng, {"name": who})
+		Goblin.State.ENRAGED:
+			return TextDB.pick_chatter("enraged", _conv_rng, {"name": who})
+		_:
+			# WANDER ほか: 側室は捕虜暮らしの台詞、隣に誰かいれば 2 体の雑談、いなければ環境フレーバー。
+			if g.role == Goblin.Role.CONCUBINE:
+				return _pick_gendered("concubine", g, who)
+			var other := _nearby_chatter(g)
+			if other != null:
+				return TextDB.pick_chatter("chatter_pair", _conv_rng, {"name": who, "other": GobNames.of(other)})
+			return TextDB.pick_chatter("wander", _conv_rng, {"name": who})
+
+## 性別サフィックス (_m=雄 / _f=雌) 付きカテゴリを優先し、無ければ基底へフォールバックする。
+## 発言者の性別と台詞が矛盾しないようにするための共通ヘルパ (演出 RNG のみ消費 / KI-09)。
+func _pick_gendered(base: String, g: Goblin, who: String) -> String:
+	var suffix := "_f" if g.sex == Goblin.Sex.FEMALE else "_m"
+	if not TextDB.chatter_lines(base + suffix).is_empty():
+		return TextDB.pick_chatter(base + suffix, _conv_rng, {"name": who})
+	return TextDB.pick_chatter(base, _conv_rng, {"name": who})
 
 ## 近くで雑談できる相手 (チェビシェフ距離 1 の生きている別個体) を 1 体返す。なければ null。
 func _nearby_chatter(g: Goblin) -> Goblin:
@@ -1124,9 +1178,27 @@ func _update_inspector_goblin(g: Goblin) -> void:
 		var left := float(params.pregnancy_ticks - g.pregnant_ticks) / float(params.ticks_per_day)
 		tags.append("[color=#e8a0b8]身ごもっている (あと %.1f 日)[/color]" % left)
 	if g.mating_ticks >= 0:
-		tags.append("[color=#e8a0b8]寝床にこもっている…[/color]")
+		# 交尾中は courting_id が相手を指す (寝床へ留めるため完了/中断まで保持される)。
+		var mate := _find_goblin(g.courting_id)
+		var mate_nm: String = GobNames.of(mate) if mate != null else "つがい"
+		tags.append("[color=#e8a0b8]寝床にこもっている (相手 %s)[/color]" % mate_nm)
 	elif g.courting_id >= 0:
-		tags.append("[color=#e8a0b8]求愛中[/color]")
+		# 求愛は雌が起点 (§3-6)。雌=誘っている / 雄=誘われている、で表記を分ける。
+		var ct := _find_goblin(g.courting_id)
+		var ct_nm: String = GobNames.of(ct) if ct != null else "相手"
+		var verb := "を寝床に誘っている" if g.sex == Goblin.Sex.FEMALE else "に寝床へ誘われている"
+		tags.append("[color=#e8a0b8]%s%s[/color]" % [ct_nm, verb])
+	if g.pending_bond:
+		tags.append("[color=#e8a0b8]つがいの承認待ち[/color]")
+	if g.role == Goblin.Role.CONCUBINE:
+		var spouse := _find_goblin(g.mate_id)
+		var sp_nm: String = GobNames.of(spouse) if spouse != null else "娶り主"
+		tags.append("[color=#e8a0b8]側室 (%s の伴侶)[/color]" % sp_nm)
+	# 出自 (捕虜・苗床産まれは群れの来歴として表示する)。
+	if g.origin == Goblin.Origin.CONCUBINE or g.origin == Goblin.Origin.CAPTIVE_JOINED:
+		tags.append("[color=#8a7d68]捕虜出身[/color]")
+	elif g.origin == Goblin.Origin.NURSERY:
+		tags.append("[color=#8a7d68]苗床産まれ[/color]")
 	if g.equipped:
 		tags.append("武装済み")
 	if g.dispatch_id >= 0:

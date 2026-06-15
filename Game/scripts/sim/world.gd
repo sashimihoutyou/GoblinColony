@@ -2100,6 +2100,7 @@ func _step_courtship() -> void:
 			continue
 		# 解消条件: 相手が居ない/死亡、自分または相手が危機ステート、非平時、タイムアウト。
 		var dissolve := false
+		var timed_out := false
 		if mate == null or mate.state == Goblin.State.DEAD or f.state == Goblin.State.DEAD:
 			dissolve = true
 		elif phase != Phase.PEACE:
@@ -2108,7 +2109,13 @@ func _step_courtship() -> void:
 			dissolve = true
 		elif f.court_ticks > params.court_timeout_ticks:
 			dissolve = true
+			timed_out = true
 		if dissolve:
+			# 待ちぼうけ (タイムアウト) のときだけ演出イベントを出し、求愛の失敗を可視化する。
+			# 相手喪失/危機/襲撃中の解散は他フィードと重なるので静かに畳む。_event は
+			# last_events に積むだけで rng もスナップショットも触らない (決定性に無影響 / KI-09)。
+			if timed_out and mate != null:
+				_event({"t": "court_timeout", "f": f.id, "m": mate.id})
 			if mate != null:
 				mate.courting_id = -1
 				mate.court_ticks = 0

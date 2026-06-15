@@ -68,6 +68,7 @@ scripts/
 data/                     演出テキスト（コードを触らず編集できる外部ファイル）
   dialogue.json           ゴブリンの会話セリフ（状態別カテゴリ）+ 名前音節（M1/M2/F1/F2）
   messages.json           イベントフィード（巣の記録）の文面 + ラベル
+  adult.json              R-18 地の文の合成素材（既定 OFF の R18 トグル時のみ）
 scenes/
   Main.tscn               メインシーン（骨組みのみ。UI は main.gd が構築）
 ```
@@ -82,11 +83,23 @@ scenes/
   状態キー: `child / hungry / sleep / work / wander / fear / combat / enraged /
   courting / mating / pregnant / chatter_pair`。
   プレースホルダは `{name}`（話者名）と `{other}`（近くの相手名・`chatter_pair` 限定）。
-- イベント文面を変える → `data/messages.json` の `events.<キー>`。プレースホルダは
-  `{name} {other} {who} {count} {amount} {room} …`（`String.format`）。
+- **性別別カテゴリ（発言者の性別と矛盾させない）**: 寝床・交尾・捕虜系は `_m`（雄声）/
+  `_f`（雌声）で分け、`main.gd` が話者の性別で出し分ける（無ければ基底へフォールバック）。
+  `courting_m/f`・`mating_m/f`・`concubine_m/f`（娶られた捕虜）・`pending_bond_m/f`
+  （つがい承認待ち）。`pregnant` は雌のみなので単一（雌声で書く）。`nursery` は苗床の
+  情景＋母体（雌捕虜）台詞＋見物の中立台詞のアンビエント（`{name}` 任意）。
+  **雌カテゴリに男性一人称『俺』を書かない**こと（`test_dialogue.gd` が機械検査する）。
+- イベント文面を変える → `data/messages.json` の `events.<キー>`。値は文字列 **または
+  文字列配列**（配列なら `TextDB.msg_pick` がランダムに散らす。`msg` は先頭を使う）。
+  プレースホルダは `{name} {other} {who} {count} {amount} {room} {sex} {faction} …`。
+  役割固定の文面（`court`/`mating`/`pregnant`/`court_timeout` は `{name}`=雌・`{other}`=雄）は
+  性別整合の台詞を直接埋め込んでよい。
+- R-18 地の文を変える → `data/adult.json`（既定 OFF の R18 トグル時のみ）。性別整合のため
+  `mating_explicit_m`（雄=能動）/ `mating_explicit_f`（雌=受け）/ `mating_explicit_pair`
+  （つがい両者・`{name}`=雌/`{other}`=雄で雄を能動側に）/ `nursery_explicit`（母体視点）。
 - 名前の音節を増やす → `data/dialogue.json` の `names.{M1,M2,F1,F2}`（カタカナ）。
-- 編集後は `test_dialogue.gd` で検証（カテゴリ網羅・プレースホルダ規約・文面キー存在）。
-  JSON が壊れていても TextDB はフォールバックで落ちない（警告のみ）。
+- 編集後は `test_dialogue.gd` で検証（カテゴリ網羅・プレースホルダ規約・文面キー存在・
+  性別一人称の整合・合成グラマ）。JSON が壊れていても TextDB はフォールバックで落ちない（警告のみ）。
 
 ## 実行
 
