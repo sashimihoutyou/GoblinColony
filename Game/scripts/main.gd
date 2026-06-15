@@ -727,6 +727,7 @@ func _maybe_emit_conversation() -> void:
 		return
 	# 次の発話までの間隔を散らす。ゴブリンが常にわちゃわちゃ喋っている感を出すため
 	# 高頻度 (1 日 = ticks_per_day tick に対し概ね 50〜150 回 ≒ 数 tick おき)。
+	@warning_ignore("integer_division")
 	_conv_next_tick = world.tick + _conv_rng.randi_range(
 			maxi(1, params.ticks_per_day / 150), maxi(2, params.ticks_per_day / 50))
 	var pool: Array = []
@@ -883,7 +884,9 @@ func _refresh_build_buttons() -> void:
 func _ghost_topleft(pos: Vector2) -> Vector2i:
 	var size: Vector2i = SimParams.ROOM_BUILD_SIZE[_armed_build]
 	var tp := Vector2i(int(pos.x / renderer.tile_size), int(pos.y / renderer.tile_size))
-	return tp - Vector2i(size.x / 2, size.y / 2)
+	@warning_ignore("integer_division")
+	var topleft := tp - Vector2i(size.x / 2, size.y / 2)
+	return topleft
 
 ## 建築モードの左クリック = 2 タップ目の確定。検証はシム側 can_place_room に委ね、
 ## ここでは結果に応じたフィードバックだけ出す。
@@ -1565,9 +1568,9 @@ func _on_defense_slider_changed() -> void:
 
 ## 防衛配分パネルの毎フレーム更新 (襲撃中のみ表示。自動中はスライダーを実配分へ追従)。
 func _update_defense_panel() -> void:
-	var show := world.outcome == World.Outcome.ONGOING and world.phase != World.Phase.PEACE
-	_defense_panel.visible = show
-	if not show:
+	var is_active := world.outcome == World.Outcome.ONGOING and world.phase != World.Phase.PEACE
+	_defense_panel.visible = is_active
+	if not is_active:
 		return
 	_style_button(_defense_auto_button, not world.defense_alloc_manual)
 	# 自動中は実配分 (敵戦力比例) をスライダーへ反映する (操作は手動化のトリガー)。
