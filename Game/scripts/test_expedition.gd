@@ -344,7 +344,6 @@ func _test_traveler_trade() -> bool:
 	var ok := true
 	var got_gems := false
 	var got_herb := false
-	var got_faux_pas := false
 	for trial in range(40):
 		var w := _make_world(500 + trial, 1)
 		var f := _spawn_field(w, FieldResource.Kind.TRAVELER, 0, "", 1)
@@ -354,17 +353,28 @@ func _test_traveler_trade() -> bool:
 		g.dispatch_id = f.id
 		var gems_before := w.gems
 		var herb_before := w.herb
-		var hostility_before := w.human_hostility
 		if _run_until_resolved(w, f.id) == null:
 			continue
 		if w.gems > gems_before:
 			got_gems = true
 		if w.herb > herb_before:
 			got_herb = true
-		if w.human_hostility > hostility_before:
-			got_faux_pas = true
 	ok = _check(got_gems or got_herb, "TRAVELER は gems か herb を持ち帰る") and ok
-	ok = _check(got_faux_pas, "TRAVELER は低確率で粗相により human_hostility が上がる (複数試行)") and ok
+	# 業の漏れ (faux_pas) は低確率イベント。RNG 位相 (移動速度などで到着までの
+	# tick 数が変わると消費位相がずれる) に依存しない決定的検証として、発生確率を
+	# 1.0 に上げ、1 回の到着で必ず human_hostility が field_traveler_faux_pas_hostility
+	# ぶん上がることを確認する。
+	var wf := _make_world(777, 1)
+	wf.params.field_traveler_faux_pas_chance = 1.0
+	var ff := _spawn_field(wf, FieldResource.Kind.TRAVELER, 0, "", 1)
+	var gf := _male_adult(wf)
+	var host_before := wf.human_hostility
+	ok = _check(gf != null, "TRAVELER faux_pas テスト用の男性成体が見つかる") and ok
+	if gf != null:
+		gf.dispatch_id = ff.id
+		_run_until_resolved(wf, ff.id)
+	ok = _check(wf.human_hostility >= host_before + wf.params.field_traveler_faux_pas_hostility - 1e-6,
+			"TRAVELER は粗相で human_hostility が上がる (確率 1.0 で決定的に検証)") and ok
 	return ok
 
 ## (e) MAIDEN/アミナ装置: 保持→懐き予兆→JOINED (amina_joined)。
