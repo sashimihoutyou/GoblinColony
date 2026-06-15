@@ -2,11 +2,12 @@ extends Node2D
 ## メインループ (P1-09 / P1-10)。実時間 → tick 変換 → controller → world.tick → render。
 ##
 ## 実時間に触れるのはここだけ (KI-09 tick_driver 相当)。速度倍率と端数持ち越し。
-## タイムスケール: 1 tick = 0.375 実秒 × ticks_per_day=240 → 1 日 = 実 90 秒 (3x で 30 秒)。
+## タイムスケール: 1 tick = 0.75 実秒 × ticks_per_day=240 → 1 日 = 実 180 秒 (3x で 60 秒)。
+## 介入・観察の余地を持たせるため一律 2 倍スローにしている (体感テンポ調整)。
 ## tick が細かいのは連続移動 (RimWorld 風) のサンプリングのため (params.gd 参照)。
 ## UI はコードで構築する (Web 版ダッシュボードと同じ配色言語: 闇の岩・琥珀・苔)。
 
-const MS_PER_TICK := 375.0
+const MS_PER_TICK := 750.0
 
 # --- 自動セーブ (C1 / GDD §14.5.1) ---
 # 確定的 tick スナップショット (world.snapshot()) を JSON で保存・復元する。
@@ -105,9 +106,22 @@ var _captive_info: Label
 var _concubine_button: Button
 var _gem_row: HBoxContainer        # 宝石献上の行 (§14/B5。gems 保有時のみ表示)
 var _gem_tribute_button: Button
+# 捕虜パネルの手動表示フラグ (演出ローカル)。既定では捕虜が居るときだけ自動表示し、
+# 捕虜不在時は隠す (派遣パネルと重ならない)。トグルボタンで強制表示/非表示できる
+# (捕虜不在でも宝石献上だけしたい / 邪魔なとき畳む)。
+var _captive_pinned: bool = false
+var _captive_toggle_button: Button
 var _bond_banner: PanelContainer
 var _bond_label: Label
 var _bond_captive_id: int = -1  # バナーが対象にしている承認待ち側室の id
+
+# 会話ログ (演出ローカル)。ON のときだけフレーバー会話を「巣の記録」に流す。既定 OFF で
+# ログが流れ続けるのを防ぐ。生成は演出専用 RNG (シム RNG を消費しない / KI-09)。
+var _conversation_on: bool = false
+var _conversation_toggle_button: Button
+var _conv_rng := RandomNumberGenerator.new()
+var _conv_next_tick: int = 0       # 次に会話を試みる tick (スロットル)
+var _conv_last_text: String = ""   # 直近の会話 (重複抑制)
 
 # 建築できる部屋 (spec 3-15 の 5 種)。
 const BUILD_TYPES := [
@@ -175,6 +189,7 @@ var _defense_auto_button: Button
 var _defense_syncing: bool = false  # 自動追従でスライダーを書き戻す間の value_changed 抑止
 
 func _ready() -> void:
+	_conv_rng.randomize()  # 会話ログ用の演出 RNG (シム RNG とは独立 / KI-09)
 	params = SimParams.new()
 	world = World.new()
 	world.setup(params)
@@ -353,6 +368,8 @@ func _step_one_tick() -> void:
 	# tick 確定後に演出層の補間ターゲット (prev→cur) を更新する。
 	# (1 フレームに複数 tick 回る場合も毎回。O(個体数) の座標コピーのみ)
 	renderer.on_tick(world)
+	# 会話ログ (演出層のみ・ON のときだけ)。シム RNG を消費しない (KI-09)。
+	_maybe_emit_conversation()
 	# 自動セーブ (C1 / GDD §14.5.1): 日境界・襲撃終了 (PEACE 遷移) で保存する。
 	# 交戦中はセーブしない (直前の安定点に倒す)。勝敗確定後は古いセーブを消す
 	# (再開時に即敗北/勝利画面にならないように)。
@@ -534,6 +551,12 @@ func _push_feed_event(e: Dictionary) -> void:
 			var cfn: String = GobNames.of(cf) if cf != null else "雌ゴブリン"
 			var cmn: String = GobNames.of(cm) if cm != null else "雄ゴブリン"
 			_push_feed("love", "%s が %s を寝床に誘った。" % [cfn, cmn], int(e.get("f", -1)))
+		"mating":
+			var mf := _find_goblin(int(e.get("f", -1)))
+			var mm := _find_goblin(int(e.get("m", -1)))
+			var mfn: String = GobNames.of(mf) if mf != null else "雌ゴブリン"
+			var mmn: String = GobNames.of(mm) if mm != null else "雄ゴブリン"
+			_push_feed("love", "%s と %s が寝床にこもった。" % [mfn, mmn], int(e.get("f", -1)))
 		"pregnant":
 			var f := _find_goblin(int(e.get("id", -1)))
 			if f != null:
@@ -678,7 +701,7 @@ func _push_feed_event(e: Dictionary) -> void:
 
 const FEED_COLORS := {
 	"raid": "e06a50", "event": "e8943a", "birth": "9adb6e",
-	"death": "c08a7a", "love": "e8a0b8",
+	"death": "c08a7a", "love": "e8a0b8", "talk": "8a93c0",
 }
 
 ## フィードへ 1 行流す。subject_id を渡すと行全体が [url=g:id] リンクになり、
@@ -693,6 +716,78 @@ func _push_feed(kind: String, text: String, subject_id: int = -1) -> void:
 		_feed_lines.resize(40)
 	if _feed != null:
 		_feed.text = "\n".join(_feed_lines)
+
+## 会話ログ (演出層のみ): 観測可能な状態からフレーバー会話をたまに 1 行流す。
+## シム RNG (world.rng) は一切消費せず演出 RNG (_conv_rng) を使う (KI-09)。スロットルと
+## 直近重複抑制でフィードを溢れさせない。ON のときだけ流す。
+func _maybe_emit_conversation() -> void:
+	if not _conversation_on:
+		return
+	if world.tick < _conv_next_tick:
+		return
+	# 次の発話までの間隔を散らす (1 日 = ticks_per_day tick に対し概ね 5〜12 回)。
+	_conv_next_tick = world.tick + _conv_rng.randi_range(
+			maxi(1, params.ticks_per_day / 12), maxi(2, params.ticks_per_day / 5))
+	var pool: Array = []
+	for g in world.goblins:
+		if g.state != Goblin.State.DEAD and g.state != Goblin.State.KNOCKED_OUT:
+			pool.append(g)
+	if pool.is_empty():
+		return
+	var who: Goblin = pool[_conv_rng.randi() % pool.size()]
+	var line := _conversation_line(who, GobNames.of(who))
+	if line == "" or line == _conv_last_text:
+		return
+	_conv_last_text = line
+	_push_feed("talk", line, who.id)
+
+## 個体の観測状態に応じた会話の 1 行 (演出フレーバー)。複数候補から _conv_rng で選ぶ。
+func _conversation_line(g: Goblin, who: String) -> String:
+	var opts: Array = []
+	if g.is_child():
+		opts = ["%s が小石を転がして遊んでいる。", "%s 「おっきくなったら戦うんだ!」",
+				"%s が大人の真似をして胸を張った。"]
+	elif g.pregnant:
+		opts = ["%s はおなかをさすって目を細めた。", "%s 「腹の子は族長より強くなる」"]
+	elif g.mating_ticks >= 0:
+		opts = ["%s 「…しずかにしててくれ」", "寝床から %s の満ち足りた唸りが漏れる。"]
+	elif g.courting_id >= 0:
+		opts = ["%s が落ち着かない様子で寝床の方を気にしている。", "%s 「来てくれるかな…」"]
+	else:
+		match g.state:
+			Goblin.State.HUNGRY:
+				opts = ["%s は腹を鳴らした。「…腹減った」", "%s がキノコの匂いを探している。",
+						"%s 「飯はまだか」"]
+			Goblin.State.SLEEP:
+				opts = ["%s が寝言で何かつぶやいた。", "%s はいびきをかいて丸くなっている。"]
+			Goblin.State.WORK:
+				opts = ["%s が鼻歌まじりに手を動かす。", "%s 「働けば飯が増える…たぶん」",
+						"%s がツルハシを担ぎ直した。"]
+			Goblin.State.FEAR:
+				opts = ["%s が物陰でガタガタ震えている。", "%s 「いやだ、死にたくない…」"]
+			Goblin.State.COMBAT:
+				opts = ["%s が雄叫びを上げた!", "%s 「来やがれ!」"]
+			Goblin.State.ENRAGED:
+				opts = ["%s の目が血走っている。", "%s が手当たり次第に殴りかかる!"]
+			_:
+				# WANDER ほか: 隣に誰かいれば雑談、いなければ環境フレーバー。
+				var other := _nearby_chatter(g)
+				if other != null:
+					return "%s と %s が顔を寄せて何か話している。" % [who, GobNames.of(other)]
+				opts = ["%s がぼんやり洞窟を眺めている。", "%s 「今日もトーテムは燃えてるな」",
+						"%s が爪で岩肌に落書きしている。", "%s が遠くの物音に耳を澄ませた。"]
+	if opts.is_empty():
+		return ""
+	return (opts[_conv_rng.randi() % opts.size()] as String) % who
+
+## 近くで雑談できる相手 (チェビシェフ距離 1 の生きている別個体) を 1 体返す。なければ null。
+func _nearby_chatter(g: Goblin) -> Goblin:
+	for o in world.goblins:
+		if o.id == g.id or o.state == Goblin.State.DEAD or o.state == Goblin.State.KNOCKED_OUT:
+			continue
+		if max(abs(o.x - g.x), abs(o.y - g.y)) <= 1:
+			return o
+	return null
 
 func _find_goblin(id: int) -> Goblin:
 	for g in world.goblins:
@@ -1045,6 +1140,10 @@ func _update_inspector_goblin(g: Goblin) -> void:
 	if g.pregnant:
 		var left := float(params.pregnancy_ticks - g.pregnant_ticks) / float(params.ticks_per_day)
 		tags.append("[color=#e8a0b8]身ごもっている (あと %.1f 日)[/color]" % left)
+	if g.mating_ticks >= 0:
+		tags.append("[color=#e8a0b8]寝床にこもっている…[/color]")
+	elif g.courting_id >= 0:
+		tags.append("[color=#e8a0b8]求愛中[/color]")
 	if g.equipped:
 		tags.append("武装済み")
 	if g.dispatch_id >= 0:
@@ -1213,9 +1312,30 @@ func _build_ui() -> void:
 		build_bar.add_child(btn)
 		_build_buttons.append({"btn": btn, "rt": rt_v})
 	ui.add_child(build_bar)
+	# トグルバー (建築バーのさらに上段)。会話ログの ON/OFF と捕虜パネルの表示切替。
+	var toggle_bar := HBoxContainer.new()
+	toggle_bar.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	toggle_bar.offset_top = -110.0
+	toggle_bar.offset_bottom = -78.0
+	toggle_bar.offset_left = 8.0
+	toggle_bar.add_theme_constant_override("separation", 4)
+	_conversation_toggle_button = Button.new()
+	_conversation_toggle_button.add_theme_font_size_override("font_size", 12)
+	_conversation_toggle_button.pressed.connect(func() -> void:
+		_conversation_on = not _conversation_on
+		_refresh_toggle_buttons())
+	toggle_bar.add_child(_conversation_toggle_button)
+	_captive_toggle_button = Button.new()
+	_captive_toggle_button.add_theme_font_size_override("font_size", 12)
+	_captive_toggle_button.pressed.connect(func() -> void:
+		_captive_pinned = not _captive_pinned
+		_update_captive_ui())
+	toggle_bar.add_child(_captive_toggle_button)
+	ui.add_child(toggle_bar)
 	_refresh_speed_buttons()
 	_refresh_miracle_buttons()
 	_refresh_build_buttons()
+	_refresh_toggle_buttons()
 
 	# --- 派遣パネル (§11.5。中央下。出現物クリックで開く) ---
 	_dispatch_panel = PanelContainer.new()
@@ -1271,10 +1391,11 @@ func _build_ui() -> void:
 	# --- 捕虜パネル (§10/KI-23。捕虜がいる間だけ表示。右パネルの左隣・下端) ---
 	_captive_panel = PanelContainer.new()
 	_captive_panel.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	# 派遣パネル (中央下・帯 -176..-48) と縦に重ならないよう、その上の帯へ持ち上げる。
 	_captive_panel.offset_left = -640.0
 	_captive_panel.offset_right = -298.0
-	_captive_panel.offset_top = -128.0
-	_captive_panel.offset_bottom = -48.0
+	_captive_panel.offset_top = -220.0
+	_captive_panel.offset_bottom = -140.0
 	_captive_panel.add_theme_stylebox_override("panel", _panel_style())
 	_captive_panel.visible = false
 	var cbox := VBoxContainer.new()
@@ -1474,8 +1595,12 @@ func _press_concubine() -> void:
 func _update_captive_ui() -> void:
 	var total := world.cap_male_goblin + world.cap_female_goblin \
 			+ world.cap_male_human + world.cap_female_human
-	# 捕虜が居るか宝石を持っているとき外交パネルを出す (§14/B5: 宝石献上は捕虜と独立)。
-	_captive_panel.visible = total >= 1.0 or world.gems >= 1.0
+	# 捕虜が居るときだけ自動表示する (何も操作できない捕虜不在時は隠して派遣パネルと
+	# 重ならないようにする)。手動トグル (_captive_pinned) を ON にすれば、捕虜不在でも
+	# 宝石献上のために開ける。捕虜が居なくなったら自動で畳む (pin はそのまま手動制御)。
+	_captive_panel.visible = total >= 1.0 or _captive_pinned
+	if _captive_toggle_button != null:
+		_captive_toggle_button.text = "捕虜▲" if _captive_panel.visible else "捕虜▼"
 	if _captive_panel.visible:
 		_captive_info.text = "捕虜 — ゴブリン 雄%d 雌%d / 人間 雄%d 雌%d" % [
 			int(world.cap_male_goblin), int(world.cap_female_goblin),
@@ -1576,6 +1701,15 @@ func _update_dispatch_panel() -> void:
 func _refresh_speed_buttons() -> void:
 	for d in _speed_buttons:
 		_style_button(d.btn as Button, absf(float(d.speed) - speed) < 0.01)
+
+## トグルボタン (会話ログ ON/OFF・捕虜パネル) のラベルと強調を表示状態に合わせる。
+func _refresh_toggle_buttons() -> void:
+	if _conversation_toggle_button != null:
+		_conversation_toggle_button.text = "会話ログ ON" if _conversation_on else "会話ログ OFF"
+		_style_button(_conversation_toggle_button, _conversation_on)
+	# 捕虜トグルのラベル (▲表示中/▼畳む) は _update_captive_ui が表示状態に追従させる。
+	if _captive_toggle_button != null and _captive_toggle_button.text == "":
+		_captive_toggle_button.text = "捕虜▼"
 
 func _section_title(text: String) -> Label:
 	var l := Label.new()

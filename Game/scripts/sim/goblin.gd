@@ -61,6 +61,10 @@ var pending_bond: bool = false
 # タイムアウト用の経過 tick (雌側でカウント)。
 var courting_id: int = -1
 var court_ticks: int = 0
+# 性行為 (§3-6): 寝床で合流した雌雄が一定時間こもる。-1 = 非交尾、>=0 で経過 tick。
+# 雌が mating_duration_ticks まで進めると妊娠が成立する (一瞬で終わらせない)。
+# 相手は mate_id で参照する (寝床に留めるため world 側が移動目標を上書き)。
+var mating_ticks: int = -1
 
 var is_unique: bool = false
 var downed_ticks: int = -1     # -1 = 倒れていない
@@ -131,6 +135,7 @@ func snapshot() -> Dictionary:
 		"pregnant": pregnant, "pregnant_ticks": pregnant_ticks,
 		"mate_id": mate_id, "bereaved": bereaved, "pending_bond": pending_bond,
 		"courting_id": courting_id, "court_ticks": court_ticks,
+		"mating_ticks": mating_ticks,
 		"is_unique": is_unique, "downed_ticks": downed_ticks, "carrying_id": carrying_id,
 		"fear_safe_ticks": fear_safe_ticks, "child_born_tick": child_born_tick,
 		"quarrel_cd": quarrel_cd,
