@@ -86,8 +86,9 @@ World 層     world.ts        tick 単位。個体集合 + 一括戦闘解決（
 `package.json` 整備済み。初回は `npm install`（esbuild のみ）。リポジトリ直下から:
 
 ```
-npm test           # 5 スイート (snapshot / statemachine / tickdriver / timescale / world)
-npm run build      # 自己完結 HTML を viz/goblin_colony_dashboard.html へ生成
+npm test               # 5 スイート (snapshot / statemachine / tickdriver / timescale / world)
+npm run parity:check   # Python ↔ TS のビット一致照合 (cycle 層・ALL_MATCH)
+npm run build          # 自己完結 HTML を viz/goblin_colony_dashboard.html へ生成
 node viz/dashboard_smoke.mjs   # ビルド後、可視化ロジックの DOM スタブスモーク
 ```
 
@@ -105,13 +106,13 @@ enum で失敗する）。個別実行は `npm run test:world` のように（pa
 
 ### ⚠ 既知の落とし穴（着手前に必読）
 
-ファイル階層は README どおり `src/sim/` `parity/` `viz/` へ整理済みで、import パスの不整合は解消した。
-ただし以下はまだ残っている:
+ファイル階層・import パスの不整合は解消済み。Python パリティ照合ハーネスも成立済み。
+以下は現状の注意点:
 
-- **Python パリティ照合ハーネスが未実装。** `parity/cycle.py` は `from rng import Rng` を import するが
-  `parity/rng.py` が無く、単体では実行できない。照合ハーネス `cycle_ts.ts` / `compare.mjs` も未作成のため
-  `parity:check`（Python ↔ TS のビット一致 = ALL_MATCH）は未成立。実装するなら rng.ts を Python へ移植し、
-  RNG 消費順序を TS と完全に揃えること。
+- **Python パリティ照合ハーネスは成立済み。** `parity/rng.py`（rng.ts の Python 移植）+
+  `parity/cycle_ts.ts` + `parity/compare.mjs` が揃い、`npm run parity:check` が Python ↔ TS の
+  ビット一致を検証する（9 シナリオ・4050 フィールド比較で ALL_MATCH）。`cycle.py` / `rng.ts` /
+  cycle 系の RNG 消費順序を触ったら parity:check で必ず再確認すること。
 - **World 層の reproduction/襲撃系は稼働済み（KI-22〜25）。** `parity/world_test.ts` は WORLD_OK。
   求愛→つがい→出産、人間母体の苗床、敵対度メーター、自動襲撃スケジューラ、二層襲撃の小規模側まで
   実装・検証済み。実数バランス（一腹分布 / 人間母体倍率 / 敵対度係数 / 小規模報酬）は §15 調整対象で、
@@ -137,22 +138,25 @@ git merge-base HEAD <worktree-branch>   # 期待: 現 HEAD かその直近祖先
 
 ## 設計資料への入口（最初に読むべき順）
 
-1. `README.md` — 第一期サマリ・設計判断・次の一手。
-2. `known_issues.md` — KI-01〜KI-21 の設計教訓（過去の検証で潰したバグと解決策）。
-3. `goblin_colony_gdd_v10.md` — GDD 全文（§1〜§15 のメカニクス・バランスループ）。
-4. `goblin_world_bible_v2.md` — 世界観 / ロア。
-5. `known_issues_world.md` — World 層の設計教訓。
+1. `README.md` — 第一期サマリ・設計判断。
+2. `backlog.md` — **残タスクの一次情報**（三面照合監査 `feature_gap_audit.md` が母体）。
+3. `known_issues.md` — KI-01〜KI-21 の設計教訓（過去の検証で潰したバグと解決策）。
+4. `known_issues_world.md` — World 層 / Godot 第二期の設計教訓（KI-12〜29）。
+5. `goblin_colony_gdd_v10.md` — GDD 全文（§1〜§15 のメカニクス・バランスループ）。
+6. `goblin_world_bible_v2.md` — 世界観 / ロア。
 
-## 次の一手（未着手 / README より）
+## 次の一手（残タスク）
 
-World 層の照合・reproduction・襲撃系は達成済み（KI-22〜25）。残りは:
+**残タスクの一次情報は `backlog.md`**（三面照合監査 `feature_gap_audit.md` が母体）。第一期（TS コア）と
+第二期（Godot 本体）の主要力学は実装・検証済み — TS 5 スイート + `parity:check`=ALL_MATCH、Godot
+ヘッドレス 15 スイートが緑。残るのは:
 
-1. **§13 外交の双方向化** — 朝貢での敵対度低下・3 勢力分の敵対度メーター分離（KI-24 残り）。
-2. **§15 実数調整** — §12 夜間バッチ自動プレイヤーで多シードを回し、一腹分布 / 人間母体倍率 /
-   敵対度係数 / 小規模報酬 をまとめてチューニング（KI-22/25 の相互作用が論点）。
-3. **描画層（Canvas 2D）** — ダッシュボードに演出層（ゾーン + 補間移動・個体インスペクタ・
-   イベントフィード）を実装済み。本物の位置（GDD §12 タイルマップ + パスファインディング）は
-   第二期。シムへ座標を入れる場合は「ゾーン ID のみシム状態・連続座標は演出層」の中間案を検討。
-4. **食料生産** — 増殖の食料従属（§2.5）・信仰のトーテムランク連動（§3）。
-5. **GDD §10 のプレイヤー動詞** — 捕虜パネル（生贄/解放/側室）等。つがい承認/引き離し（KI-21）は
-   ダッシュボードにバナー UI 実装済み。
+1. **B7** P2 UI 群 — 4 分割ダイヤルの資源/建築/撤去・任命 UI・ミニカード列・通知の階層化。
+2. **B11/B12** 個体成長（戦闘微経験値）・オンボーディング（初期盤面 spec 突き合わせ・助走窓・
+   文脈駆動チュートリアル）。
+3. **C2** AutoController 牧場補充の矛盾修正 / **C3** §15 調整インフラ（パラメータ上書き・テレメトリ・
+   夜間バッチ自動化）/ **C4** 性能計測 / **C5** TS World 層へのランク連動移植。
+4. **D1** §15 実数調整（KI-29: 防衛ラインの隘路迎撃で勝率が 6/6 へ易化したのを「辛勝レンジ」へ戻す。
+   C3 が前提）→ **D2** 勝敗演出 + 最終 QA。
+
+依存関係・完了済み・各タスクの詳細は `backlog.md` を参照。
