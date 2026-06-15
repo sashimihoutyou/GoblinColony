@@ -529,6 +529,9 @@ func _draw() -> void:
 		draw_rect(Rect2(0, 0, 6, hpx), red, true)
 		draw_rect(Rect2(wpx - 6, 0, 6, hpx), red, true)
 
+	# --- 画面外の遠征スポット (§11.5 出現物) の方向インジケータ ---
+	_draw_offscreen_field_indicators()
+
 	# --- 選択中の対象 (ゴブリン/敵/部屋) ---
 	match sel_kind:
 		1:  # ゴブリン: 名前つきの淡い輪
@@ -672,6 +675,59 @@ func _draw_field_resource(f: FieldResource) -> void:
 	]
 	for i in range(mini(f.amount, BERRY_OFFS.size())):
 		draw_circle(c + BERRY_OFFS[i], 1.3, kind_col)
+
+## 画面外の遠征スポット (§11.5 出現物) の方向を画面端の矢印で示す。出現物がカメラ外に
+## 湧くと気づけないため、可視ワールド矩形の外にあるスポットごとに「画面中心 → スポット」
+## 方向の端へ種別色の三角形を描く (すべて演出層。シム状態には触れない / KI-09)。
+func _draw_offscreen_field_indicators() -> void:
+	if _world.field_resources.is_empty():
+		return
+	# screen → world 逆変換で可視ワールド矩形を得る (カメラ回転なし前提)。
+	var inv := get_canvas_transform().affine_inverse()
+	var vp := get_viewport_rect().size
+	var view := Rect2(inv * Vector2.ZERO, (inv * vp) - (inv * Vector2.ZERO)).abs()
+	# 端から少し内側に矢印を置く (画面に収まるよう。ワールド単位なのでズームで伸縮)。
+	var margin: float = view.size.x * 0.05
+	var inset := view.grow(-margin)
+	var center := inset.position + inset.size * 0.5
+	var ts := float(tile_size)
+	var pulse := 0.55 + 0.45 * sin(_t * 4.0)
+	for f in _world.field_resources:
+		var p := _tile_center(f.pos())
+		if view.has_point(p):
+			continue  # 画面内なら矢印不要 (本体の明滅輪で気づける)
+		var d := p - center
+		if d.length() < 0.001:
+			continue
+		# 中心からスポット方向のレイと inset 矩形の端との交点を求める。
+		var t := INF
+		if d.x > 0.0:
+			t = minf(t, (inset.end.x - center.x) / d.x)
+		elif d.x < 0.0:
+			t = minf(t, (inset.position.x - center.x) / d.x)
+		if d.y > 0.0:
+			t = minf(t, (inset.end.y - center.y) / d.y)
+		elif d.y < 0.0:
+			t = minf(t, (inset.position.y - center.y) / d.y)
+		if t == INF:
+			continue
+		var at := center + d * t
+		var col: Color = FIELD_KIND_COLORS.get(f.kind, COL_EMBER_BRIGHT)
+		_draw_edge_arrow(at, d.normalized(), ts * 0.7, Color(col, 0.5 + 0.4 * pulse))
+
+## 画面端の方向矢印 (三角形 + 暗い縁取りで視認性を確保)。dir は単位ベクトル。
+func _draw_edge_arrow(at: Vector2, dir: Vector2, size: float, col: Color) -> void:
+	var perp := Vector2(-dir.y, dir.x)
+	var tip := at + dir * size * 0.6
+	var base := at - dir * size * 0.4
+	var pts := PackedVector2Array([
+		tip,
+		base + perp * size * 0.5,
+		base - perp * size * 0.5,
+	])
+	draw_colored_polygon(pts, col)
+	draw_polyline(PackedVector2Array([pts[0], pts[1], pts[2], pts[0]]),
+			Color(0.05, 0.04, 0.03, 0.7), 1.5)
 
 func _draw_totem(m: TileMapData) -> void:
 	var c := _tile_center(m.totem)

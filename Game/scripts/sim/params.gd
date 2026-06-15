@@ -363,7 +363,7 @@ var faith_per_shaman_tick: float       # 日次 2.0 を変換
 var start_mud: float = 6.0            # 初期盤面「少量の建材」(GDD §14.5.2)
 var mine_yield_mud: float = 4.0       # 採掘ノード 1 つの建材収量 (イベント単位)
 var gem_mine_chance: float = 0.15     # 採掘完了ごとの宝石ロール (§7 採掘で稀)
-var mine_work_per_tick: float         # 採掘進捗 (1 ノード 0.5 日ぶんの労働を変換)
+var mine_work_per_tick: float         # 採掘進捗 (1 ノード 0.25 日ぶんの労働を変換)
 var build_work_per_tick: float        # 建設進捗 (1 部屋 1.0 日ぶんの労働を変換)
 var repair_work_per_tick: float       # 壁修復進捗 (1 枚 0.25 日ぶんの労働を変換)
 var wall_repair_cost: float = 1.0     # 壁修復 1 枚の建材 (イベント単位)
@@ -447,7 +447,7 @@ func _init() -> void:
 	# 壁破壊は int 配列 (wall_hp) を削るので 1 以上へ丸める (KI-02 の整数版)。
 	wall_damage_per_tick = maxi(1, roundi(wall_damage_per_day / tpd))
 	# ジョブの労働量 = 1 体が張り付いたときの所要日数の逆数 (KI-02)。
-	mine_work_per_tick = 1.0 / (0.5 * tpd)
+	mine_work_per_tick = 1.0 / (0.25 * tpd)
 	build_work_per_tick = 1.0 / (1.0 * tpd)
 	repair_work_per_tick = 1.0 / (0.25 * tpd)
 	dig_work_per_tick = 1.0 / (0.6 * tpd)

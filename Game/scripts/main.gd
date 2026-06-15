@@ -725,9 +725,10 @@ func _maybe_emit_conversation() -> void:
 		return
 	if world.tick < _conv_next_tick:
 		return
-	# 次の発話までの間隔を散らす (1 日 = ticks_per_day tick に対し概ね 5〜12 回)。
+	# 次の発話までの間隔を散らす。ゴブリンが常にわちゃわちゃ喋っている感を出すため
+	# 高頻度 (1 日 = ticks_per_day tick に対し概ね 50〜150 回 ≒ 数 tick おき)。
 	_conv_next_tick = world.tick + _conv_rng.randi_range(
-			maxi(1, params.ticks_per_day / 12), maxi(2, params.ticks_per_day / 5))
+			maxi(1, params.ticks_per_day / 150), maxi(2, params.ticks_per_day / 50))
 	var pool: Array = []
 	for g in world.goblins:
 		if g.state != Goblin.State.DEAD and g.state != Goblin.State.KNOCKED_OUT:
@@ -905,6 +906,10 @@ func _try_place_build(pos: Vector2) -> void:
 ## 空振りクリックのタイル指示: 採掘ノード → 指定/解除トグル、損傷壁 → 修復発注。
 func _try_tile_order(pos: Vector2) -> void:
 	var tp := Vector2i(int(pos.x / renderer.tile_size), int(pos.y / renderer.tile_size))
+	# マップ外 (画面外の闇) は何もしない。get_tile が範囲外で WALL を返すため、
+	# ここで弾かないと外の空クリックが「掘れない壁」扱いになってしまう。
+	if not world.map.in_bounds(tp.x, tp.y):
+		return
 	var t := world.map.get_tile(tp.x, tp.y)
 	if t == TileMapData.TileType.RESOURCE_NODE:
 		var had := false
