@@ -55,14 +55,13 @@ const FIELD_KIND_JP := {
 	FieldResource.Kind.CAMP: "敵性キャンプ", FieldResource.Kind.RUINS: "廃墟",
 	FieldResource.Kind.MAIDEN: "行き倒れの少女",
 }
-const FIELD_SPAWN_JP := {
-	FieldResource.Kind.FORAGE: "巣の外に木の実の茂みが見つかった (%d 食ぶん)。",
-	FieldResource.Kind.ANIMAL: "巣の外に獲物の気配がある (%d 頭ぶん)。",
-	FieldResource.Kind.TRAVELER: "巣の外に旅人が通りかかった。",
-	FieldResource.Kind.WANDERER: "巣の外をうろつく放浪ゴブリンを見かけた。",
-	FieldResource.Kind.CAMP: "巣の外に敵性キャンプの灯りが見える。",
-	FieldResource.Kind.RUINS: "巣の外に古い廃墟が見える (%d 山ぶん)。",
-	FieldResource.Kind.MAIDEN: "巣の外で行き倒れの少女を見つけた。",
+# 出現物の「見つかった」一言は data/messages.json の events.field_spawn_<種別> に移動した。
+# kind enum → JSON キー接尾辞の対応表 (field_spawn / field_haul で参照)。
+const FIELD_KEY := {
+	FieldResource.Kind.FORAGE: "forage", FieldResource.Kind.ANIMAL: "animal",
+	FieldResource.Kind.TRAVELER: "traveler", FieldResource.Kind.WANDERER: "wanderer",
+	FieldResource.Kind.CAMP: "camp", FieldResource.Kind.RUINS: "ruins",
+	FieldResource.Kind.MAIDEN: "maiden",
 }
 const FIELD_RETURN_JP := {
 	FieldResource.Kind.FORAGE: "食料",
@@ -205,9 +204,9 @@ func _ready() -> void:
 	_update_camera()
 	get_viewport().size_changed.connect(_update_camera)
 	if restored:
-		_push_feed("event", "巣の記録を復元した (%d 日目)。" % world.day)
+		_push_feed("event", TextDB.msg("restore", {"day": world.day}))
 	else:
-		_push_feed("event", "巣が築かれた。%d 体のゴブリンと族長。" % params.start_goblins)
+		_push_feed("event", TextDB.msg("new_game", {"count": params.start_goblins}))
 
 ## 指定難度で新しい群れを始める (§14.5.2)。world を作り直し、古いセーブを消す
 ## (前の群れのセーブで即終了画面に戻らないように)。演出層の選択状態もリセット。
@@ -226,7 +225,7 @@ func _start_new_game(diff: int) -> void:
 	_feed.clear()
 	_feed_lines.clear()
 	var diff_jp: String = ["易", "並", "難"][clampi(diff, 0, 2)]
-	_push_feed("event", "新しい群れ (難度: %s)。%d 体のゴブリンと族長。" % [diff_jp, params.start_goblins])
+	_push_feed("event", TextDB.msg("new_game_difficulty", {"difficulty": diff_jp, "count": params.start_goblins}))
 	_refresh_speed_buttons()
 	_refresh_miracle_buttons()
 	_refresh_build_buttons()
@@ -487,217 +486,184 @@ func _clamp_camera(cam: Camera2D) -> void:
 	cam.position.x = clampf(cam.position.x, 0.0, map_w)
 	cam.position.y = clampf(cam.position.y, 0.0, map_h)
 
-# ════ イベント → 物語の文 ════
+# ════ イベント → 物語の文 (文面は data/messages.json で編集) ════
 func _push_feed_event(e: Dictionary) -> void:
 	var t: String = e.get("t", "")
 	match t:
 		"raid":
-			var who: String = {
-				"human": "人間の討伐隊",
-				"kugyo": "苦魚族の群れ",
-				"bunta": "ブン・タ＝タ族の群れ",
-			}.get(e.get("faction", ""), "敵対氏族の群れ")
-			if e.get("final", false):
-				_push_feed("raid", "ラストバトル! %s %d 体が押し寄せる!" % [who, e.get("count", 0)])
-			else:
-				_push_feed("raid", "襲撃! %s %d 体が巣口に迫る。" % [who, e.get("count", 0)])
+			var who := TextDB.label("raid_who", String(e.get("faction", "")), "敵対氏族の群れ")
+			var key := "raid_final" if e.get("final", false) else "raid"
+			_push_feed("raid", TextDB.msg(key, {"who": who, "count": e.get("count", 0)}))
 		"raid_small":
-			_push_feed("event", "小競り合い: 敵 %d 体 (恵み)。" % e.get("count", 0))
+			_push_feed("event", TextDB.msg("raid_small", {"count": e.get("count", 0)}))
 		"raid_end":
-			_push_feed("raid", "襲撃を退けた。生存 %d 体。" % e.get("alive", 0))
+			_push_feed("raid", TextDB.msg("raid_end", {"alive": e.get("alive", 0)}))
 		"surge":
-			_push_feed("event", "群れが本能で奮い立つ (損耗 %.0f%%)。" % (float(e.get("lost_frac", 0.0)) * 100.0))
+			var pct := "%.0f" % (float(e.get("lost_frac", 0.0)) * 100.0)
+			_push_feed("event", TextDB.msg("surge", {"pct": pct}))
 		"death":
 			var nm := GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))
-			var cause: String = "事故で死んだ" if e.get("cause", "") == "accident" else "戦いで散った"
-			_push_feed("death", "%s が%s。" % [nm, cause])
+			var dkey := "death_accident" if e.get("cause", "") == "accident" else "death_combat"
+			_push_feed("death", TextDB.msg(dkey, {"name": nm}))
 		"fledge":
-			_push_feed("event", "%s が巣立っていった。" % GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))))
+			_push_feed("event", TextDB.msg("fledge", {"name": GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))}))
 		"birth":
 			var mother := _find_goblin(int(e.get("mother", -1)))
 			var mname: String = GobNames.of(mother) if mother != null else "母ゴブリン"
-			_push_feed("birth", "%s が %d 匹の子を産んだ。" % [mname, e.get("count", 0)], int(e.get("mother", -1)))
+			_push_feed("birth", TextDB.msg("birth", {"name": mname, "count": e.get("count", 0)}), int(e.get("mother", -1)))
 		"grow":
-			_push_feed("birth", "%s が一人前に育った。" % GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))), int(e.get("id", -1)))
+			_push_feed("birth", TextDB.msg("grow", {"name": GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))}), int(e.get("id", -1)))
 		"mite_eaten":
-			_push_feed("event", "%s がパン虫を捕まえて食べた。" % GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))), int(e.get("id", -1)))
+			_push_feed("event", TextDB.msg("mite_eaten", {"name": GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))}), int(e.get("id", -1)))
 		"fumble":
 			var fnm := GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))
-			if e.get("dropped", false):
-				_push_feed("event", "%s が転んでキノコを取り落とした。" % fnm, int(e.get("id", -1)))
-			else:
-				_push_feed("event", "%s がすっ転んだ。" % fnm, int(e.get("id", -1)))
+			var fkey := "fumble_dropped" if e.get("dropped", false) else "fumble"
+			_push_feed("event", TextDB.msg(fkey, {"name": fnm}), int(e.get("id", -1)))
 		"forage":
-			# 採集はひっきりなしに起きるのでフィードは 4 回に 1 回だけ流す (煩さ低減)。
 			_forage_feed_count += 1
 			if _forage_feed_count % 4 == 0:
-				_push_feed("event", "%s がキノコを集積所に運び込んだ。" \
-					% GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))), int(e.get("id", -1)))
+				_push_feed("event", TextDB.msg("forage", {"name": GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))}), int(e.get("id", -1)))
 		"guard":
-			_push_feed("event", "%s が巣口の見張りに就いた。" \
-				% GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))), int(e.get("id", -1)))
+			_push_feed("event", TextDB.msg("guard", {"name": GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))}), int(e.get("id", -1)))
 		"alarm":
-			_push_feed("raid", "見張りの %s が警報を上げた!" \
-				% GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0))), int(e.get("id", -1)))
+			_push_feed("raid", TextDB.msg("alarm", {"name": GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))}), int(e.get("id", -1)))
 		"quarrel":
 			var ga := _find_goblin(int(e.get("a", -1)))
 			var gb := _find_goblin(int(e.get("b", -1)))
 			var na: String = GobNames.of(ga) if ga != null else "ゴブリン"
 			var nb: String = GobNames.of(gb) if gb != null else "ゴブリン"
-			_push_feed("event", "%s と %s がケンカを始めた!" % [na, nb], int(e.get("a", -1)))
+			_push_feed("event", TextDB.msg("quarrel", {"name": na, "other": nb}), int(e.get("a", -1)))
 		"court":
 			var cf := _find_goblin(int(e.get("f", -1)))
 			var cm := _find_goblin(int(e.get("m", -1)))
 			var cfn: String = GobNames.of(cf) if cf != null else "雌ゴブリン"
 			var cmn: String = GobNames.of(cm) if cm != null else "雄ゴブリン"
-			_push_feed("love", "%s が %s を寝床に誘った。" % [cfn, cmn], int(e.get("f", -1)))
+			_push_feed("love", TextDB.msg("court", {"name": cfn, "other": cmn}), int(e.get("f", -1)))
 		"mating":
 			var mf := _find_goblin(int(e.get("f", -1)))
 			var mm := _find_goblin(int(e.get("m", -1)))
 			var mfn: String = GobNames.of(mf) if mf != null else "雌ゴブリン"
 			var mmn: String = GobNames.of(mm) if mm != null else "雄ゴブリン"
-			_push_feed("love", "%s と %s が寝床にこもった。" % [mfn, mmn], int(e.get("f", -1)))
+			_push_feed("love", TextDB.msg("mating", {"name": mfn, "other": mmn}), int(e.get("f", -1)))
 		"pregnant":
 			var f := _find_goblin(int(e.get("id", -1)))
 			if f != null:
-				_push_feed("love", "%s が寝床で身ごもった。" % GobNames.of(f), f.id)
+				_push_feed("love", TextDB.msg("pregnant", {"name": GobNames.of(f)}), f.id)
 		"field_spawn":
 			var sp_kind: int = int(e.get("kind", FieldResource.Kind.FORAGE))
-			var sp_fmt: String = FIELD_SPAWN_JP.get(sp_kind, FIELD_SPAWN_JP[FieldResource.Kind.FORAGE])
-			if sp_fmt.find("%d") >= 0:
-				_push_feed("event", sp_fmt % e.get("amount", 0))
-			else:
-				_push_feed("event", sp_fmt)
+			_push_feed("event", TextDB.msg("field_spawn_" + String(FIELD_KEY.get(sp_kind, "forage")), {"amount": e.get("amount", 0)}))
 		"dispatch":
-			_push_feed("event", "%d 体が恵みを取りに巣を出た。" % e.get("count", 0))
+			_push_feed("event", TextDB.msg("dispatch", {"count": e.get("count", 0)}))
 		"field_haul":
 			var fh_kind: int = int(e.get("kind", FieldResource.Kind.FORAGE))
 			var fh_who := GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))
-			match fh_kind:
-				FieldResource.Kind.ANIMAL:
-					_push_feed("event", "%s が獲物を狩り、食料を持ち帰った。" % fh_who, int(e.get("id", -1)))
-				FieldResource.Kind.RUINS:
-					_push_feed("event", "%s が廃墟から建材を持ち帰った。" % fh_who, int(e.get("id", -1)))
-				_:
-					_push_feed("event", "%s がキノコを集積所に運び込んだ。" % fh_who, int(e.get("id", -1)))
+			var hkey := "field_haul"
+			if fh_kind == FieldResource.Kind.ANIMAL:
+				hkey = "field_haul_animal"
+			elif fh_kind == FieldResource.Kind.RUINS:
+				hkey = "field_haul_ruins"
+			_push_feed("event", TextDB.msg(hkey, {"name": fh_who}), int(e.get("id", -1)))
 		"field_captive":
-			var fc_who := GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))
-			_push_feed("event", "%s が狩りの最中に弱ったゴブリンを連れて帰った。捕虜が増えた。" % fc_who, int(e.get("id", -1)))
+			_push_feed("event", TextDB.msg("field_captive", {"name": GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))}), int(e.get("id", -1)))
 		"field_gem":
 			var fg := _find_goblin(int(e.get("id", -1)))
 			var fg_who: String = GobNames.of(fg) if fg != null else "誰か"
-			_push_feed("birth", "%s が廃墟の瓦礫の中から宝石を見つけた!" % fg_who, int(e.get("id", -1)))
+			_push_feed("birth", TextDB.msg("field_gem", {"name": fg_who}), int(e.get("id", -1)))
 		"field_trade":
 			var ft := _find_goblin(int(e.get("id", -1)))
 			var ft_who: String = GobNames.of(ft) if ft != null else "誰か"
-			if e.get("good", "") == "gems":
-				_push_feed("event", "%s が旅人と宝石を交換した。" % ft_who, int(e.get("id", -1)))
-			else:
-				_push_feed("event", "%s が旅人から薬草を譲り受けた。" % ft_who, int(e.get("id", -1)))
+			var tkey := "field_trade_gems" if e.get("good", "") == "gems" else "field_trade"
+			_push_feed("event", TextDB.msg(tkey, {"name": ft_who}), int(e.get("id", -1)))
 		"field_faux_pas":
 			var fp := _find_goblin(int(e.get("id", -1)))
 			var fp_who: String = GobNames.of(fp) if fp != null else "誰か"
-			_push_feed("raid", "%s が旅人に粗相をしてしまった……人間たちとの間に緊張が走る。" % fp_who, int(e.get("id", -1)))
+			_push_feed("raid", TextDB.msg("field_faux_pas", {"name": fp_who}), int(e.get("id", -1)))
 		"wanderer_joined":
-			var wj_who := GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))
-			_push_feed("birth", "放浪していた %s が群れに加わった。" % wj_who, int(e.get("id", -1)))
+			_push_feed("birth", TextDB.msg("wanderer_joined", {"name": GobNames.name_of(int(e.get("id", -1)), int(e.get("sex", 0)))}), int(e.get("id", -1)))
 		"wanderer_left":
-			_push_feed("event", "放浪ゴブリンは去って行った。")
+			_push_feed("event", TextDB.msg("wanderer_left"))
 		"field_maiden":
 			if e.get("amina", false):
-				_push_feed("love", "行き倒れの少女を連れて帰った。手厚く保護することにした。")
+				_push_feed("love", TextDB.msg("field_maiden_amina"))
 			else:
-				_push_feed("event", "行き倒れの少女を連れて帰った。捕虜として保護した。")
+				_push_feed("event", TextDB.msg("field_maiden"))
 		"field_camp_win":
-			var captive_txt: String = "捕虜も連れて" if e.get("captive", false) else ""
-			_push_feed("birth", "★ 敵性キャンプを襲撃し、%s宝石と装備を持ち帰った!" % captive_txt)
+			var captive_txt := TextDB.label("camp_captive", "yes" if e.get("captive", false) else "no")
+			_push_feed("birth", TextDB.msg("field_camp_win", {"captive": captive_txt}))
 		"field_camp_loss":
 			var cl_id: int = int(e.get("id", -1))
 			var cl_g := _find_goblin(cl_id)
 			if cl_g != null:
-				_push_feed("raid", "敵性キャンプの襲撃は失敗……%s が傷を負って逃げ帰った。" % GobNames.of(cl_g), cl_id)
+				_push_feed("raid", TextDB.msg("field_camp_loss", {"name": GobNames.of(cl_g)}), cl_id)
 			else:
-				_push_feed("raid", "敵性キャンプの襲撃は失敗し、何も持ち帰れなかった。")
+				_push_feed("raid", TextDB.msg("field_camp_loss_none"))
 		"field_recall":
-			_push_feed("raid", "外に出ていた %d 体に、急いで帰るよう呼びかけた。" % e.get("count", 0))
+			_push_feed("raid", TextDB.msg("field_recall", {"count": e.get("count", 0)}))
 		"amina_foreshadow":
-			_push_feed("love", "保護した少女が、少しずつこちらに心を開きはじめている……。")
+			_push_feed("love", TextDB.msg("amina_foreshadow"))
 		"amina_closed":
-			_push_feed("event", "少女との間にできかけていた何かは、もう戻らない。")
+			_push_feed("event", TextDB.msg("amina_closed"))
 		"amina_joined":
 			var am := _find_goblin(int(e.get("id", -1)))
 			var am_name: String = GobNames.of(am) if am != null else "少女"
-			_push_feed("love", "%s が心を開き、戦わない仲間として群れに加わった。" % am_name, int(e.get("id", -1)))
+			_push_feed("love", TextDB.msg("amina_joined", {"name": am_name}), int(e.get("id", -1)))
 		"mine_done":
 			var miner := _find_goblin(int(e.id))
 			var miner_name: String = GobNames.of(miner) if miner != null else "誰か"
 			if e.get("gem", false):
-				_push_feed("birth", "%s が岩塊を掘り崩した。崩れた奥から宝石が転がり出た!" % miner_name, int(e.id))
+				_push_feed("birth", TextDB.msg("mine_done_gem", {"name": miner_name}), int(e.id))
 			else:
-				_push_feed("event", "%s が岩塊を掘り崩し、建材を積み上げた。" % miner_name, int(e.id))
+				_push_feed("event", TextDB.msg("mine_done", {"name": miner_name}), int(e.id))
 		"dig_done":
 			var digger := _find_goblin(int(e.id))
-			_push_feed("event", "%s が岩壁を掘り抜き、巣穴がひとつ広がった。"
-					% (GobNames.of(digger) if digger != null else "誰か"), int(e.id))
+			_push_feed("event", TextDB.msg("dig_done", {"name": GobNames.of(digger) if digger != null else "誰か"}), int(e.id))
 		"build_start":
-			_push_feed("event", "%sの建設が始まった。地面に骨と泥で印が引かれる。"
-					% ROOM_TYPE_JP.get(int(e.room_type), "部屋"))
+			_push_feed("event", TextDB.msg("build_start", {"room": ROOM_TYPE_JP.get(int(e.room_type), "部屋")}))
 		"build_done":
-			_push_feed("birth", "%sが完成した!" % ROOM_TYPE_JP.get(int(e.room_type), "部屋"), int(e.id))
+			_push_feed("birth", TextDB.msg("build_done", {"room": ROOM_TYPE_JP.get(int(e.room_type), "部屋")}), int(e.id))
 		"repair_done":
 			var fixer := _find_goblin(int(e.id))
-			_push_feed("event", "%s が壁のひびを泥で塗り固めた。"
-					% (GobNames.of(fixer) if fixer != null else "誰か"), int(e.id))
+			_push_feed("event", TextDB.msg("repair_done", {"name": GobNames.of(fixer) if fixer != null else "誰か"}), int(e.id))
 		"breach_warn":
-			_push_feed("raid", "敵が壁を狙っている……割られる前に塞ぐ手を。")
+			_push_feed("raid", TextDB.msg("breach_warn"))
 		"breach":
-			_push_feed("raid", "✖ 壁が打ち破られた! 突破口から敵が雪崩れ込む。")
+			_push_feed("raid", TextDB.msg("breach"))
 		"field_done":
-			_push_feed("event", "茂みを取り尽くした。")
+			_push_feed("event", TextDB.msg("field_done"))
 		"field_expire":
-			_push_feed("event", "日が暮れ、外の恵みは闇に消えた。")
+			_push_feed("event", TextDB.msg("field_expire"))
 		"victory":
-			_push_feed("event", "★ ラストバトルを撃退 — 勝利!")
+			_push_feed("event", TextDB.msg("victory"))
 		"defeat":
-			var reason: String = "トーテムが砕かれた" if e.get("reason", "") == "totem" else "群れは全滅した"
-			_push_feed("raid", "✖ %s — 敗北……" % reason)
+			var dfkey := "defeat_totem" if e.get("reason", "") == "totem" else "defeat"
+			_push_feed("raid", TextDB.msg(dfkey))
 		"captive_gain":
-			var who: String = "人間" if e.get("human", false) else "ゴブリン"
-			_push_feed("event", "撃退の戦果として%sの捕虜を得た。" % who)
+			var cg_who := TextDB.label("captive_who", "human" if e.get("human", false) else "goblin")
+			_push_feed("event", TextDB.msg("captive_gain", {"who": cg_who}))
 		"captive_joined":
-			_push_feed("event", "捕らわれていた%s が群れに加わった。" \
-				% GobNames.name_of(int(e.get("id", -1)), Goblin.Sex.MALE), int(e.get("id", -1)))
+			_push_feed("event", TextDB.msg("captive_joined", {"name": GobNames.name_of(int(e.get("id", -1)), Goblin.Sex.MALE)}), int(e.get("id", -1)))
 		"sacrifice":
-			var kind_txt: String = {
-				"male_goblin": "ゴブリンの雄捕虜",
-				"female_goblin": "ゴブリンの雌捕虜",
-				"male_human": "人間の雄捕虜",
-				"female_human": "人間の雌捕虜",
-			}.get(e.get("kind", ""), "捕虜")
-			_push_feed("event", "%sを生贄に捧げ、信仰が高まった。" % kind_txt)
+			var kind_txt := TextDB.label("sacrifice_kind", String(e.get("kind", "")), "捕虜")
+			_push_feed("event", TextDB.msg("sacrifice", {"kind": kind_txt}))
 		"release_captive":
-			var sex_txt: String = "雄" if int(e.get("sex", 0)) == Goblin.Sex.MALE else "雌"
-			_push_feed("event", "人間の%s捕虜を解放した。敵対度が和らいだ。" % sex_txt)
+			var sex_txt := TextDB.label("sex", "male" if int(e.get("sex", 0)) == Goblin.Sex.MALE else "female")
+			_push_feed("event", TextDB.msg("release_captive", {"sex": sex_txt}))
 		"tribute":
-			var fac_txt: String = {
-				"human": "人間", "bunta": "ブン・タ＝タ族", "kugyo": "苦魚族",
-			}.get(e.get("faction", ""), "敵対勢力")
-			_push_feed("event", "%sへ捕虜を朝貢した。怒りがいくらか鎮まる。" % fac_txt)
+			var fac_txt := TextDB.label("tribute_faction", String(e.get("faction", "")), "敵対勢力")
+			_push_feed("event", TextDB.msg("tribute", {"faction": fac_txt}))
 		"tribute_gems":
-			_push_feed("event", "宝石 %d を人間へ差し出した。和平の対価として怒りが和らぐ。"
-					% int(e.get("amount", 0)))
+			_push_feed("event", TextDB.msg("tribute_gems", {"amount": int(e.get("amount", 0))}))
 		"gems_hoard_warn":
-			_push_feed("raid", "ため込んだ宝の山が人間の目を引いている……抱えるほど狙われる。")
+			_push_feed("raid", TextDB.msg("gems_hoard_warn"))
 		"take_concubine":
 			var suitor := _find_goblin(int(e.get("suitor", -1)))
-			_push_feed("love", "%s が捕虜を側室に娶った。" \
-					% (GobNames.of(suitor) if suitor != null else "誰か"), int(e.get("suitor", -1)))
+			_push_feed("love", TextDB.msg("take_concubine", {"name": GobNames.of(suitor) if suitor != null else "誰か"}), int(e.get("suitor", -1)))
 		"pending_bond":
-			_push_feed("love", "捕虜と寄り添う影がある……つがいを認めるか、引き離すか。", int(e.get("id", -1)))
+			_push_feed("love", TextDB.msg("pending_bond"), int(e.get("id", -1)))
 		"approve_bond":
-			_push_feed("love", "つがいが認められた。捕虜は今日から巣の一員だ。", int(e.get("id", -1)))
+			_push_feed("love", TextDB.msg("approve_bond"), int(e.get("id", -1)))
 		"birth_nursery":
-			_push_feed("birth", "苗床で子が %d 体、泥の中から這い出した。" % int(e.get("count", 1)))
+			_push_feed("birth", TextDB.msg("birth_nursery", {"count": int(e.get("count", 1))}))
 
 const FEED_COLORS := {
 	"raid": "e06a50", "event": "e8943a", "birth": "9adb6e",
@@ -743,44 +709,40 @@ func _maybe_emit_conversation() -> void:
 	_conv_last_text = line
 	_push_feed("talk", line, who.id)
 
-## 個体の観測状態に応じた会話の 1 行 (演出フレーバー)。複数候補から _conv_rng で選ぶ。
+## 個体の観測状態から会話カテゴリを決め、セリフ表 (data/dialogue.json) から 1 行引く。
+## セリフ本体は JSON を編集するだけで増減できる。候補は演出 RNG (_conv_rng) で選び、
+## シム RNG (world.rng) は一切消費しない (KI-09)。
 func _conversation_line(g: Goblin, who: String) -> String:
-	var opts: Array = []
+	var category: String
 	if g.is_child():
-		opts = ["%s が小石を転がして遊んでいる。", "%s 「おっきくなったら戦うんだ!」",
-				"%s が大人の真似をして胸を張った。"]
+		category = "child"
 	elif g.pregnant:
-		opts = ["%s はおなかをさすって目を細めた。", "%s 「腹の子は族長より強くなる」"]
+		category = "pregnant"
 	elif g.mating_ticks >= 0:
-		opts = ["%s 「…しずかにしててくれ」", "寝床から %s の満ち足りた唸りが漏れる。"]
+		category = "mating"
 	elif g.courting_id >= 0:
-		opts = ["%s が落ち着かない様子で寝床の方を気にしている。", "%s 「来てくれるかな…」"]
+		category = "courting"
 	else:
 		match g.state:
 			Goblin.State.HUNGRY:
-				opts = ["%s は腹を鳴らした。「…腹減った」", "%s がキノコの匂いを探している。",
-						"%s 「飯はまだか」"]
+				category = "hungry"
 			Goblin.State.SLEEP:
-				opts = ["%s が寝言で何かつぶやいた。", "%s はいびきをかいて丸くなっている。"]
+				category = "sleep"
 			Goblin.State.WORK:
-				opts = ["%s が鼻歌まじりに手を動かす。", "%s 「働けば飯が増える…たぶん」",
-						"%s がツルハシを担ぎ直した。"]
+				category = "work"
 			Goblin.State.FEAR:
-				opts = ["%s が物陰でガタガタ震えている。", "%s 「いやだ、死にたくない…」"]
+				category = "fear"
 			Goblin.State.COMBAT:
-				opts = ["%s が雄叫びを上げた!", "%s 「来やがれ!」"]
+				category = "combat"
 			Goblin.State.ENRAGED:
-				opts = ["%s の目が血走っている。", "%s が手当たり次第に殴りかかる!"]
+				category = "enraged"
 			_:
-				# WANDER ほか: 隣に誰かいれば雑談、いなければ環境フレーバー。
+				# WANDER ほか: 隣に誰かいれば 2 体の雑談、いなければ環境フレーバー。
 				var other := _nearby_chatter(g)
 				if other != null:
-					return "%s と %s が顔を寄せて何か話している。" % [who, GobNames.of(other)]
-				opts = ["%s がぼんやり洞窟を眺めている。", "%s 「今日もトーテムは燃えてるな」",
-						"%s が爪で岩肌に落書きしている。", "%s が遠くの物音に耳を澄ませた。"]
-	if opts.is_empty():
-		return ""
-	return (opts[_conv_rng.randi() % opts.size()] as String) % who
+					return TextDB.pick_chatter("chatter_pair", _conv_rng, {"name": who, "other": GobNames.of(other)})
+				category = "wander"
+	return TextDB.pick_chatter(category, _conv_rng, {"name": who})
 
 ## 近くで雑談できる相手 (チェビシェフ距離 1 の生きている別個体) を 1 体返す。なければ null。
 func _nearby_chatter(g: Goblin) -> Goblin:

@@ -68,8 +68,15 @@ godot --headless --path Game --import   # 初回のみ (グローバルクラス
 godot --headless --path Game --script res://scripts/test_smoke.gd        # SMOKE_OK (マップ検証含む)
 godot --headless --path Game --script res://scripts/test_scene_smoke.gd  # SCENE_SMOKE_OK
 godot --headless --path Game --script res://scripts/test_miracles.gd     # MIRACLES_OK (§3/§4 奇跡+ランク)
+godot --headless --path Game --script res://scripts/test_dialogue.gd     # DIALOGUE_OK (演出テキスト + TextDB)
 godot --headless --path Game --script res://scripts/test_seeds.gd        # 多シード勝率 (手動・数分)
 ```
+
+**演出テキストは `Game/data/*.json` に集約**（会話セリフ・イベント文面・名前音節）。コードを
+触らず JSON を編集するだけで増減できる（`scripts/render/text_db.gd` が読む。シム RNG 非依存 /
+KI-09）。`dialogue.json`=会話セリフ（状態別カテゴリ）+ 名前音節、`messages.json`=フィード文面 +
+ラベル。プレースホルダは `{name}`/`{other}`（会話）・`String.format` 形式（文面）。編集後は
+`test_dialogue.gd` で検証。詳細は `Game/README.md`「セリフ・テキストの編集」。
 
 `godot` が無い環境 (Claude Code リモート実行等) では同梱バイナリを使う:
 `tools/godot/setup.sh` で展開し、`tools/godot/Godot_v4.6-stable_linux.x86_64` を

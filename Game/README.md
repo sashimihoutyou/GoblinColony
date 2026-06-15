@@ -53,17 +53,40 @@ scripts/
   render/
     renderer.gd           描画層。タイル間の補間移動・パーティクル・昼夜トーンは
                           すべてこの層のローカル状態（シム状態に書き込まない / KI-09）
-    gob_names.gd          個体名の決定的生成（id → 名前。Web 版と同じ音節）
+    text_db.gd            演出テキストの一元ローダ。data/*.json を読み、会話セリフ・
+                          イベント文面・名前音節を供給（シム RNG 非依存 / KI-09）
+    gob_names.gd          個体名の決定的生成（id → 名前。音節は data/dialogue.json）
   main.gd                 実時間→tick→render のメインループ + コード構築の UI
   test_smoke.gd           ヘッドレス通しプレイ検証（マップ密閉/接続性 + 30 日完走 +
                           スナップショット往復）
   test_scene_smoke.gd     メインシーンの起動スモーク（UI/描画層のエラー検出）
   test_miracles.gd        奇跡 6 種 + 集合命令 + トーテムランク連動の検証（§3/§4）
   test_captives.gd        捕虜プール + 生贄/解放 + 敵対度→襲撃間隔の検証（§2.5/§13）
+  test_dialogue.gd        演出テキスト検証（data/*.json + TextDB。カテゴリ網羅・
+                          プレースホルダ規約・名前決定性・文面キー存在・format）
   test_seeds.gd           多シード勝率ハーネス（§15 調整用。手動で回す・数分かかる）
+data/                     演出テキスト（コードを触らず編集できる外部ファイル）
+  dialogue.json           ゴブリンの会話セリフ（状態別カテゴリ）+ 名前音節（M1/M2/F1/F2）
+  messages.json           イベントフィード（巣の記録）の文面 + ラベル
 scenes/
   Main.tscn               メインシーン（骨組みのみ。UI は main.gd が構築）
 ```
+
+### セリフ・テキストの編集（演出層 / KI-09）
+
+ゴブリンの会話・イベントフィードの文面・名前音節はすべて `data/*.json` に集約してあり、
+**コードを触らず JSON を編集するだけ**で増減・差し替えできる（`scripts/render/text_db.gd`
+が読み込む）。力学・セーブには一切関与しない純演出層。
+
+- 会話セリフを増やす → `data/dialogue.json` の `conversation.<状態>` 配列に行を足すだけ。
+  状態キー: `child / hungry / sleep / work / wander / fear / combat / enraged /
+  courting / mating / pregnant / chatter_pair`。
+  プレースホルダは `{name}`（話者名）と `{other}`（近くの相手名・`chatter_pair` 限定）。
+- イベント文面を変える → `data/messages.json` の `events.<キー>`。プレースホルダは
+  `{name} {other} {who} {count} {amount} {room} …`（`String.format`）。
+- 名前の音節を増やす → `data/dialogue.json` の `names.{M1,M2,F1,F2}`（カタカナ）。
+- 編集後は `test_dialogue.gd` で検証（カテゴリ網羅・プレースホルダ規約・文面キー存在）。
+  JSON が壊れていても TextDB はフォールバックで落ちない（警告のみ）。
 
 ## 実行
 
