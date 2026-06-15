@@ -568,7 +568,15 @@ func _draw_jobs(ts: float) -> void:
 		match int(j.type):
 			World.JobType.MINE:
 				var r := Rect2(float(j.x) * ts + 1.0, float(j.y) * ts + 1.0, ts - 2.0, ts - 2.0)
+				# 進捗を「下から満ちる塗り + 上辺の細いバー」で見せる (採掘も進行が分かる)。
+				var mp := clampf(float(j.progress), 0.0, 1.0)
+				if mp > 0.0:
+					var fh := r.size.y * mp
+					draw_rect(Rect2(r.position.x, r.position.y + r.size.y - fh, r.size.x, fh),
+							Color(0.95, 0.75, 0.30, 0.30), true)
 				draw_rect(r, Color(0.95, 0.75, 0.30, pulse), false, 1.5)
+				draw_rect(Rect2(r.position.x, r.position.y - 4.0, r.size.x, 3.0), Color(0, 0, 0, 0.5), true)
+				draw_rect(Rect2(r.position.x, r.position.y - 4.0, r.size.x * mp, 3.0), COL_EMBER, true)
 			World.JobType.DIG:
 				# 掘削指定 (§10): 土色の破線風枠 + 進捗の塗り (採掘とは別色)。
 				var dr := Rect2(float(j.x) * ts + 1.0, float(j.y) * ts + 1.0, ts - 2.0, ts - 2.0)
@@ -585,6 +593,10 @@ func _draw_jobs(ts: float) -> void:
 			World.JobType.REPAIR:
 				var rr := Rect2(float(j.x) * ts + 2.0, float(j.y) * ts + 2.0, ts - 4.0, ts - 4.0)
 				draw_rect(rr, Color(0.60, 0.85, 0.95, pulse * 0.8), false, 1.5)
+				var rp := clampf(float(j.progress), 0.0, 1.0)
+				draw_rect(Rect2(float(j.x) * ts, float(j.y) * ts - 4.0, ts, 3.0), Color(0, 0, 0, 0.5), true)
+				draw_rect(Rect2(float(j.x) * ts, float(j.y) * ts - 4.0, ts * rp, 3.0),
+						Color(0.60, 0.85, 0.95), true)
 
 ## 破壊予告 (§3-20)。狙われている壁を赤い脈動でハイライトし、残り tick (秒目安) を
 ## 添える。eta が短いほど明滅が速く強くなる (「割られる前にもう一枚」の緊張)。

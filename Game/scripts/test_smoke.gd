@@ -477,11 +477,21 @@ func _test_courtship_rendezvous() -> bool:
 	w._place(f, nest)
 	w._place(m, nest)
 	w._step_courtship()
-	if not f.pregnant:
-		print("  FAIL: courtship (1) — adjacent-in-nest pair did not conceive")
+	# 合流したら即妊娠ではなく性行為に入る (寝床にこもる時間が要る)。
+	if f.mating_ticks != 0 or m.mating_ticks != 0:
+		print("  FAIL: courtship (1) — adjacent-in-nest pair did not start mating")
 		return false
-	if f.courting_id != -1 or m.courting_id != -1:
-		print("  FAIL: courtship (1) — courting not cleared after conception")
+	if f.pregnant:
+		print("  FAIL: courtship (1) — conceived instantly without mating duration")
+		return false
+	# mating_duration_ticks ぶんこもると妊娠が成立する。
+	for i in range(p.mating_duration_ticks):
+		w._step_courtship()
+	if not f.pregnant:
+		print("  FAIL: courtship (1) — pair did not conceive after mating duration")
+		return false
+	if f.courting_id != -1 or m.courting_id != -1 or f.mating_ticks != -1 or m.mating_ticks != -1:
+		print("  FAIL: courtship (1) — courting/mating not cleared after conception")
 		return false
 	if f.mate_id != m.id:
 		print("  FAIL: courtship (1) — mate_id not recorded")

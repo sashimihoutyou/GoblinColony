@@ -1001,6 +1001,13 @@ func _movement_target(g: Goblin, in_raid: bool, entered_wander: bool = false) ->
 		# 巣のあちこちに散ったままだと、敵の視界 (6 タイル) に入った端から
 		# 狩られる (雌の絶滅 = 増殖の停止)。
 		return _sanctuary_slot(g.id)
+	# 性行為中 (§3-6): 寝床にこもっている間は状態に依らず NEST スロットへ留める
+	# (求愛より優先。空腹で食料庫へ逸れて中座しない。危機は _step_courtship が中断)。
+	# スロット鍵は求愛と同じ「ペアの雌の id」で揃える (雌=自分, 雄=courting_id)。
+	if g.mating_ticks >= 0:
+		var mate_key: int = g.id if g.sex == Goblin.Sex.FEMALE else g.courting_id
+		if mate_key >= 0:
+			return _room_slot(TileMapData.RoomType.NEST, mate_key)
 	# 求愛ランデブー (§3-6): 求愛中の個体は寝床 (NEST) のスロットへ向かう。雌雄が
 	# 同じタイルに収束するよう、スロット鍵は「ペアの雌の id」で揃える (雌=自分,
 	# 雄=courting_id)。食事・睡眠など緊急系には介入せず WORK/WANDER のときだけ。
@@ -2052,10 +2059,40 @@ func _step_courtship() -> void:
 				or partner.courting_id != g.id:
 			g.courting_id = -1
 			g.court_ticks = 0
+			g.mating_ticks = -1  # 相手喪失で性行為も中断 (寝床から解放)
 	for f in goblins:
 		if f.sex != Goblin.Sex.FEMALE or f.courting_id < 0:
 			continue
 		var mate := _goblin_by_id(f.courting_id)
+		# 性行為中 (寝床で合流済み): mating_ticks を進め、所要に達したら妊娠が成立する。
+		# 一瞬で終わらせず ≒0.3 日こもる。途中で相手喪失/危機/非平時になったら中断
+		# (妊娠せず解散)。courting_id は寝床へ留めるため完了/中断まで保持する。
+		if f.mating_ticks >= 0:
+			var stop: bool = mate == null or mate.state == Goblin.State.DEAD \
+					or f.state == Goblin.State.DEAD or phase != Phase.PEACE \
+					or _court_blocked(f) or _court_blocked(mate)
+			if stop:
+				if mate != null:
+					mate.mating_ticks = -1
+					mate.courting_id = -1
+					mate.court_ticks = 0
+				f.mating_ticks = -1
+				f.courting_id = -1
+				f.court_ticks = 0
+				continue
+			f.mating_ticks += 1
+			if f.mating_ticks >= params.mating_duration_ticks:
+				f.pregnant = true
+				f.pregnant_ticks = 0
+				f.mate_id = mate.id
+				f.mating_ticks = -1
+				f.courting_id = -1
+				f.court_ticks = 0
+				mate.mating_ticks = -1
+				mate.courting_id = -1
+				mate.court_ticks = 0
+				_event({"t": "pregnant", "id": f.id, "mate": mate.id})
+			continue
 		# 解消条件: 相手が居ない/死亡、自分または相手が危機ステート、非平時、タイムアウト。
 		var dissolve := false
 		if mate == null or mate.state == Goblin.State.DEAD or f.state == Goblin.State.DEAD:
@@ -2074,18 +2111,14 @@ func _step_courtship() -> void:
 			f.court_ticks = 0
 			continue
 		f.court_ticks += 1
-		# 成立: 雌雄がチェビシェフ距離 1 以内 かつ 雌が NEST 部屋内に居る。
+		# 合流: 雌雄がチェビシェフ距離 1 以内 かつ 雌が NEST 部屋内に居る。ここから
+		# 寝床にこもって性行為に入る (即妊娠させず mating_ticks を 0 から進める)。
 		var adjacent: bool = max(abs(f.x - mate.x), abs(f.y - mate.y)) <= 1
 		var in_nest: bool = map.room_type_at(f.x, f.y) == TileMapData.RoomType.NEST
 		if adjacent and in_nest:
-			f.pregnant = true
-			f.pregnant_ticks = 0
-			f.mate_id = mate.id
-			f.courting_id = -1
-			f.court_ticks = 0
-			mate.courting_id = -1
-			mate.court_ticks = 0
-			_event({"t": "pregnant", "id": f.id, "mate": mate.id})
+			f.mating_ticks = 0
+			mate.mating_ticks = 0
+			_event({"t": "mating", "f": f.id, "m": mate.id})
 
 ## 求愛を中断させる危機ステートか (FEAR/COMBAT/DYING/KNOCKED_OUT/ENRAGED)。
 func _court_blocked(g: Goblin) -> bool:
@@ -2512,6 +2545,11 @@ func _step_workshops() -> void:
 	equipment += smiths * params.equip_per_smith_tick
 
 func _step_starvation() -> void:
+	# 襲撃中 (COMBAT) は餓死 HP ダメージを止める。防衛召集で食料庫へ行けず拘束された
+	# ゴブリンが戦闘中に餓死で溶けるのを防ぐ (空腹ゲージ自体は上がり続ける)。平時
+	# (PEACE) の飢餓は従来どおり = KI-26 (慢性飢餓調整) を崩さない。
+	if phase == Phase.COMBAT:
+		return
 	if food > 0.0:
 		return
 	for g in goblins:
