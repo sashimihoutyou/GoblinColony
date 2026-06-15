@@ -278,6 +278,7 @@ func _test_wanderer_join() -> bool:
 				kugyo_joins += 1
 	ok = _check(bunta_joins > kugyo_joins,
 			"bunta 出身の放浪者は kugyo より加入率が高い (%d vs %d / %d 試行)" % [bunta_joins, kugyo_joins, trials]) and ok
+	@warning_ignore("integer_division")
 	ok = _check(bunta_joins >= trials / 2,
 			"bunta 出身の放浪者は概ね加入する (%d/%d)" % [bunta_joins, trials]) and ok
 	return ok

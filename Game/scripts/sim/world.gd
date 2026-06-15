@@ -353,6 +353,7 @@ func _update_raid_schedule() -> void:
 		_spawn_raid(false, faction)
 		_schedule_next_raid()
 	# 小規模襲撃 (恵み): 1 日 1 回判定、平時のみ。
+	@warning_ignore("integer_division")
 	if phase == Phase.PEACE and (tick % params.ticks_per_day) == params.day_ticks / 2:
 		if rng.next_float() < params.small_raid_prob:
 			_spawn_raid_small()
@@ -406,6 +407,7 @@ func _spawn_enemy_at_gate(gate_idx: int, human: bool, breacher: bool = false) ->
 	# 範囲外に置くと A* が開始点を歩行不可とみなし一歩も動けない (旧バグ:
 	# 襲撃が永遠に決着せず phase=COMBAT のまま増殖も勝敗も止まっていた)。
 	var gate: Vector2i = map.gates[gate_idx]
+	@warning_ignore("integer_division")
 	var dir := (gate - Vector2i(map.width / 2, map.height / 2))
 	var spawn := gate
 	if abs(dir.x) > abs(dir.y):
@@ -1301,6 +1303,7 @@ func _work_target(g: Goblin) -> Vector2i:
 			var tiles: Array = _room_floors.get(i, [])
 			if not tiles.is_empty():
 				return tiles[_slot_hash(g.id) % tiles.size()]
+			@warning_ignore("integer_division")
 			return Vector2i(r.x + r.w / 2, r.y + r.h / 2)
 	# §3-12 ジョブキュー: 役職も部屋もない手すきは未割当ジョブを取得して働く。
 	if g.job_id < 0:
@@ -1382,6 +1385,7 @@ func _job_target(g: Goblin) -> Vector2i:
 		if j.progress >= 1.0:
 			_complete_job(j, g)
 		return Vector2i(-1, -1)
+	@warning_ignore("integer_division")
 	var tgt := Vector2i(j.x + w / 2, j.y + h / 2)
 	if not map.is_walkable(tgt.x, tgt.y):
 		# 壁修復などターゲット自体が通行不可: 隣接の歩ける床に立って作業する。
@@ -1619,6 +1623,7 @@ func _guard_post(g: Goblin) -> Vector2i:
 func _maintain_guards() -> void:
 	if map.gates.is_empty():
 		return
+	@warning_ignore("integer_division")
 	var target := clampi(_alive_count() / 10, 1, 3)
 	# 現任の見張り (生存) を集計。
 	var current: Array = []
