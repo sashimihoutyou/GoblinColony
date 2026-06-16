@@ -153,7 +153,17 @@
     ],
     "restore": "巣の記録を復元した ({day} 日目)。",
     "new_game": "巣が築かれた。{count} 体のゴブリンと族長。",
-    "new_game_difficulty": "新しい群れ (難度: {difficulty})。{count} 体のゴブリンと族長。"
+    "new_game_difficulty": "新しい群れ (難度: {difficulty})。{count} 体のゴブリンと族長。",
+    "birth_nursery_goblin": [
+      "苗床の雌ゴブリンが、子を {count} 匹 産み落とした。",
+      "苗床の雌ゴブリン母体が、また {count} 匹。泥から這い出してきた。",
+      "ゴブリン母体が {count} 匹 産んだ。群れの数が増えていく。"
+    ],
+    "birth_nursery_human": [
+      "苗床の雌人間が、子を {count} 匹 産み落とした。母体はぐったりしている。",
+      "人間母体の腹から {count} 匹。人ならぬ子が泥に這い出す。",
+      "雌人間の母体が、また {count} 匹 産まされた。すすり泣きが漏れる。"
+    ]
   },
   "labels": {
     "raid_who": {

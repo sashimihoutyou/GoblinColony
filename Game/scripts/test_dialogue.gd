@@ -20,6 +20,8 @@ const CHATTER_CATEGORIES := [
 	"courting_hm_h", "mating_hm_h", "courting_hf_h", "mating_hf_h",
 	"pregnant_hf_g", "pregnant_gf_h", "pregnant_hf_h", "pregnant_hf",
 	"nursery_human",
+	# 捕虜つがいの種族別 (ゴブリン捕虜=バカっぽい / 人間捕虜=普通の口調)。
+	"concubine_gm", "concubine_gf", "pending_bond_gm", "pending_bond_gf",
 ]
 
 const EVENT_KEYS := [
@@ -37,7 +39,8 @@ const EVENT_KEYS := [
 	"dig_done", "build_start", "build_done", "repair_done", "breach_warn", "breach",
 	"victory", "defeat_totem", "defeat", "captive_gain", "captive_joined", "sacrifice",
 	"release_captive", "tribute", "tribute_gems", "gems_hoard_warn", "take_concubine",
-	"pending_bond", "approve_bond", "restore", "new_game", "new_game_difficulty",
+	"pending_bond", "approve_bond", "birth_nursery_goblin", "birth_nursery_human",
+	"restore", "new_game", "new_game_difficulty",
 ]
 
 # 性別別カテゴリ。発言者の性別と一人称が矛盾しないことを機械的に保証する。
@@ -48,12 +51,16 @@ const FEMALE_CATEGORIES := [
 	"courting_gf_h", "mating_gf_h", "pregnant_gf_h",
 	"courting_hf_g", "mating_hf_g", "courting_hf_h", "mating_hf_h",
 	"pregnant_hf_g", "pregnant_hf_h", "pregnant_hf",
+	# ゴブリン捕虜の雌 (バカっぽい・あたい口調・『俺』を使わない)。
+	"concubine_gf", "pending_bond_gf",
 ]
 const MALE_CATEGORIES := [
 	"courting_m", "mating_m", "concubine_m", "pending_bond_m",
 	# 異種の雄カテゴリ (ゴブリン雄 / 人間雄)。女性一人称『あたい/あたし』を使わない。
 	"courting_gm_h", "mating_gm_h",
 	"courting_hm_g", "mating_hm_g", "courting_hm_h", "mating_hm_h",
+	# ゴブリン捕虜の雄 (バカっぽい・おれ口調)。
+	"concubine_gm", "pending_bond_gm",
 ]
 
 func _init() -> void:

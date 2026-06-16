@@ -88,6 +88,9 @@ var _accum_ms: float = 0.0
 var sel_kind: int = SelKind.NONE
 var sel_id: int = -1   # GOBLIN/ENEMY: ユニット id。ROOM: world.map.rooms のインデックス
 var _forage_feed_count: int = 0  # T4: 採集フィードの間引き (4 回に 1 回だけ流す)
+# 苗床の累計出産 (母体種族別。演出ローカル・どの苗床母体が何を産んだか可視化する)。
+var _nursery_born_goblin: int = 0
+var _nursery_born_human: int = 0
 # 奇跡のターゲティング (演出/入力ローカル。シム・セーブに含めない)。
 # _armed = 武装中の奇跡 (Controller.Miracle の値 / -1 = 非武装)。武装中は
 # 左クリックが選択でなく対象指定になる。Esc/右クリック/残高切れで解除。
@@ -681,7 +684,15 @@ func _push_feed_event(e: Dictionary) -> void:
 		"approve_bond":
 			_push_feed("love", TextDB.msg_pick("approve_bond", _conv_rng), int(e.get("id", -1)))
 		"birth_nursery":
-			_push_feed("birth", TextDB.msg_pick("birth_nursery", _conv_rng, {"count": int(e.get("count", 1))}))
+			# 母体の種族を明示する (どの苗床母体が産んだか分かるように) + 累計を記録。
+			var bn_human: bool = e.get("human", false)
+			var bn_count := int(e.get("count", 1))
+			if bn_human:
+				_nursery_born_human += bn_count
+			else:
+				_nursery_born_goblin += bn_count
+			var bn_key := "birth_nursery_human" if bn_human else "birth_nursery_goblin"
+			_push_feed("birth", TextDB.msg_pick(bn_key, _conv_rng, {"count": bn_count}))
 
 const FEED_COLORS := {
 	"raid": "e06a50", "event": "e8943a", "birth": "9adb6e",
@@ -792,7 +803,7 @@ func _conversation_line(g: Goblin, who: String) -> String:
 	if g.courting_id >= 0:
 		return _pick_pair_chatter("courting", g, _find_goblin(g.courting_id), who)
 	if g.pending_bond:
-		return _pick_gendered("pending_bond", g, who)  # つがい承認待ちの捕虜/娶り主
+		return _pick_gendered_species("pending_bond", g, who)  # つがい承認待ち (種族で口調を分ける)
 	match g.state:
 		Goblin.State.HUNGRY:
 			return TextDB.pick_chatter("hungry", _conv_rng, f)
@@ -809,7 +820,7 @@ func _conversation_line(g: Goblin, who: String) -> String:
 		_:
 			# WANDER ほか: 側室は捕虜暮らしの台詞、隣に誰かいれば 2 体の雑談、いなければ環境フレーバー。
 			if g.role == Goblin.Role.CONCUBINE:
-				return _pick_gendered("concubine", g, who)
+				return _pick_gendered_species("concubine", g, who)  # 種族で口調を分ける
 			var other := _nearby_chatter(g)
 			if other != null:
 				var pf := _chat_fields(g, who)
@@ -842,6 +853,17 @@ func _bust_desc(g: Goblin) -> String:
 ## id 由来で決定的 (Goblin.endowment/bust)。該当しない性別では "" (台詞側が使わない)。
 func _chat_fields(g: Goblin, who: String) -> Dictionary:
 	return {"name": who, "cock": _cock_desc(g), "bust": _bust_desc(g)}
+
+## 話者の種族 + 性別でカテゴリを選ぶ (ゴブリン=<base>_g<sex> / 人間=<base>_h<sex>)。無ければ
+## <base>_<sex> → <base> へフォールバック。ゴブリンはバカっぽく、人間は普通に喋る分離に使う
+## (捕虜つがい系。ゴブリン捕虜=dumb / 人間捕虜=articulate)。演出 RNG のみ消費 (KI-09)。
+func _pick_gendered_species(base: String, g: Goblin, who: String) -> String:
+	var s := _species_tag(g)
+	var x := "m" if g.sex == Goblin.Sex.MALE else "f"
+	for key in [base + "_" + s + x, base + "_" + x, base]:
+		if not TextDB.chatter_lines(key).is_empty():
+			return TextDB.pick_chatter(key, _conv_rng, _chat_fields(g, who))
+	return TextDB.pick_chatter(base, _conv_rng, _chat_fields(g, who))
 
 ## 性別サフィックス (_m=雄 / _f=雌) 付きカテゴリを優先し、無ければ基底へフォールバックする。
 ## 発言者の性別と台詞が矛盾しないようにするための共通ヘルパ (演出 RNG のみ消費 / KI-09)。
@@ -1750,9 +1772,29 @@ func _update_captive_ui() -> void:
 	if _captive_toggle_button != null:
 		_captive_toggle_button.text = "捕虜▲" if _captive_panel.visible else "捕虜▼"
 	if _captive_panel.visible:
-		_captive_info.text = "捕虜 — ゴブリン 雄%d 雌%d / 人間 雄%d 雌%d" % [
+		var info := "捕虜 — ゴブリン 雄%d 雌%d / 人間 雄%d 雌%d" % [
 			int(world.cap_male_goblin), int(world.cap_female_goblin),
 			int(world.cap_male_human), int(world.cap_female_human)]
+		# 苗床の母体ステータス: 稼働中なら雌捕虜が母体になっている内訳と累計出産を出す
+		# (個体は抽象カウントなので「種族×頭数」で誰がどうなったかを示す)。
+		var has_nursery := false
+		for r in world.map.rooms:
+			if r.room_type == TileMapData.RoomType.NURSERY:
+				has_nursery = true
+				break
+		if has_nursery:
+			var host_g := int(world.cap_female_goblin)
+			var host_h := int(world.cap_female_human) if world.params.human_nursery_allowed else 0
+			if host_g + host_h > 0:
+				info += "\n🍼 苗床の母体: 雌ゴブ%d・雌人間%d が孕み中" % [host_g, host_h]
+			else:
+				info += "\n🍼 苗床は空 (雌捕虜を母体にできる)"
+			if _nursery_born_goblin + _nursery_born_human > 0:
+				info += "\n  これまで苗床で ゴブ母から%d・人母から%d 匹" % [
+					_nursery_born_goblin, _nursery_born_human]
+		elif world.cap_female_goblin + world.cap_female_human >= 1.0:
+			info += "\n雌捕虜は苗床部屋を建てると母体にできる"
+		_captive_info.text = info
 		_concubine_button.disabled = sel_kind != SelKind.GOBLIN
 		_gem_row.visible = world.gems >= 1.0
 		_gem_tribute_button.text = "宝石 %d を人間へ献上" % int(world.params.gems_tribute_amount)
