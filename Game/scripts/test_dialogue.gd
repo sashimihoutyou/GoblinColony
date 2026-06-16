@@ -14,6 +14,12 @@ const CHATTER_CATEGORIES := [
 	"courting_m", "courting_f", "mating_m", "mating_f",
 	"concubine_m", "concubine_f", "pending_bond_m", "pending_bond_f",
 	"nursery",
+	# 異種つがい (ゴブリン×人間)。命名 <base>_<自種><性別>_<相手種> (g/h, m/f, g/h)。
+	"courting_gm_h", "mating_gm_h", "courting_gf_h", "mating_gf_h",
+	"courting_hf_g", "mating_hf_g", "courting_hm_g", "mating_hm_g",
+	"courting_hm_h", "mating_hm_h", "courting_hf_h", "mating_hf_h",
+	"pregnant_hf_g", "pregnant_gf_h", "pregnant_hf_h", "pregnant_hf",
+	"nursery_human",
 ]
 
 const EVENT_KEYS := [
@@ -36,8 +42,19 @@ const EVENT_KEYS := [
 
 # 性別別カテゴリ。発言者の性別と一人称が矛盾しないことを機械的に保証する。
 # 雌カテゴリに男性一人称『俺』、雄カテゴリに女性一人称が混ざっていないか検査する。
-const FEMALE_CATEGORIES := ["courting_f", "mating_f", "concubine_f", "pending_bond_f", "pregnant"]
-const MALE_CATEGORIES := ["courting_m", "mating_m", "concubine_m", "pending_bond_m"]
+const FEMALE_CATEGORIES := [
+	"courting_f", "mating_f", "concubine_f", "pending_bond_f", "pregnant",
+	# 異種の雌カテゴリ (ゴブリン雌 / 人間雌)。人間雌は『わたし』口調・『俺』を使わない。
+	"courting_gf_h", "mating_gf_h", "pregnant_gf_h",
+	"courting_hf_g", "mating_hf_g", "courting_hf_h", "mating_hf_h",
+	"pregnant_hf_g", "pregnant_hf_h", "pregnant_hf",
+]
+const MALE_CATEGORIES := [
+	"courting_m", "mating_m", "concubine_m", "pending_bond_m",
+	# 異種の雄カテゴリ (ゴブリン雄 / 人間雄)。女性一人称『あたい/あたし』を使わない。
+	"courting_gm_h", "mating_gm_h",
+	"courting_hm_g", "mating_hm_g", "courting_hm_h", "mating_hm_h",
+]
 
 func _init() -> void:
 	TextDB.reload()
@@ -185,19 +202,27 @@ func _test_compose() -> bool:
 	var ok := true
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 777
-	for gk in ["mating_explicit_m", "mating_explicit_f"]:
-		var solo := TextDB.compose(gk, rng, {"name": "ゴブA"})
-		if solo.is_empty() or solo.find("{") >= 0:
-			print("  FAIL: compose %s → '%s'" % [gk, solo])
+	# 個体視点 (ゴブリン m/f・人間 hm/hf)。相手呼称 {mate} を渡す。異種でも取りこぼし無し。
+	for gk in ["mating_explicit_m", "mating_explicit_f", "mating_explicit_hm", "mating_explicit_hf"]:
+		for mate in ["雌", "雄", "人間の女", "人間の男"]:
+			var solo := TextDB.compose(gk, rng, {"name": "ゴブA", "mate": mate})
+			if solo.is_empty() or solo.find("{") >= 0:
+				print("  FAIL: compose %s (mate=%s) → '%s'" % [gk, mate, solo])
+				ok = false
+	# つがい両者 (フィード)。{fpre}/{mpre} に種族接頭辞を渡す (異種/同種の両方)。
+	for pre in [["", ""], ["人間の ", ""], ["", "人間の "]]:
+		var pair := TextDB.compose("mating_explicit_pair", rng,
+				{"name": "ゴブA", "other": "ゴブB", "fpre": pre[0], "mpre": pre[1]})
+		if pair.is_empty() or pair.find("{") >= 0:
+			print("  FAIL: compose mating_explicit_pair (fpre=%s mpre=%s) → '%s'" % [pre[0], pre[1], pair])
 			ok = false
-	var pair := TextDB.compose("mating_explicit_pair", rng, {"name": "ゴブA", "other": "ゴブB"})
-	if pair.is_empty() or pair.find("{") >= 0:
-		print("  FAIL: compose mating_explicit_pair → '%s'" % pair)
-		ok = false
-	var nursery := TextDB.compose("nursery_explicit", rng, {})
-	if nursery.is_empty() or nursery.find("{") >= 0:
-		print("  FAIL: compose nursery_explicit → '%s'" % nursery)
-		ok = false
+	# 苗床 (ゴブリン母体 / 人間母体)。
+	var nursery := ""
+	for nk in ["nursery_explicit", "nursery_explicit_human"]:
+		nursery = TextDB.compose(nk, rng, {})
+		if nursery.is_empty() or nursery.find("{") >= 0:
+			print("  FAIL: compose %s → '%s'" % [nk, nursery])
+			ok = false
 	if TextDB.compose("does_not_exist", rng, {}) != "":
 		print("  FAIL: compose unknown grammar should return ''")
 		ok = false

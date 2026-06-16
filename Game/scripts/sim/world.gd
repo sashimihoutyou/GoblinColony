@@ -2316,6 +2316,7 @@ func take_concubine(suitor_id: int, captive_sex: int, captive_is_human: bool) ->
 	concubine.id = next_goblin_id
 	next_goblin_id += 1
 	concubine.sex = captive_sex
+	concubine.species = Goblin.Species.HUMAN if captive_is_human else Goblin.Species.GOBLIN
 	concubine.role = Goblin.Role.CONCUBINE
 	concubine.origin = Goblin.Origin.CONCUBINE
 	concubine.max_hp = 8.0 if captive_sex == Goblin.Sex.FEMALE else 10.0
@@ -2389,8 +2390,9 @@ func _step_captive_bonding() -> void:
 	# (a) 未娶の捕虜を個体化して pending_bond の側室として加える。
 	var suitor: Goblin = eligible[rng.next_int(eligible.size())]
 	var want_sex := Goblin.Sex.FEMALE if suitor.sex == Goblin.Sex.MALE else Goblin.Sex.MALE  # 異性
-	# 捕虜カテゴリから 1 消費 (ゴブリン優先、なければ人間)。
+	# 捕虜カテゴリから 1 消費 (ゴブリン優先、なければ人間)。消費元で種族を決める。
 	var consumed := false
+	var lover_is_human := false
 	if want_sex == Goblin.Sex.FEMALE and cap_female_goblin >= 1.0:
 		cap_female_goblin -= 1.0
 		consumed = true
@@ -2400,9 +2402,11 @@ func _step_captive_bonding() -> void:
 	elif want_sex == Goblin.Sex.FEMALE and cap_female_human >= 1.0:
 		cap_female_human -= 1.0
 		consumed = true
+		lover_is_human = true
 	elif want_sex == Goblin.Sex.MALE and cap_male_human >= 1.0:
 		cap_male_human -= 1.0
 		consumed = true
+		lover_is_human = true
 	if not consumed:
 		return  # 該当する捕虜が居ない
 
@@ -2410,6 +2414,7 @@ func _step_captive_bonding() -> void:
 	lover.id = next_goblin_id
 	next_goblin_id += 1
 	lover.sex = want_sex
+	lover.species = Goblin.Species.HUMAN if lover_is_human else Goblin.Species.GOBLIN
 	lover.role = Goblin.Role.CONCUBINE
 	lover.origin = Goblin.Origin.CONCUBINE
 	lover.max_hp = 8.0 if want_sex == Goblin.Sex.FEMALE else 10.0
@@ -2504,6 +2509,7 @@ func _step_amina() -> void:
 	# _movement_target の既存分岐で非戦闘になる。is_unique は事故死無効のみに効く)。
 	var amina := _make_goblin(Goblin.Sex.FEMALE, Goblin.Role.NONE, Goblin.Origin.CAPTIVE_JOINED)
 	amina.is_unique = true
+	amina.species = Goblin.Species.HUMAN  # アミナは人間の少女 (§14)
 	_place(amina, _random_nest_floor())
 	goblins.append(amina)
 	amina_goblin_id = amina.id

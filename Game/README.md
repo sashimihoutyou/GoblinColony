@@ -89,14 +89,24 @@ scenes/
   （つがい承認待ち）。`pregnant` は雌のみなので単一（雌声で書く）。`nursery` は苗床の
   情景＋母体（雌捕虜）台詞＋見物の中立台詞のアンビエント（`{name}` 任意）。
   **雌カテゴリに男性一人称『俺』を書かない**こと（`test_dialogue.gd` が機械検査する）。
+- **異種つがい（ゴブリン×人間）**: 命名 `<base>_<自種><性別>_<相手種>`（`g`/`h`・`m`/`f`・
+  `g`/`h`）。例 `mating_gm_h`＝雄ゴブリン×雌人間、`mating_hf_g`＝雌人間×雄ゴブリン、
+  `mating_hm_h`＝人間同士。`courting_*`・`pregnant_<自種>f_<種主種>`（妊娠は母体×種主）も同様。
+  人間母体の苗床は `nursery_human`。`main.gd._pick_pair_chatter` が「自種＋性別＋相手種」で
+  最も具体的なキーから順にフォールバック（人間話者は必ず人間カテゴリを用意するのでゴブリン声へ
+  落ちない）。個体の種族は `Goblin.species`（捕虜由来の側室・苗床母体・アミナが `HUMAN`）。
+  人間女は『わたし』口調で `俺` を使わない（機械検査の対象）。
 - イベント文面を変える → `data/messages.json` の `events.<キー>`。値は文字列 **または
   文字列配列**（配列なら `TextDB.msg_pick` がランダムに散らす。`msg` は先頭を使う）。
   プレースホルダは `{name} {other} {who} {count} {amount} {room} {sex} {faction} …`。
   役割固定の文面（`court`/`mating`/`pregnant`/`court_timeout` は `{name}`=雌・`{other}`=雄）は
   性別整合の台詞を直接埋め込んでよい。
 - R-18 地の文を変える → `data/adult.json`（既定 OFF の R18 トグル時のみ）。性別整合のため
-  `mating_explicit_m`（雄=能動）/ `mating_explicit_f`（雌=受け）/ `mating_explicit_pair`
-  （つがい両者・`{name}`=雌/`{other}`=雄で雄を能動側に）/ `nursery_explicit`（母体視点）。
+  `mating_explicit_m`（ゴブリン雄=能動）/ `mating_explicit_f`（ゴブリン雌=受け）/ 人間視点の
+  `mating_explicit_hm`・`mating_explicit_hf` に分け、相手の呼称は `{mate}`（`雌`/`雄`/`人間の女`/
+  `人間の男`）を差し込む。つがい両者 `mating_explicit_pair` は `{name}`=雌/`{other}`=雄で雄を能動側に、
+  `{fpre}`/`{mpre}` に種族接頭辞（`""`/`人間の `）。苗床は `nursery_explicit`（ゴブリン母体）/
+  `nursery_explicit_human`（人間母体）。スロット語に `{}` は入れず、差し込みはテンプレ/コーダに直接書く。
 - 名前の音節を増やす → `data/dialogue.json` の `names.{M1,M2,F1,F2}`（カタカナ）。
 - 編集後は `test_dialogue.gd` で検証（カテゴリ網羅・プレースホルダ規約・文面キー存在・
   性別一人称の整合・合成グラマ）。JSON が壊れていても TextDB はフォールバックで落ちない（警告のみ）。
