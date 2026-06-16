@@ -776,7 +776,14 @@ func _nursery_line(pool: Array) -> String:
 	var cat := "nursery_human" if use_human else "nursery"
 	if TextDB.chatter_lines(cat).is_empty():
 		cat = "nursery"
-	return TextDB.pick_chatter(cat, _conv_rng, {"name": who})
+	# {n}=群がる雄の人数フレーズ (同時輪姦の人数バリエーション。演出 RNG のみ)。
+	return TextDB.pick_chatter(cat, _conv_rng, {"name": who, "n": _count_phrase()})
+
+# 同時に群がる雄の人数フレーズ (演出ローカル・苗床の輪姦描写に差し込む)。
+const _COUNT_PHRASE := ["二匹の", "三匹の", "四匹の", "五匹の", "六匹の", "何匹もの", "群れじゅうの"]
+
+func _count_phrase() -> String:
+	return _COUNT_PHRASE[_conv_rng.randi() % _COUNT_PHRASE.size()]
 
 ## 個体の観測状態から会話カテゴリを決め、セリフ表 (data/dialogue.json) から 1 行引く。
 ## セリフ本体は JSON を編集するだけで増減できる。候補は演出 RNG (_conv_rng) で選び、
@@ -799,7 +806,14 @@ func _conversation_line(g: Goblin, who: String) -> String:
 			var ex := _mating_explicit(g, partner, who)
 			if ex != "":
 				return ex
-		return _pick_pair_chatter("mating", g, partner, who)
+		# 段階: 雌の mating_ticks/所要 で進行度を測り、終盤 (>=0.7) は中出し/孕ませの climax 台詞へ。
+		# 雄側は mating_ticks が 0 のままなので、つがいの雌 (自分 or 相手) の値で判定する。
+		var fem := g if g.sex == Goblin.Sex.FEMALE else partner
+		var prog := 0.0
+		if fem != null and world.params.mating_duration_ticks > 0:
+			prog = float(fem.mating_ticks) / float(world.params.mating_duration_ticks)
+		var base := "mating_climax" if prog >= 0.7 else "mating"
+		return _pick_pair_chatter(base, g, partner, who)
 	if g.courting_id >= 0:
 		return _pick_pair_chatter("courting", g, _find_goblin(g.courting_id), who)
 	if g.pending_bond:

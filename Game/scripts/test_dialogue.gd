@@ -24,6 +24,8 @@ const CHATTER_CATEGORIES := [
 	"concubine_gm", "concubine_gf", "pending_bond_gm", "pending_bond_gf",
 	# 人間 (アミナ/承認済み捕虜) の状態別・普通口調 (ゴブリンのバカ口調と対比)。
 	"hungry_h", "sleep_h", "work_h", "wander_h", "fear_h",
+	# 交尾の終盤=中出し/孕ませの段階 (mating_ticks 進行度 >=0.7 で出る)。
+	"mating_climax_m", "mating_climax_f", "mating_climax_hm", "mating_climax_hf",
 ]
 
 const EVENT_KEYS := [
@@ -55,6 +57,8 @@ const FEMALE_CATEGORIES := [
 	"pregnant_hf_g", "pregnant_hf_h", "pregnant_hf",
 	# ゴブリン捕虜の雌 (バカっぽい・あたい口調・『俺』を使わない)。
 	"concubine_gf", "pending_bond_gf",
+	# 中出し/孕ませ climax の雌 (ゴブリン=あたい / 人間=わたし)。
+	"mating_climax_f", "mating_climax_hf",
 ]
 const MALE_CATEGORIES := [
 	"courting_m", "mating_m", "concubine_m", "pending_bond_m",
@@ -63,6 +67,8 @@ const MALE_CATEGORIES := [
 	"courting_hm_g", "mating_hm_g", "courting_hm_h", "mating_hm_h",
 	# ゴブリン捕虜の雄 (バカっぽい・おれ口調)。
 	"concubine_gm", "pending_bond_gm",
+	# 中出し/孕ませ climax の雄 (ゴブリン=おれ / 人間=俺)。
+	"mating_climax_m", "mating_climax_hm",
 ]
 
 func _init() -> void:
@@ -115,7 +121,7 @@ func _test_placeholders() -> bool:
 				ok = false
 			for m in re.search_all(line):
 				var tok := m.get_string()
-				if tok not in ["{name}", "{other}", "{cock}", "{bust}", "{mate_cock}", "{mate_bust}", "{cock_react}"]:
+				if tok not in ["{name}", "{other}", "{cock}", "{bust}", "{mate_cock}", "{mate_bust}", "{cock_react}", "{n}"]:
 					print("  FAIL: '%s' bad placeholder %s in: %s" % [cat, tok, line])
 					ok = false
 				if tok == "{other}" and cat != "chatter_pair":
