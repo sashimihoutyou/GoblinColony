@@ -66,6 +66,7 @@ func _init() -> void:
 	ok = _test_format() and ok
 	ok = _test_compose() and ok
 	ok = _test_gender_voice() and ok
+	ok = _test_body_traits() and ok
 	if ok:
 		print("DIALOGUE_OK")
 		quit(0)
@@ -90,7 +91,9 @@ func _test_chatter_present() -> bool:
 		print("  chatter-present: OK (total=%d lines across %d categories)" % [total, CHATTER_CATEGORIES.size()])
 	return ok
 
-## プレースホルダ規約: 許可は {name} と {other} のみ。{other} は chatter_pair 限定。%s/%d 禁止。
+## プレースホルダ規約: 許可は {name}/{other}/{cock}/{bust}。{other} は chatter_pair 限定。
+## {cock}(雄の竿)/{bust}(雌の胸) は id 由来の身体特性で、_chat_fields が全行に渡すので任意位置可。
+## %s/%d 禁止。
 func _test_placeholders() -> bool:
 	var ok := true
 	var re := RegEx.new()
@@ -103,7 +106,7 @@ func _test_placeholders() -> bool:
 				ok = false
 			for m in re.search_all(line):
 				var tok := m.get_string()
-				if tok != "{name}" and tok != "{other}":
+				if tok != "{name}" and tok != "{other}" and tok != "{cock}" and tok != "{bust}":
 					print("  FAIL: '%s' bad placeholder %s in: %s" % [cat, tok, line])
 					ok = false
 				if tok == "{other}" and cat != "chatter_pair":
@@ -174,6 +177,33 @@ func _test_format() -> bool:
 		print("  format: OK (例: %s)" % s1)
 	return ok
 
+## 身体特性 (Goblin.endowment/bust) が 0..1 の範囲で、同じ id は常に同じ値 (決定的・保存不要)。
+## 異なる id ではばらつく (一様でない種 §3.5)。竿と胸は独立した混合であること。
+func _test_body_traits() -> bool:
+	var ok := true
+	for gid in [0, 1, 42, 1000, 99999]:
+		var e := Goblin.endowment(gid)
+		var b := Goblin.bust(gid)
+		if e < 0.0 or e >= 1.0 or b < 0.0 or b >= 1.0:
+			print("  FAIL: 身体特性が 0..1 外 id=%d e=%f b=%f" % [gid, e, b])
+			ok = false
+		if e != Goblin.endowment(gid) or b != Goblin.bust(gid):
+			print("  FAIL: 身体特性が非決定的 id=%d" % gid)
+			ok = false
+	# ばらつき: 多数の id で竿サイズが一様に偏らない (最小と最大が十分離れる)。
+	var lo := 1.0
+	var hi := 0.0
+	for gid in range(200):
+		var e := Goblin.endowment(gid)
+		lo = minf(lo, e)
+		hi = maxf(hi, e)
+	if hi - lo < 0.5:
+		print("  FAIL: 竿サイズのばらつきが小さい (range=%f)" % (hi - lo))
+		ok = false
+	if ok:
+		print("  body-traits: OK (例: id42 竿=%.2f 胸=%.2f)" % [Goblin.endowment(42), Goblin.bust(42)])
+	return ok
+
 ## 性別別カテゴリの一人称が、発言者の性別と矛盾しないこと。
 ## 雌カテゴリ (妊娠含む) に男性一人称『俺』、雄カテゴリに女性一人称『あたい/あたし』が
 ## 混ざっていないかを検査する。共有カテゴリ (hungry/work 等) はゴブリン共通口調なので対象外。
@@ -202,10 +232,12 @@ func _test_compose() -> bool:
 	var ok := true
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 777
-	# 個体視点 (ゴブリン m/f・人間 hm/hf)。相手呼称 {mate} を渡す。異種でも取りこぼし無し。
+	# 個体視点 (ゴブリン m/f・人間 hm/hf)。相手呼称 {mate}・身体特性 {cock}/{bust}/{mate_cock} を
+	# 渡す。異種・各サイズでも {} の取りこぼしが無いこと。
 	for gk in ["mating_explicit_m", "mating_explicit_f", "mating_explicit_hm", "mating_explicit_hf"]:
 		for mate in ["雌", "雄", "人間の女", "人間の男"]:
-			var solo := TextDB.compose(gk, rng, {"name": "ゴブA", "mate": mate})
+			var solo := TextDB.compose(gk, rng, {"name": "ゴブA", "mate": mate,
+					"cock": "凶悪な巨根", "bust": "たわわな巨乳", "mate_cock": "長大な逸物"})
 			if solo.is_empty() or solo.find("{") >= 0:
 				print("  FAIL: compose %s (mate=%s) → '%s'" % [gk, mate, solo])
 				ok = false

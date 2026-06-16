@@ -96,6 +96,10 @@ scenes/
   最も具体的なキーから順にフォールバック（人間話者は必ず人間カテゴリを用意するのでゴブリン声へ
   落ちない）。個体の種族は `Goblin.species`（捕虜由来の側室・苗床母体・アミナが `HUMAN`）。
   人間女は『わたし』口調で `俺` を使わない（機械検査の対象）。
+- **個体ごとの身体特性（`{cock}`/`{bust}`）**: 雄の竿 `{cock}`・雌の胸 `{bust}` は
+  `Goblin.endowment(id)`/`Goblin.bust(id)`（id 由来で決定的・保存不要）から描写語へ写像され、
+  `main.gd._chat_fields` が全行に渡す。台詞で `{cock}`/`{bust}` を書けばその個体の描写になり、
+  同じ個体は常に同じ（§3.5 小柄＋不釣り合いな巨根／貧乳〜巨乳）。雄行は `{cock}`、雌行は `{bust}`。
 - イベント文面を変える → `data/messages.json` の `events.<キー>`。値は文字列 **または
   文字列配列**（配列なら `TextDB.msg_pick` がランダムに散らす。`msg` は先頭を使う）。
   プレースホルダは `{name} {other} {who} {count} {amount} {room} {sex} {faction} …`。
@@ -104,7 +108,9 @@ scenes/
 - R-18 地の文を変える → `data/adult.json`（既定 OFF の R18 トグル時のみ）。性別整合のため
   `mating_explicit_m`（ゴブリン雄=能動）/ `mating_explicit_f`（ゴブリン雌=受け）/ 人間視点の
   `mating_explicit_hm`・`mating_explicit_hf` に分け、相手の呼称は `{mate}`（`雌`/`雄`/`人間の女`/
-  `人間の男`）を差し込む。つがい両者 `mating_explicit_pair` は `{name}`=雌/`{other}`=雄で雄を能動側に、
+  `人間の男`）を差し込む。話者自身の竿/胸は `{cock}`/`{bust}`、相手（雄）の竿は `{mate_cock}`
+  （いずれも id 由来で個体ごと一貫）。胸を揉む/吸う・アナル・体位はスロット（`breast`/`anal`/
+  `posture`/`mount` 等）で多様化。つがい両者 `mating_explicit_pair` は `{name}`=雌/`{other}`=雄で雄を能動側に、
   `{fpre}`/`{mpre}` に種族接頭辞（`""`/`人間の `）。苗床は `nursery_explicit`（ゴブリン母体）/
   `nursery_explicit_human`（人間母体）。スロット語に `{}` は入れず、差し込みはテンプレ/コーダに直接書く。
 - 名前の音節を増やす → `data/dialogue.json` の `names.{M1,M2,F1,F2}`（カタカナ）。

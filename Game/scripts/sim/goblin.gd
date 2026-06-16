@@ -127,6 +127,21 @@ static func compatibility(a: Goblin, b: Goblin) -> float:
 	var mixed: int = ((lo + 1) * 2246822519) ^ ((hi + 1) * 3266489917)
 	return float((mixed & 0xFFFFFFFF) % 1000) / 1000.0
 
+## 身体特性 (0..1) を id から決定的に導く (演出専用・sim 非参加・保存不要 / KI-09)。
+## charmSeed/compatibility とは独立した混合。竿サイズ (雄) / 胸サイズ (雌) の個体差を
+## セッションをまたいで一貫させる (同じ id は常に同じ値)。台詞・地の文の描写に使う。
+static func endowment(gid: int) -> float:
+	var s: int = (gid * 2246822519 + 374761393) & 0xFFFFFFFF
+	s = (s ^ (s >> 15)) & 0xFFFFFFFF
+	s = (s * 2654435761) & 0xFFFFFFFF
+	return float(((s ^ (s >> 13)) & 0xFFFFFFFF) % 1000) / 1000.0
+
+static func bust(gid: int) -> float:
+	var s: int = (gid * 3266489917 + 668265263) & 0xFFFFFFFF
+	s = (s ^ (s >> 16)) & 0xFFFFFFFF
+	s = (s * 2246822519) & 0xFFFFFFFF
+	return float(((s ^ (s >> 13)) & 0xFFFFFFFF) % 1000) / 1000.0
+
 func snapshot() -> Dictionary:
 	return {
 		"id": id, "sex": sex, "species": species, "state": state, "role": role,
