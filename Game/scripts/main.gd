@@ -806,27 +806,37 @@ func _conversation_line(g: Goblin, who: String) -> String:
 		return _pick_gendered_species("pending_bond", g, who)  # つがい承認待ち (種族で口調を分ける)
 	match g.state:
 		Goblin.State.HUNGRY:
-			return TextDB.pick_chatter("hungry", _conv_rng, f)
+			return _pick_shared("hungry", g, who)
 		Goblin.State.SLEEP:
-			return TextDB.pick_chatter("sleep", _conv_rng, f)
+			return _pick_shared("sleep", g, who)
 		Goblin.State.WORK:
-			return TextDB.pick_chatter("work", _conv_rng, f)
+			return _pick_shared("work", g, who)
 		Goblin.State.FEAR:
-			return TextDB.pick_chatter("fear", _conv_rng, f)
+			return _pick_shared("fear", g, who)
 		Goblin.State.COMBAT:
-			return TextDB.pick_chatter("combat", _conv_rng, f)
+			return _pick_shared("combat", g, who)
 		Goblin.State.ENRAGED:
-			return TextDB.pick_chatter("enraged", _conv_rng, f)
+			return _pick_shared("enraged", g, who)
 		_:
 			# WANDER ほか: 側室は捕虜暮らしの台詞、隣に誰かいれば 2 体の雑談、いなければ環境フレーバー。
 			if g.role == Goblin.Role.CONCUBINE:
 				return _pick_gendered_species("concubine", g, who)  # 種族で口調を分ける
+			# 人間 (アミナ/承認済み捕虜) は群れの雑談に混ざらず、普通の口調で独り言 (wander_h)。
+			if g.species == Goblin.Species.HUMAN:
+				return _pick_shared("wander", g, who)
 			var other := _nearby_chatter(g)
 			if other != null:
 				var pf := _chat_fields(g, who)
 				pf["other"] = GobNames.of(other)
 				return TextDB.pick_chatter("chatter_pair", _conv_rng, pf)
-			return TextDB.pick_chatter("wander", _conv_rng, f)
+			return _pick_shared("wander", g, who)
+
+## 状態別カテゴリを話者種族で引く。ゴブリンはバカ口調 (<cat>)、人間は普通口調 (<cat>_h があれば
+## それ・無ければ <cat> へフォールバック)。アミナ/承認済み人間捕虜がバカ化しないための分岐。
+func _pick_shared(cat: String, g: Goblin, who: String) -> String:
+	if g.species == Goblin.Species.HUMAN and not TextDB.chatter_lines(cat + "_h").is_empty():
+		return TextDB.pick_chatter(cat + "_h", _conv_rng, _chat_fields(g, who))
+	return TextDB.pick_chatter(cat, _conv_rng, _chat_fields(g, who))
 
 # 身体特性の描写語 (id 由来・小柄＋不釣り合いな巨根の王道。控えめ→凶悪へ。雌の胸は貧→巨)。
 const _COCK_GOBLIN := ["ずんぐりした太茎", "逞しい一物", "凶悪な巨根", "馬のような剛直"]

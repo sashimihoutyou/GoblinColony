@@ -22,6 +22,8 @@ const CHATTER_CATEGORIES := [
 	"nursery_human",
 	# 捕虜つがいの種族別 (ゴブリン捕虜=バカっぽい / 人間捕虜=普通の口調)。
 	"concubine_gm", "concubine_gf", "pending_bond_gm", "pending_bond_gf",
+	# 人間 (アミナ/承認済み捕虜) の状態別・普通口調 (ゴブリンのバカ口調と対比)。
+	"hungry_h", "sleep_h", "work_h", "wander_h", "fear_h",
 ]
 
 const EVENT_KEYS := [
