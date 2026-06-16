@@ -88,6 +88,9 @@ var _accum_ms: float = 0.0
 var sel_kind: int = SelKind.NONE
 var sel_id: int = -1   # GOBLIN/ENEMY: ユニット id。ROOM: world.map.rooms のインデックス
 var _forage_feed_count: int = 0  # T4: 採集フィードの間引き (4 回に 1 回だけ流す)
+# 苗床の累計出産 (母体種族別。演出ローカル・どの苗床母体が何を産んだか可視化する)。
+var _nursery_born_goblin: int = 0
+var _nursery_born_human: int = 0
 # 奇跡のターゲティング (演出/入力ローカル。シム・セーブに含めない)。
 # _armed = 武装中の奇跡 (Controller.Miracle の値 / -1 = 非武装)。武装中は
 # 左クリックが選択でなく対象指定になる。Esc/右クリック/残高切れで解除。
@@ -548,9 +551,11 @@ func _push_feed_event(e: Dictionary) -> void:
 			var mm := _find_goblin(int(e.get("m", -1)))
 			var mfn: String = GobNames.of(mf) if mf != null else "雌ゴブリン"
 			var mmn: String = GobNames.of(mm) if mm != null else "雄ゴブリン"
-			# R-18 ON ならつがい成立の瞬間を露骨な地の文に ({name}=雌・{other}=雄で雄を能動側に)。
-			# OFF/データ不在は通常文面 (variant から散らす) へ。
-			var mtext := TextDB.compose("mating_explicit_pair", _conv_rng, {"name": mfn, "other": mmn}) if _explicit_on else ""
+			# R-18 ON ならつがい成立の瞬間を露骨な地の文に ({name}=雌・{other}=雄で雄を能動側に。
+			# {fpre}/{mpre} に種族接頭辞を渡し異種を示す)。OFF/データ不在は通常文面 (variant) へ。
+			var mtext := TextDB.compose("mating_explicit_pair", _conv_rng, {
+					"name": mfn, "other": mmn,
+					"fpre": _species_prefix(mf), "mpre": _species_prefix(mm)}) if _explicit_on else ""
 			if mtext == "":
 				mtext = TextDB.msg_pick("mating", _conv_rng, {"name": mfn, "other": mmn})
 			_push_feed("love", mtext, int(e.get("f", -1)))
@@ -679,7 +684,15 @@ func _push_feed_event(e: Dictionary) -> void:
 		"approve_bond":
 			_push_feed("love", TextDB.msg_pick("approve_bond", _conv_rng), int(e.get("id", -1)))
 		"birth_nursery":
-			_push_feed("birth", TextDB.msg_pick("birth_nursery", _conv_rng, {"count": int(e.get("count", 1))}))
+			# 母体の種族を明示する (どの苗床母体が産んだか分かるように) + 累計を記録。
+			var bn_human: bool = e.get("human", false)
+			var bn_count := int(e.get("count", 1))
+			if bn_human:
+				_nursery_born_human += bn_count
+			else:
+				_nursery_born_goblin += bn_count
+			var bn_key := "birth_nursery_human" if bn_human else "birth_nursery_goblin"
+			_push_feed("birth", TextDB.msg_pick(bn_key, _conv_rng, {"count": bn_count}))
 
 const FEED_COLORS := {
 	"raid": "e06a50", "event": "e8943a", "birth": "9adb6e",
@@ -744,72 +757,166 @@ func _nursery_active() -> bool:
 			return true
 	return false
 
-## 苗床アンビエンスを 1 行返す。R-18 ON のときは露骨な地の文 (nursery_explicit) を合成し、
-## それ以外は通常の nursery 台詞表から引く ({name} は見物役の生きた成体を 1 体充てる /
-## 地の文・母体台詞は {name} を使わない)。演出 RNG のみ消費 (KI-09)。
+## 苗床アンビエンスを 1 行返す。母体の種族 (ゴブリン/人間) で文面を分ける — 人間母体が居れば
+## 人間版 (nursery_human / R-18 nursery_explicit_human)、両方居れば確率で振る。R-18 ON のときは
+## 露骨な地の文を合成、それ以外は台詞表から引く ({name} は見物役の生きた成体 1 体。地の文・母体
+## 台詞は {name} を使わない)。演出 RNG のみ消費 (KI-09)。
 func _nursery_line(pool: Array) -> String:
+	var human_host: bool = world.params.human_nursery_allowed and world.cap_female_human >= 1.0
+	var goblin_host: bool = world.cap_female_goblin >= 1.0
+	# 人間母体が居て、ゴブリン母体が居ない or コイン表なら人間版を出す。
+	var use_human := human_host and (not goblin_host or _conv_rng.randf() < 0.5)
 	if _explicit_on:
-		var ex := TextDB.compose("nursery_explicit", _conv_rng, {})
+		var ex := TextDB.compose("nursery_explicit_human" if use_human else "nursery_explicit", _conv_rng, {})
 		if ex != "":
 			return ex
 	var who := ""
 	if not pool.is_empty():
 		who = GobNames.of(pool[_conv_rng.randi() % pool.size()])
-	return TextDB.pick_chatter("nursery", _conv_rng, {"name": who})
+	var cat := "nursery_human" if use_human else "nursery"
+	if TextDB.chatter_lines(cat).is_empty():
+		cat = "nursery"
+	return TextDB.pick_chatter(cat, _conv_rng, {"name": who})
 
 ## 個体の観測状態から会話カテゴリを決め、セリフ表 (data/dialogue.json) から 1 行引く。
 ## セリフ本体は JSON を編集するだけで増減できる。候補は演出 RNG (_conv_rng) で選び、
 ## シム RNG (world.rng) は一切消費しない (KI-09)。
 func _conversation_line(g: Goblin, who: String) -> String:
-	# 一過性の重要状態を上位優先で判定する。寝床・交尾・捕虜系は性別で台詞を分け、
-	# 発言者の性別と矛盾しないようにする (_pick_gendered が _m/_f を選ぶ)。
+	# 一過性の重要状態を上位優先で判定する。寝床・交尾・捕虜系は性別・種族で台詞を分け、
+	# 発言者の性別と矛盾しないようにする。身体特性 {cock}/{bust} は全行で差し込める。
+	var f := _chat_fields(g, who)  # {name}/{cock}(雄)/{bust}(雌)。id 由来で個体ごと一貫。
 	if g.is_child():
-		return TextDB.pick_chatter("child", _conv_rng, {"name": who})
+		return TextDB.pick_chatter("child", _conv_rng, f)
 	if g.pregnant:
-		# 妊娠は雌のみ。pregnant は雌声で書かれているのでサフィックス不要。
-		return TextDB.pick_chatter("pregnant", _conv_rng, {"name": who})
+		# 妊娠は雌のみ。母体と種主 (mate_id=父) の種族で台詞を分ける (異種=半人半ゴブリン)。
+		return _pick_pair_chatter("pregnant", g, _find_goblin(g.mate_id), who)
 	if g.mating_ticks >= 0:
-		# R-18 ON は性別別の露骨な地の文を合成する (雄=能動 mating_explicit_m /
-		# 雌=受け mating_explicit_f)。成体のつがいのみ・子供は上で除外済み。
+		# 交尾の相手は courting_id が指す (寝床へ留めるため完了/中断まで保持される)。
+		var partner := _find_goblin(g.courting_id)
+		# R-18 ON は性別・種族別の露骨な地の文を合成する (雄=能動 / 雌=受け、相手呼称 {mate})。
+		# 成体のつがいのみ・子供は上で除外済み。
 		if _explicit_on:
-			var ex_key := "mating_explicit_f" if g.sex == Goblin.Sex.FEMALE else "mating_explicit_m"
-			var ex := TextDB.compose(ex_key, _conv_rng, {"name": who})
+			var ex := _mating_explicit(g, partner, who)
 			if ex != "":
 				return ex
-		return _pick_gendered("mating", g, who)
+		return _pick_pair_chatter("mating", g, partner, who)
 	if g.courting_id >= 0:
-		return _pick_gendered("courting", g, who)
+		return _pick_pair_chatter("courting", g, _find_goblin(g.courting_id), who)
 	if g.pending_bond:
-		return _pick_gendered("pending_bond", g, who)  # つがい承認待ちの捕虜/娶り主
+		return _pick_gendered_species("pending_bond", g, who)  # つがい承認待ち (種族で口調を分ける)
 	match g.state:
 		Goblin.State.HUNGRY:
-			return TextDB.pick_chatter("hungry", _conv_rng, {"name": who})
+			return TextDB.pick_chatter("hungry", _conv_rng, f)
 		Goblin.State.SLEEP:
-			return TextDB.pick_chatter("sleep", _conv_rng, {"name": who})
+			return TextDB.pick_chatter("sleep", _conv_rng, f)
 		Goblin.State.WORK:
-			return TextDB.pick_chatter("work", _conv_rng, {"name": who})
+			return TextDB.pick_chatter("work", _conv_rng, f)
 		Goblin.State.FEAR:
-			return TextDB.pick_chatter("fear", _conv_rng, {"name": who})
+			return TextDB.pick_chatter("fear", _conv_rng, f)
 		Goblin.State.COMBAT:
-			return TextDB.pick_chatter("combat", _conv_rng, {"name": who})
+			return TextDB.pick_chatter("combat", _conv_rng, f)
 		Goblin.State.ENRAGED:
-			return TextDB.pick_chatter("enraged", _conv_rng, {"name": who})
+			return TextDB.pick_chatter("enraged", _conv_rng, f)
 		_:
 			# WANDER ほか: 側室は捕虜暮らしの台詞、隣に誰かいれば 2 体の雑談、いなければ環境フレーバー。
 			if g.role == Goblin.Role.CONCUBINE:
-				return _pick_gendered("concubine", g, who)
+				return _pick_gendered_species("concubine", g, who)  # 種族で口調を分ける
 			var other := _nearby_chatter(g)
 			if other != null:
-				return TextDB.pick_chatter("chatter_pair", _conv_rng, {"name": who, "other": GobNames.of(other)})
-			return TextDB.pick_chatter("wander", _conv_rng, {"name": who})
+				var pf := _chat_fields(g, who)
+				pf["other"] = GobNames.of(other)
+				return TextDB.pick_chatter("chatter_pair", _conv_rng, pf)
+			return TextDB.pick_chatter("wander", _conv_rng, f)
+
+# 身体特性の描写語 (id 由来・小柄＋不釣り合いな巨根の王道。控えめ→凶悪へ。雌の胸は貧→巨)。
+const _COCK_GOBLIN := ["ずんぐりした太茎", "逞しい一物", "凶悪な巨根", "馬のような剛直"]
+const _COCK_HUMAN := ["雄々しい肉茎", "長大な逸物", "猛々しい剛直"]
+const _BUST_DESC := ["慎ましい乳", "豊かな乳房", "たわわな巨乳"]
+
+## 雄の竿の描写語 (id 由来で決定的・種族別)。雄でなければ ""。
+func _cock_desc(g: Goblin) -> String:
+	if g == null or g.sex != Goblin.Sex.MALE:
+		return ""
+	var e := Goblin.endowment(g.id)
+	if g.species == Goblin.Species.HUMAN:
+		return _COCK_HUMAN[mini(int(e * _COCK_HUMAN.size()), _COCK_HUMAN.size() - 1)]
+	return _COCK_GOBLIN[mini(int(e * _COCK_GOBLIN.size()), _COCK_GOBLIN.size() - 1)]
+
+## 雌の胸の描写語 (id 由来で決定的)。雌でなければ ""。
+func _bust_desc(g: Goblin) -> String:
+	if g == null or g.sex != Goblin.Sex.FEMALE:
+		return ""
+	var b := Goblin.bust(g.id)
+	return _BUST_DESC[mini(int(b * _BUST_DESC.size()), _BUST_DESC.size() - 1)]
+
+## chatter の差し込みフィールド: 話者名 {name} + 話者の身体特性 (雄={cock} / 雌={bust})。
+## id 由来で決定的 (Goblin.endowment/bust)。該当しない性別では "" (台詞側が使わない)。
+func _chat_fields(g: Goblin, who: String) -> Dictionary:
+	return {"name": who, "cock": _cock_desc(g), "bust": _bust_desc(g)}
+
+## 話者の種族 + 性別でカテゴリを選ぶ (ゴブリン=<base>_g<sex> / 人間=<base>_h<sex>)。無ければ
+## <base>_<sex> → <base> へフォールバック。ゴブリンはバカっぽく、人間は普通に喋る分離に使う
+## (捕虜つがい系。ゴブリン捕虜=dumb / 人間捕虜=articulate)。演出 RNG のみ消費 (KI-09)。
+func _pick_gendered_species(base: String, g: Goblin, who: String) -> String:
+	var s := _species_tag(g)
+	var x := "m" if g.sex == Goblin.Sex.MALE else "f"
+	for key in [base + "_" + s + x, base + "_" + x, base]:
+		if not TextDB.chatter_lines(key).is_empty():
+			return TextDB.pick_chatter(key, _conv_rng, _chat_fields(g, who))
+	return TextDB.pick_chatter(base, _conv_rng, _chat_fields(g, who))
 
 ## 性別サフィックス (_m=雄 / _f=雌) 付きカテゴリを優先し、無ければ基底へフォールバックする。
 ## 発言者の性別と台詞が矛盾しないようにするための共通ヘルパ (演出 RNG のみ消費 / KI-09)。
 func _pick_gendered(base: String, g: Goblin, who: String) -> String:
 	var suffix := "_f" if g.sex == Goblin.Sex.FEMALE else "_m"
 	if not TextDB.chatter_lines(base + suffix).is_empty():
-		return TextDB.pick_chatter(base + suffix, _conv_rng, {"name": who})
-	return TextDB.pick_chatter(base, _conv_rng, {"name": who})
+		return TextDB.pick_chatter(base + suffix, _conv_rng, _chat_fields(g, who))
+	return TextDB.pick_chatter(base, _conv_rng, _chat_fields(g, who))
+
+## 種族タグ ("g"=ゴブリン / "h"=人間)。null は "g" 扱い (相手不在時の安全側)。
+func _species_tag(g: Goblin) -> String:
+	return "h" if (g != null and g.species == Goblin.Species.HUMAN) else "g"
+
+## 種族 + 性別 + 相手種族でカテゴリを選び、最も具体的なものから順にフォールバックする。
+## 例: 雄ゴブリン×人間雌 → mating_gm_h → (無ければ) mating_m → mating。人間話者は必ず
+## 人間カテゴリ (mating_hm_g 等) を用意してあるのでゴブリン声へは落ちない。{name} のみ渡す。
+## 発言者の性別・種族と台詞が矛盾しないようにするための共通ヘルパ (演出 RNG のみ / KI-09)。
+func _pick_pair_chatter(base: String, g: Goblin, partner: Goblin, who: String) -> String:
+	var s := _species_tag(g)
+	var x := "m" if g.sex == Goblin.Sex.MALE else "f"
+	var p := _species_tag(partner)
+	for key in ["%s_%s%s_%s" % [base, s, x, p], "%s_%s%s" % [base, s, x], "%s_%s" % [base, x], base]:
+		if not TextDB.chatter_lines(key).is_empty():
+			return TextDB.pick_chatter(key, _conv_rng, _chat_fields(g, who))
+	return TextDB.pick_chatter(base, _conv_rng, _chat_fields(g, who))
+
+## R-18 交尾の地の文を、話者の性別・種族で文法を選び、相手の呼称 {mate} を差し込んで合成する。
+## ゴブリン話者は mating_explicit_m/f、人間話者は mating_explicit_hm/hf。失敗時は "" (通常文面へ)。
+func _mating_explicit(g: Goblin, partner: Goblin, who: String) -> String:
+	var key: String
+	if g.species == Goblin.Species.HUMAN:
+		key = "mating_explicit_hf" if g.sex == Goblin.Sex.FEMALE else "mating_explicit_hm"
+	else:
+		key = "mating_explicit_f" if g.sex == Goblin.Sex.FEMALE else "mating_explicit_m"
+	# {cock}/{bust}=話者自身の身体、{mate_cock}=相手(雄)の竿、{mate}=相手の呼称。
+	# いずれも id 由来で決定的 (同じ個体は常に同じ描写)。
+	return TextDB.compose(key, _conv_rng, {
+		"name": who, "mate": _mate_descriptor(partner),
+		"cock": _cock_desc(g), "bust": _bust_desc(g),
+		"mate_cock": _cock_desc(partner)})
+
+## R-18 地の文用の相手呼称 (性別 × 種族)。相手不在なら汎用語。
+func _mate_descriptor(partner: Goblin) -> String:
+	if partner == null:
+		return "相手"
+	var male := partner.sex == Goblin.Sex.MALE
+	if partner.species == Goblin.Species.HUMAN:
+		return "人間の男" if male else "人間の女"
+	return "雄" if male else "雌"
+
+## つがい両者 (pair) 用の種族接頭辞 ("" か "人間の ")。R-18 のフィード文面で種族を示す。
+func _species_prefix(g: Goblin) -> String:
+	return "人間の " if (g != null and g.species == Goblin.Species.HUMAN) else ""
 
 ## 近くで雑談できる相手 (チェビシェフ距離 1 の生きている別個体) を 1 体返す。なければ null。
 func _nearby_chatter(g: Goblin) -> Goblin:
@@ -1158,7 +1265,9 @@ func _update_inspector() -> void:
 			_inspector.text = _INSPECTOR_HELP
 
 func _update_inspector_goblin(g: Goblin) -> void:
-	var sex_jp := "♀ 雌" if g.sex == Goblin.Sex.FEMALE else "♂ 雄"
+	# 人間個体 (捕虜由来の側室・苗床母体・アミナ) は種族を明示する (異種つがいの演出 / §14)。
+	var species_jp := "人間 " if g.species == Goblin.Species.HUMAN else ""
+	var sex_jp := species_jp + ("♀ 雌" if g.sex == Goblin.Sex.FEMALE else "♂ 雄")
 	var age_days := float(world.tick - g.born_tick) / float(params.ticks_per_day)
 	var state_hex: String = STATE_HEX.get(g.state, "8a7d68")
 	var lines: Array = []
@@ -1663,9 +1772,29 @@ func _update_captive_ui() -> void:
 	if _captive_toggle_button != null:
 		_captive_toggle_button.text = "捕虜▲" if _captive_panel.visible else "捕虜▼"
 	if _captive_panel.visible:
-		_captive_info.text = "捕虜 — ゴブリン 雄%d 雌%d / 人間 雄%d 雌%d" % [
+		var info := "捕虜 — ゴブリン 雄%d 雌%d / 人間 雄%d 雌%d" % [
 			int(world.cap_male_goblin), int(world.cap_female_goblin),
 			int(world.cap_male_human), int(world.cap_female_human)]
+		# 苗床の母体ステータス: 稼働中なら雌捕虜が母体になっている内訳と累計出産を出す
+		# (個体は抽象カウントなので「種族×頭数」で誰がどうなったかを示す)。
+		var has_nursery := false
+		for r in world.map.rooms:
+			if r.room_type == TileMapData.RoomType.NURSERY:
+				has_nursery = true
+				break
+		if has_nursery:
+			var host_g := int(world.cap_female_goblin)
+			var host_h := int(world.cap_female_human) if world.params.human_nursery_allowed else 0
+			if host_g + host_h > 0:
+				info += "\n🍼 苗床の母体: 雌ゴブ%d・雌人間%d が孕み中" % [host_g, host_h]
+			else:
+				info += "\n🍼 苗床は空 (雌捕虜を母体にできる)"
+			if _nursery_born_goblin + _nursery_born_human > 0:
+				info += "\n  これまで苗床で ゴブ母から%d・人母から%d 匹" % [
+					_nursery_born_goblin, _nursery_born_human]
+		elif world.cap_female_goblin + world.cap_female_human >= 1.0:
+			info += "\n雌捕虜は苗床部屋を建てると母体にできる"
+		_captive_info.text = info
 		_concubine_button.disabled = sel_kind != SelKind.GOBLIN
 		_gem_row.visible = world.gems >= 1.0
 		_gem_tribute_button.text = "宝石 %d を人間へ献上" % int(world.params.gems_tribute_amount)

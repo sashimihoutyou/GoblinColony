@@ -21,10 +21,14 @@ enum State {
 
 enum Role { NONE = 0, SHAMAN = 1, CHIEF = 2, WITCH_DOCTOR = 3, NURSERY_HOST = 4, CONCUBINE = 5, GUARD = 6 }
 enum Sex { MALE = 0, FEMALE = 1 }
+# 種族 (§14: 異種つがい/苗床の演出に使う)。捕虜由来の個体 (側室・苗床母体) が人間か
+# ゴブリンかを保持する。既定 GOBLIN。苗床産まれの仔は母体の種を問わず GOBLIN。
+enum Species { GOBLIN = 0, HUMAN = 1 }
 enum Origin { FOUNDER = 0, BORN = 1, NURSERY = 2, SUMMONED = 3, CAPTIVE_JOINED = 4, CONCUBINE = 5 }
 
 var id: int = 0
 var sex: int = Sex.MALE
+var species: int = Species.GOBLIN
 var state: int = State.WANDER
 var role: int = Role.NONE
 var hp: float = 10.0
@@ -123,9 +127,24 @@ static func compatibility(a: Goblin, b: Goblin) -> float:
 	var mixed: int = ((lo + 1) * 2246822519) ^ ((hi + 1) * 3266489917)
 	return float((mixed & 0xFFFFFFFF) % 1000) / 1000.0
 
+## 身体特性 (0..1) を id から決定的に導く (演出専用・sim 非参加・保存不要 / KI-09)。
+## charmSeed/compatibility とは独立した混合。竿サイズ (雄) / 胸サイズ (雌) の個体差を
+## セッションをまたいで一貫させる (同じ id は常に同じ値)。台詞・地の文の描写に使う。
+static func endowment(gid: int) -> float:
+	var s: int = (gid * 2246822519 + 374761393) & 0xFFFFFFFF
+	s = (s ^ (s >> 15)) & 0xFFFFFFFF
+	s = (s * 2654435761) & 0xFFFFFFFF
+	return float(((s ^ (s >> 13)) & 0xFFFFFFFF) % 1000) / 1000.0
+
+static func bust(gid: int) -> float:
+	var s: int = (gid * 3266489917 + 668265263) & 0xFFFFFFFF
+	s = (s ^ (s >> 16)) & 0xFFFFFFFF
+	s = (s * 2246822519) & 0xFFFFFFFF
+	return float(((s ^ (s >> 13)) & 0xFFFFFFFF) % 1000) / 1000.0
+
 func snapshot() -> Dictionary:
 	return {
-		"id": id, "sex": sex, "state": state, "role": role,
+		"id": id, "sex": sex, "species": species, "state": state, "role": role,
 		"hp": hp, "max_hp": max_hp, "hunger": hunger, "sleepiness": sleepiness,
 		"fear_hp_bias": fear_hp_bias, "hunger_bias": hunger_bias,
 		"work_bias": work_bias, "forage_bias": forage_bias,

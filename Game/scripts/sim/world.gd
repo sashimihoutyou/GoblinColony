@@ -2316,6 +2316,7 @@ func take_concubine(suitor_id: int, captive_sex: int, captive_is_human: bool) ->
 	concubine.id = next_goblin_id
 	next_goblin_id += 1
 	concubine.sex = captive_sex
+	concubine.species = Goblin.Species.HUMAN if captive_is_human else Goblin.Species.GOBLIN
 	concubine.role = Goblin.Role.CONCUBINE
 	concubine.origin = Goblin.Origin.CONCUBINE
 	concubine.max_hp = 8.0 if captive_sex == Goblin.Sex.FEMALE else 10.0
@@ -2389,8 +2390,9 @@ func _step_captive_bonding() -> void:
 	# (a) 未娶の捕虜を個体化して pending_bond の側室として加える。
 	var suitor: Goblin = eligible[rng.next_int(eligible.size())]
 	var want_sex := Goblin.Sex.FEMALE if suitor.sex == Goblin.Sex.MALE else Goblin.Sex.MALE  # 異性
-	# 捕虜カテゴリから 1 消費 (ゴブリン優先、なければ人間)。
+	# 捕虜カテゴリから 1 消費 (ゴブリン優先、なければ人間)。消費元で種族を決める。
 	var consumed := false
+	var lover_is_human := false
 	if want_sex == Goblin.Sex.FEMALE and cap_female_goblin >= 1.0:
 		cap_female_goblin -= 1.0
 		consumed = true
@@ -2400,9 +2402,11 @@ func _step_captive_bonding() -> void:
 	elif want_sex == Goblin.Sex.FEMALE and cap_female_human >= 1.0:
 		cap_female_human -= 1.0
 		consumed = true
+		lover_is_human = true
 	elif want_sex == Goblin.Sex.MALE and cap_male_human >= 1.0:
 		cap_male_human -= 1.0
 		consumed = true
+		lover_is_human = true
 	if not consumed:
 		return  # 該当する捕虜が居ない
 
@@ -2410,6 +2414,7 @@ func _step_captive_bonding() -> void:
 	lover.id = next_goblin_id
 	next_goblin_id += 1
 	lover.sex = want_sex
+	lover.species = Goblin.Species.HUMAN if lover_is_human else Goblin.Species.GOBLIN
 	lover.role = Goblin.Role.CONCUBINE
 	lover.origin = Goblin.Origin.CONCUBINE
 	lover.max_hp = 8.0 if want_sex == Goblin.Sex.FEMALE else 10.0
@@ -2504,6 +2509,7 @@ func _step_amina() -> void:
 	# _movement_target の既存分岐で非戦闘になる。is_unique は事故死無効のみに効く)。
 	var amina := _make_goblin(Goblin.Sex.FEMALE, Goblin.Role.NONE, Goblin.Origin.CAPTIVE_JOINED)
 	amina.is_unique = true
+	amina.species = Goblin.Species.HUMAN  # アミナは人間の少女 (§14)
 	_place(amina, _random_nest_floor())
 	goblins.append(amina)
 	amina_goblin_id = amina.id
@@ -2622,14 +2628,14 @@ func _step_nursery() -> void:
 
 	# ゴブリン母体ぶん (基準レート)。確定生産で子を追加 (成長ラグ付き §2.5)。
 	var goblin_born := int(floor(goblin_hosts * params.nursery_yield_per_captive))
-	_birth_nursery_children(goblin_born, 0)
+	_birth_nursery_children(goblin_born, 0, false)  # ゴブリン母体
 	# 苗床は産み手を緩やかに消耗する (§2.5 即物性)。
 	cap_female_goblin = max(0.0, cap_female_goblin - float(goblin_born) * params.nursery_captive_consume)
 
 	# 人間母体ぶん (大柄ゆえ多産 = 倍率を乗せる)。多産のぶん消耗も速く、人間雌捕虜は
 	# 「速いが続かない」高価値な産み手になる (KI-17 の死蔵を解消)。
 	var human_born := int(floor(human_hosts * params.nursery_yield_per_captive * params.human_nursery_yield_factor))
-	_birth_nursery_children(human_born, goblin_born)  # k オフセットで性別パターンを分離
+	_birth_nursery_children(human_born, goblin_born, true)  # 人間母体 (k オフセットで性別パターンを分離)
 	cap_female_human = max(0.0, cap_female_human - float(human_born) * params.nursery_captive_consume)
 	# 人間の胎を仔産み機にする残虐が人間勢力の憎悪を募らせる (§13)。
 	if human_born > 0:
@@ -2640,7 +2646,7 @@ func _step_nursery() -> void:
 ## 性別は tick と (k+kOffset) から決定的に決め、出生比 (雌 30%) に寄せる
 ## (rng を持たないため / スナップショット不変。world.ts birthNurseryChildren と同式)。
 ## 苗床部屋の床タイルへ配置する (_room_slot は rng を消費しない)。
-func _birth_nursery_children(count: int, k_offset: int) -> void:
+func _birth_nursery_children(count: int, k_offset: int, host_human: bool = false) -> void:
 	for k in range(count):
 		# JS の ToInt32 (32bit へ切り詰めてから XOR) を模す: 各乗算結果を 32bit へ
 		# マスクしてから XOR する (world.ts: ((tick*2654435761) ^ ((k+kOffset)*40503)) >>> 0)。
@@ -2676,7 +2682,7 @@ func _birth_nursery_children(count: int, k_offset: int) -> void:
 		goblins.append(child)
 		births_total += 1
 	if count > 0:
-		_event({"t": "birth_nursery", "count": count})
+		_event({"t": "birth_nursery", "count": count, "human": host_human})
 
 # --- トーテムランク (§3 / P3-04) ---
 ## 累計信仰から導出する派生値 (保存しない = KI-09 セーフ)。減らない。
