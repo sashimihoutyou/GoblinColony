@@ -8,7 +8,9 @@
       "寝床の奥で {name} が{mate}の{target}を抱え込み、{cock}で{act}{intens}。",
       "{name} が{mate}の乳を{breast}、{cock}で{act}{intens}。{coda}",
       "{name} が{mate}の尻穴を{cock}で{anal}{intens}。{coda}",
-      "{name} は{soliloquy}"
+      "{name} は{soliloquy}",
+      "寝床で {name} が{mate}を{posture}、{cock}で{act}{intens}、「{cry}」と吠えた。",
+      "{name} が{cock}で{mate}を突きながら「{cry}」と唸る。"
     ],
     "posture": [
       "組み敷き",
@@ -70,6 +72,14 @@
       "二度三度と、{mate}の奥で果てている。",
       "{mate}の乳をしゃぶりながら、休みなく腰を振っている。",
       "{mate}の前と後ろを代わる代わる、巨根で犯している。"
+    ],
+    "cry": [
+      "でる、でるぞー！",
+      "おく、とどけ！",
+      "はらめ、はらめー！",
+      "もっと、しまれ！",
+      "うー！ きもちー！",
+      "にげるな！ もっと！"
     ]
   },
   "mating_explicit_f": {
@@ -79,7 +89,9 @@
       "{name} が{act}{intens}、{coda}",
       "藁の上、{name} は{posture}、{coda}",
       "{name} は尻穴まで{mate_cock}で{anal}、{coda}",
-      "寝床の奥で {name} が{soliloquy}"
+      "寝床の奥で {name} が{soliloquy}",
+      "{name} が{mate_cock}で{act}{intens}、「{cry}」とよがった。",
+      "寝床で {name} が「{cry}」と鳴きながら、{mate_cock}を締めつける。"
     ],
     "posture": [
       "{mate}に組み敷かれ",
@@ -134,6 +146,14 @@
       "繋がったまま、二度三度と果てている。",
       "{mate_cock}に貫かれて、白目を剥いている。",
       "乳を吸われ、尻まで暴かれて、よがり続けている。"
+    ],
+    "cry": [
+      "あう！ おく、くるー！",
+      "もっと…もっとぉ…",
+      "とけちゃう…！",
+      "タネ、ちょうだい…！",
+      "いい…いいー！",
+      "こわれちゃう…あう！"
     ]
   },
   "mating_explicit_hm": {
@@ -143,7 +163,8 @@
       "{name} が{mate}の乳を{breast}、{cock}で{act}{intens}。{coda}",
       "暗がりで {name} が{cock}で{act}{intens}、{coda}",
       "{name} が{mate}の尻を{cock}で{anal}{intens}。{coda}",
-      "{name} は{soliloquy}"
+      "{name} は{soliloquy}",
+      "暗がりで {name} が{cock}で{act}{intens}、「{cry}」と低く呻いた。"
     ],
     "posture": [
       "抱きすくめ",
@@ -189,6 +210,12 @@
       "{mate}を腕に閉じ込めて、離そうとしない。",
       "{mate}の奥で、二度三度と熱を放っている。",
       "{mate}の乳を味わいながら、ゆっくり腰を使っている。"
+    ],
+    "cry": [
+      "くっ…出すぞ…",
+      "止まらない…!",
+      "もう、離さない…",
+      "君の中に…!"
     ]
   },
   "mating_explicit_hf": {
@@ -197,7 +224,8 @@
       "{name} は{bust}を{breast}、{mate_cock}で{act}{intens}。{coda}",
       "暗がりで {name} が{act}{intens}、{coda}",
       "{name} は尻まで{mate_cock}で{anal}、{coda}",
-      "寝床の奥で {name} が{soliloquy}"
+      "寝床の奥で {name} が{soliloquy}",
+      "{name} が{mate_cock}で{act}{intens}、「{cry}」と声を漏らした。"
     ],
     "posture": [
       "{mate}に組み敷かれ",
@@ -240,6 +268,12 @@
       "{mate_cock}にすがって、二度三度と果てている。",
       "{mate}の熱に、我を忘れている。",
       "乳を含まれ、奥まで暴かれて喘いでいる。"
+    ],
+    "cry": [
+      "あ、ああ…!",
+      "もう、だめ…",
+      "奥、まで…!",
+      "こんなの、知らない…!"
     ]
   },
   "mating_explicit_pair": {
@@ -295,7 +329,8 @@
       "苗床で、孕まされた母体が{state}、{detail}。{coda}",
       "苗床で母体が{state}、{coda}",
       "苗床の泥の中、{detail}。{coda}",
-      "苗床の奥、{detail}。{coda}"
+      "苗床の奥、{detail}。{coda}",
+      "苗床の母体が「{cry}」と喘ぐなか、{detail}。{coda}"
     ],
     "state": [
       "重い腹を抱えて喘ぎ",
@@ -319,6 +354,12 @@
       "群れはこうして、数を増やしていく。",
       "群がる雄は、母体が音を上げても離れない。",
       "母体は力なく、それでも子を産み続けた。"
+    ],
+    "cry": [
+      "もう、むり…あう…",
+      "いっぱい…おなかに…",
+      "とけちゃう…",
+      "つぎ、だれ…?あう…"
     ]
   },
   "nursery_explicit_human": {
@@ -326,7 +367,8 @@
       "苗床で、人間の女が{state}、{detail}。{coda}",
       "苗床で人間の母体が{state}、{coda}",
       "苗床の泥の中、人間の女が{detail}。{coda}",
-      "苗床の奥で、人間の女が{detail}。{coda}"
+      "苗床の奥で、人間の女が{detail}。{coda}",
+      "苗床で人間の母体が「{cry}」とすすり泣くなか、{detail}。{coda}"
     ],
     "state": [
       "群がる雄に次々と組み敷かれ",
@@ -351,6 +393,12 @@
       "すすり泣きが、苗床の闇に溶けていく。",
       "群がる雄は、母体が音を上げても離れない。",
       "母体は力尽きるまで、仔を産まされ続けた。"
+    ],
+    "cry": [
+      "やめて…もう、許して…",
+      "ああ…また、注がれる…",
+      "もう、何も…考えられない…",
+      "お願い…休ませて…"
     ]
   }
 }
