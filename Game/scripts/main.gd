@@ -805,7 +805,14 @@ func _nursery_line(pool: Array) -> String:
 	var cat := "nursery_human" if use_human else "nursery"
 	if TextDB.chatter_lines(cat).is_empty():
 		cat = "nursery"
-	return TextDB.pick_chatter(cat, _conv_rng, {"name": who})
+	# {n}=群がる雄の人数フレーズ (同時輪姦の人数バリエーション。演出 RNG のみ)。
+	return TextDB.pick_chatter(cat, _conv_rng, {"name": who, "n": _count_phrase()})
+
+# 同時に群がる雄の人数フレーズ (演出ローカル・苗床の輪姦描写に差し込む)。
+const _COUNT_PHRASE := ["二匹の", "三匹の", "四匹の", "五匹の", "六匹の", "何匹もの", "群れじゅうの"]
+
+func _count_phrase() -> String:
+	return _COUNT_PHRASE[_conv_rng.randi() % _COUNT_PHRASE.size()]
 
 ## 個体の観測状態から会話カテゴリを決め、セリフ表 (data/dialogue.json) から 1 行引く。
 ## セリフ本体は JSON を編集するだけで増減できる。候補は演出 RNG (_conv_rng) で選び、
@@ -828,34 +835,51 @@ func _conversation_line(g: Goblin, who: String) -> String:
 			var ex := _mating_explicit(g, partner, who)
 			if ex != "":
 				return ex
-		return _pick_pair_chatter("mating", g, partner, who)
+		# 段階: 雌の mating_ticks/所要 で進行度を測り、終盤 (>=0.7) は中出し/孕ませの climax 台詞へ。
+		# 雄側は mating_ticks が 0 のままなので、つがいの雌 (自分 or 相手) の値で判定する。
+		var fem := g if g.sex == Goblin.Sex.FEMALE else partner
+		var prog := 0.0
+		if fem != null and world.params.mating_duration_ticks > 0:
+			prog = float(fem.mating_ticks) / float(world.params.mating_duration_ticks)
+		var base := "mating_climax" if prog >= 0.7 else "mating"
+		return _pick_pair_chatter(base, g, partner, who)
 	if g.courting_id >= 0:
 		return _pick_pair_chatter("courting", g, _find_goblin(g.courting_id), who)
 	if g.pending_bond:
 		return _pick_gendered_species("pending_bond", g, who)  # つがい承認待ち (種族で口調を分ける)
 	match g.state:
 		Goblin.State.HUNGRY:
-			return TextDB.pick_chatter("hungry", _conv_rng, f)
+			return _pick_shared("hungry", g, who)
 		Goblin.State.SLEEP:
-			return TextDB.pick_chatter("sleep", _conv_rng, f)
+			return _pick_shared("sleep", g, who)
 		Goblin.State.WORK:
-			return TextDB.pick_chatter("work", _conv_rng, f)
+			return _pick_shared("work", g, who)
 		Goblin.State.FEAR:
-			return TextDB.pick_chatter("fear", _conv_rng, f)
+			return _pick_shared("fear", g, who)
 		Goblin.State.COMBAT:
-			return TextDB.pick_chatter("combat", _conv_rng, f)
+			return _pick_shared("combat", g, who)
 		Goblin.State.ENRAGED:
-			return TextDB.pick_chatter("enraged", _conv_rng, f)
+			return _pick_shared("enraged", g, who)
 		_:
 			# WANDER ほか: 側室は捕虜暮らしの台詞、隣に誰かいれば 2 体の雑談、いなければ環境フレーバー。
 			if g.role == Goblin.Role.CONCUBINE:
 				return _pick_gendered_species("concubine", g, who)  # 種族で口調を分ける
+			# 人間 (アミナ/承認済み捕虜) は群れの雑談に混ざらず、普通の口調で独り言 (wander_h)。
+			if g.species == Goblin.Species.HUMAN:
+				return _pick_shared("wander", g, who)
 			var other := _nearby_chatter(g)
 			if other != null:
 				var pf := _chat_fields(g, who)
 				pf["other"] = GobNames.of(other)
 				return TextDB.pick_chatter("chatter_pair", _conv_rng, pf)
-			return TextDB.pick_chatter("wander", _conv_rng, f)
+			return _pick_shared("wander", g, who)
+
+## 状態別カテゴリを話者種族で引く。ゴブリンはバカ口調 (<cat>)、人間は普通口調 (<cat>_h があれば
+## それ・無ければ <cat> へフォールバック)。アミナ/承認済み人間捕虜がバカ化しないための分岐。
+func _pick_shared(cat: String, g: Goblin, who: String) -> String:
+	if g.species == Goblin.Species.HUMAN and not TextDB.chatter_lines(cat + "_h").is_empty():
+		return TextDB.pick_chatter(cat + "_h", _conv_rng, _chat_fields(g, who))
+	return TextDB.pick_chatter(cat, _conv_rng, _chat_fields(g, who))
 
 # 身体特性の描写語 (id 由来・小柄＋不釣り合いな巨根の王道。控えめ→凶悪へ。雌の胸は貧→巨)。
 const _COCK_GOBLIN := ["ずんぐりした太茎", "逞しい一物", "凶悪な巨根", "馬のような剛直"]
@@ -882,6 +906,25 @@ func _bust_desc(g: Goblin) -> String:
 ## id 由来で決定的 (Goblin.endowment/bust)。該当しない性別では "" (台詞側が使わない)。
 func _chat_fields(g: Goblin, who: String) -> Dictionary:
 	return {"name": who, "cock": _cock_desc(g), "bust": _bust_desc(g)}
+
+# 相手(雄)の竿サイズ(0..1)に応じた、受け手の反応フレーズ (サイズに合わせた反応)。控えめ→凶悪。
+const _COCK_REACT := ["ちょうどよくて", "ぐいぐい きて", "おくまで とどいて", "おおきすぎて"]
+
+## 相手(雄)の竿サイズに応じた、受け手の反応フレーズ。雄でなければ ""。
+func _cock_react(partner: Goblin) -> String:
+	if partner == null or partner.sex != Goblin.Sex.MALE:
+		return ""
+	var e := Goblin.endowment(partner.id)
+	return _COCK_REACT[mini(int(e * _COCK_REACT.size()), _COCK_REACT.size() - 1)]
+
+## mating/courting の差し込みに相手の身体を足す: 相手の竿 {mate_cock}・胸 {mate_bust}・
+## 竿サイズに応じた反応 {cock_react} (ペニス/バストサイズに合わせた反応・描写に使う)。
+func _pair_fields(g: Goblin, partner: Goblin, who: String) -> Dictionary:
+	var d := _chat_fields(g, who)
+	d["mate_cock"] = _cock_desc(partner)
+	d["mate_bust"] = _bust_desc(partner)
+	d["cock_react"] = _cock_react(partner)
+	return d
 
 ## 話者の種族 + 性別でカテゴリを選ぶ (ゴブリン=<base>_g<sex> / 人間=<base>_h<sex>)。無ければ
 ## <base>_<sex> → <base> へフォールバック。ゴブリンはバカっぽく、人間は普通に喋る分離に使う
@@ -914,10 +957,11 @@ func _pick_pair_chatter(base: String, g: Goblin, partner: Goblin, who: String) -
 	var s := _species_tag(g)
 	var x := "m" if g.sex == Goblin.Sex.MALE else "f"
 	var p := _species_tag(partner)
+	var fields := _pair_fields(g, partner, who)  # 自分+相手の身体・サイズ反応を差し込む
 	for key in ["%s_%s%s_%s" % [base, s, x, p], "%s_%s%s" % [base, s, x], "%s_%s" % [base, x], base]:
 		if not TextDB.chatter_lines(key).is_empty():
-			return TextDB.pick_chatter(key, _conv_rng, _chat_fields(g, who))
-	return TextDB.pick_chatter(base, _conv_rng, _chat_fields(g, who))
+			return TextDB.pick_chatter(key, _conv_rng, fields)
+	return TextDB.pick_chatter(base, _conv_rng, fields)
 
 ## R-18 交尾の地の文を、話者の性別・種族で文法を選び、相手の呼称 {mate} を差し込んで合成する。
 ## ゴブリン話者は mating_explicit_m/f、人間話者は mating_explicit_hm/hf。失敗時は "" (通常文面へ)。
@@ -927,12 +971,13 @@ func _mating_explicit(g: Goblin, partner: Goblin, who: String) -> String:
 		key = "mating_explicit_hf" if g.sex == Goblin.Sex.FEMALE else "mating_explicit_hm"
 	else:
 		key = "mating_explicit_f" if g.sex == Goblin.Sex.FEMALE else "mating_explicit_m"
-	# {cock}/{bust}=話者自身の身体、{mate_cock}=相手(雄)の竿、{mate}=相手の呼称。
-	# いずれも id 由来で決定的 (同じ個体は常に同じ描写)。
+	# {cock}/{bust}=話者自身の身体、{mate_cock}/{mate_bust}=相手の竿/胸、{cock_react}=相手の
+	# 竿サイズに応じた反応、{mate}=相手の呼称。いずれも id 由来で決定的 (同じ個体は常に同じ描写)。
 	return TextDB.compose(key, _conv_rng, {
 		"name": who, "mate": _mate_descriptor(partner),
 		"cock": _cock_desc(g), "bust": _bust_desc(g),
-		"mate_cock": _cock_desc(partner)})
+		"mate_cock": _cock_desc(partner), "mate_bust": _bust_desc(partner),
+		"cock_react": _cock_react(partner)})
 
 ## R-18 地の文用の相手呼称 (性別 × 種族)。相手不在なら汎用語。
 func _mate_descriptor(partner: Goblin) -> String:
