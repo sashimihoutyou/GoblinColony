@@ -13,6 +13,12 @@ const TARGET_RANCHERS := 3
 # 決めるため false にする (ヘッドレスの自動プレイでは true のまま)。
 var auto_dispatch: bool = true
 
+# 役職任命をプレイヤーに委ねるか (ハイブリッド操作版)。true の間はシャーマンの
+# 自動任命を止め、プレイヤーが役職任命パネル (main.gd) から手動で任命する。牧場補充・
+# 派遣・見張りの自動維持 (world._maintain_guards) はそのまま残す (触らない領域は AI 維持)。
+# ヘッドレスの自動プレイ / scene_smoke は false のまま (= 従来どおり信仰を絶やさない)。
+var manual_roles: bool = false
+
 func decide(world: World) -> void:
 	# §11.5 派遣: 出現物が湧いていて誰も向かっていなければ 2 体送る。
 	# 出現は日中の任意 tick なので、日次の見直しとは別に毎 tick 軽く走査する
@@ -54,6 +60,9 @@ func decide(world: World) -> void:
 
 	# シャーマン: 任命枠 (1 + トーテムランク §3) まで満たす。枠は上限であって
 	# 強制でない (KI-03) が、オートプレイは信仰を絶やさないため枠まで埋める。
+	# manual_roles 時はプレイヤーに委ねるので自動任命しない。
+	if manual_roles:
+		return
 	var shamans := 0
 	for g in world.goblins:
 		if g.role == Goblin.Role.SHAMAN:
