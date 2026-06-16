@@ -117,6 +117,22 @@ var _bond_banner: PanelContainer
 var _bond_label: Label
 var _bond_captive_id: int = -1  # バナーが対象にしている承認待ち側室の id
 
+# 役職任命パネル (操作の深み)。ゴブリン選択中だけ表示し、APPOINT_ROLE コマンドで
+# シャーマン/族長/まじない医を任命・解任する (枠超過/性別年齢不適は UI 側で抑止)。
+# 表示状態・ボタン参照は演出ローカル (シム・セーブに含めない / KI-09)。
+var _role_panel: PanelContainer
+var _role_info: Label
+var _role_buttons: Array = []  # Array[Dictionary] {btn, role}
+var _role_unassign_button: Button
+
+# 文脈駆動チュートリアル (オンボーディング・演出ローカル / KI-09)。平和な序盤に
+# 操作のヒントを 1 つずつ出す。autosave に載せない (復元後は既見扱いでスキップ)。
+var _tutorial_banner: PanelContainer
+var _tutorial_label: Label
+var _tutorial_seen: Array = []   # 表示済みヒントキー (Array[String])
+var _tutorial_hide_tick: int = -1  # このフレーム以降でバナーを自動的に畳む tick
+var _night_was_day: bool = true  # 直前フレームが昼だったか (夜入りの 1 回検出用)
+
 # 会話ログ (演出ローカル)。ON のときだけフレーバー会話を「巣の記録」に流す。既定 OFF で
 # ログが流れ続けるのを防ぐ。生成は演出専用 RNG (シム RNG を消費しない / KI-09)。
 var _conversation_on: bool = false
@@ -178,7 +194,11 @@ var _status_label: Label
 var _eta_label: Label
 var _inspector: RichTextLabel
 var _feed: RichTextLabel
-var _outcome_label: Label
+# 勝敗パネル (中央)。決着時に大見出し + 到達ルート + 統計 + 再挑戦ボタンを出す。
+var _outcome_panel: PanelContainer
+var _outcome_title: Label
+var _outcome_route: Label
+var _outcome_stats: Label
 var _speed_buttons: Array = []
 var _feed_lines: Array = []
 # 派遣パネル (§11.5: 出現物クリック → 頭数スライダー → 確定)
@@ -201,6 +221,9 @@ func _ready() -> void:
 	world.setup(params)
 	controller = AutoController.new()
 	(controller as AutoController).auto_dispatch = false
+	# 役職任命はプレイヤーに委ねる (ハイブリッド操作版)。牧場補充・派遣・見張りの
+	# 自動維持は AutoController/world が引き続き面倒を見る (controller.gd / KI 整合)。
+	(controller as AutoController).manual_roles = true
 
 	renderer = $Renderer
 	renderer.tile_size = 16
@@ -228,7 +251,10 @@ func _start_new_game(diff: int) -> void:
 	sel_kind = SelKind.NONE
 	sel_id = -1
 	_follow_id = -1
-	_outcome_label.visible = false
+	_outcome_panel.visible = false
+	_tutorial_seen.clear()
+	_tutorial_banner.visible = false
+	_night_was_day = true
 	_feed.clear()
 	_feed_lines.clear()
 	var diff_jp: String = ["易", "並", "難"][clampi(diff, 0, 2)]
@@ -311,6 +337,9 @@ func _process(delta: float) -> void:
 	_update_dispatch_panel()
 	_update_captive_ui()
 	_update_defense_panel()
+	_update_role_panel()
+	_update_tutorial()
+	_update_ambience()
 	# カメラ操作はシム停止中 (speed=0) でも独立して動く。
 	_process_keyboard_pan(delta)
 	_process_follow_camera(delta)
@@ -1214,18 +1243,31 @@ func _update_status() -> void:
 	for mb in _miracle_buttons:
 		var mdef: Dictionary = mb.def
 		(mb.btn as Button).disabled = (_armed != int(mdef.m)) and world.faith < _miracle_cost(mdef)
-	# 勝敗バナー。勝利時は到達ルート (§13 4 ルート / A3) を添える。
+	_update_outcome_panel()
+
+## 勝敗パネルの表示更新。決着 (VICTORY/DEFEAT) で見出し + 到達ルート (§13 / A3) +
+## 統計 (誕生/死/到達日) を出す。文面は messages.json の labels.ending から。
+func _update_outcome_panel() -> void:
+	if _outcome_panel == null:
+		return
+	if world.outcome == World.Outcome.ONGOING:
+		_outcome_panel.visible = false
+		return
 	if world.outcome == World.Outcome.VICTORY:
-		var route_txt: String = {
-			0: "ゴブリン連合は人間の総攻撃を退けた",
-			1: "敵でも友でもなく — 人間との和平が成った",
-			2: "宝石を差し出し、人間に飼われる道を選んだ",
-		}.get(world.ending_route(), "")
-		_outcome_label.text = "★ 勝利 — %s" % route_txt
-		_outcome_label.visible = true
-	elif world.outcome == World.Outcome.DEFEAT:
-		_outcome_label.text = "✖ 敗北"
-		_outcome_label.visible = true
+		_outcome_title.text = TextDB.label("ending", "victory_title", "★ 勝利")
+		_outcome_title.add_theme_color_override("font_color", C_EMBER_BRIGHT)
+		var route_key: String = ["route_repel", "route_peace", "route_tamed"][clampi(world.ending_route(), 0, 2)]
+		_outcome_route.text = TextDB.label("ending", route_key, "")
+	else:
+		_outcome_title.text = TextDB.label("ending", "defeat_title", "✖ 敗北")
+		_outcome_title.add_theme_color_override("font_color", C_BLOOD)
+		_outcome_route.text = TextDB.label("ending", "defeat_body", "")
+	_outcome_stats.text = TextDB.label("ending", "stats",
+		"{day} 日 · 誕生 {births} · 死 {deaths} · 頭数 {alive}").format({
+			"day": world.day, "births": world.births_total,
+			"deaths": world.deaths_total, "alive": world._alive_count(),
+		})
+	_outcome_panel.visible = true
 
 func _text_bar(frac: float, width: int) -> String:
 	var filled := int(round(frac * width))
@@ -1377,10 +1419,11 @@ func _build_ui() -> void:
 	diff_label.add_theme_color_override("font_color", C_INK_FAINT)
 	diff_label.add_theme_font_size_override("font_size", 12)
 	top_box.add_child(diff_label)
-	for cfg in [["易", 0], ["並", 1], ["難", 2]]:
+	for cfg in [["易", 0, "easy"], ["並", 1, "normal"], ["難", 2, "hard"]]:
 		var db := Button.new()
 		db.text = cfg[0]
 		db.add_theme_font_size_override("font_size", 12)
+		db.tooltip_text = TextDB.label("difficulty", cfg[2], "")
 		_style_button(db, false)
 		var lvl: int = cfg[1]
 		db.pressed.connect(func() -> void: _start_new_game(lvl))
@@ -1418,13 +1461,54 @@ func _build_ui() -> void:
 	vbox.add_child(_feed)
 	ui.add_child(right)
 
-	# --- 勝敗バナー (中央) ---
-	_outcome_label = Label.new()
-	_outcome_label.set_anchors_preset(Control.PRESET_CENTER)
-	_outcome_label.add_theme_font_size_override("font_size", 28)
-	_outcome_label.add_theme_color_override("font_color", C_EMBER_BRIGHT)
-	_outcome_label.visible = false
-	ui.add_child(_outcome_label)
+	# --- 勝敗パネル (中央)。決着時に見出し + ルート + 統計 + 再挑戦導線を出す ---
+	_outcome_panel = PanelContainer.new()
+	_outcome_panel.set_anchors_preset(Control.PRESET_CENTER)
+	_outcome_panel.offset_left = -260.0
+	_outcome_panel.offset_right = 260.0
+	_outcome_panel.offset_top = -110.0
+	_outcome_panel.offset_bottom = 110.0
+	_outcome_panel.add_theme_stylebox_override("panel", _panel_style())
+	_outcome_panel.visible = false
+	var obox := VBoxContainer.new()
+	obox.add_theme_constant_override("separation", 10)
+	obox.alignment = BoxContainer.ALIGNMENT_CENTER
+	_outcome_panel.add_child(obox)
+	_outcome_title = Label.new()
+	_outcome_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_outcome_title.add_theme_font_size_override("font_size", 28)
+	_outcome_title.add_theme_color_override("font_color", C_EMBER_BRIGHT)
+	obox.add_child(_outcome_title)
+	_outcome_route = Label.new()
+	_outcome_route.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_outcome_route.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_outcome_route.custom_minimum_size = Vector2(500, 0)
+	_outcome_route.add_theme_font_size_override("font_size", 14)
+	_outcome_route.add_theme_color_override("font_color", C_INK)
+	obox.add_child(_outcome_route)
+	_outcome_stats = Label.new()
+	_outcome_stats.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_outcome_stats.add_theme_font_size_override("font_size", 12)
+	_outcome_stats.add_theme_color_override("font_color", C_INK_DIM)
+	obox.add_child(_outcome_stats)
+	var orow := HBoxContainer.new()
+	orow.alignment = BoxContainer.ALIGNMENT_CENTER
+	orow.add_theme_constant_override("separation", 6)
+	var retry_label := Label.new()
+	retry_label.text = TextDB.label("ending", "retry", "新しい群れ:")
+	retry_label.add_theme_color_override("font_color", C_INK_FAINT)
+	retry_label.add_theme_font_size_override("font_size", 12)
+	orow.add_child(retry_label)
+	for cfg in [["易", 0], ["並", 1], ["難", 2]]:
+		var rb := Button.new()
+		rb.text = cfg[0]
+		rb.add_theme_font_size_override("font_size", 13)
+		_style_button(rb, false)
+		var lvl: int = cfg[1]
+		rb.pressed.connect(func() -> void: _start_new_game(lvl))
+		orow.add_child(rb)
+	obox.add_child(orow)
+	ui.add_child(_outcome_panel)
 
 	# --- 左下: 速度コントロール + 奇跡 (下段) / 建築 (上段) ---
 	# 2 本の HBox は高さを明示して横帯に分離する (offset_bottom 未設定だと両方とも
@@ -1675,6 +1759,63 @@ func _build_ui() -> void:
 	bbox.add_child(brow2)
 	ui.add_child(_bond_banner)
 
+	# --- 役職任命パネル (操作の深み)。ゴブリン選択中だけ表示。捕虜パネルの上の帯 ---
+	_role_panel = PanelContainer.new()
+	_role_panel.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	_role_panel.offset_left = -640.0
+	_role_panel.offset_right = -298.0
+	_role_panel.offset_top = -330.0
+	_role_panel.offset_bottom = -228.0
+	_role_panel.add_theme_stylebox_override("panel", _panel_style())
+	_role_panel.visible = false
+	var rbox := VBoxContainer.new()
+	rbox.add_theme_constant_override("separation", 4)
+	_role_panel.add_child(rbox)
+	rbox.add_child(_section_title("役 職 任 命"))
+	_role_info = Label.new()
+	_role_info.add_theme_color_override("font_color", C_INK)
+	_role_info.add_theme_font_size_override("font_size", 12)
+	rbox.add_child(_role_info)
+	var rrow := HBoxContainer.new()
+	rrow.add_theme_constant_override("separation", 4)
+	for cfg in [["シャーマン", Goblin.Role.SHAMAN], ["まじない医", Goblin.Role.WITCH_DOCTOR]]:
+		var rb := Button.new()
+		rb.text = cfg[0]
+		rb.add_theme_font_size_override("font_size", 11)
+		_style_button(rb, false)
+		var role_v: int = cfg[1]
+		rb.pressed.connect(func() -> void: _appoint_role(role_v))
+		rrow.add_child(rb)
+		_role_buttons.append({"btn": rb, "role": role_v})
+	_role_unassign_button = Button.new()
+	_role_unassign_button.text = "解任"
+	_role_unassign_button.add_theme_font_size_override("font_size", 11)
+	_style_button(_role_unassign_button, false)
+	_role_unassign_button.pressed.connect(func() -> void: _appoint_role(Goblin.Role.NONE))
+	rrow.add_child(_role_unassign_button)
+	rbox.add_child(rrow)
+	ui.add_child(_role_panel)
+
+	# --- チュートリアルバナー (オンボーディング・中央上)。平和な序盤にヒントを 1 つずつ ---
+	_tutorial_banner = PanelContainer.new()
+	_tutorial_banner.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_tutorial_banner.offset_left = -300.0
+	_tutorial_banner.offset_right = 300.0
+	_tutorial_banner.offset_top = 108.0
+	_tutorial_banner.offset_bottom = 156.0
+	_tutorial_banner.add_theme_stylebox_override("panel", _panel_style())
+	_tutorial_banner.visible = false
+	var tbox := VBoxContainer.new()
+	_tutorial_banner.add_child(tbox)
+	_tutorial_label = Label.new()
+	_tutorial_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_tutorial_label.custom_minimum_size = Vector2(580, 0)
+	_tutorial_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_tutorial_label.add_theme_color_override("font_color", C_EMBER_BRIGHT)
+	_tutorial_label.add_theme_font_size_override("font_size", 13)
+	tbox.add_child(_tutorial_label)
+	ui.add_child(_tutorial_banner)
+
 	# --- 防衛配分パネル (§3-17。襲撃 (予兆/交戦) の間だけ表示。中央下・派遣より上) ---
 	_defense_panel = PanelContainer.new()
 	_defense_panel.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
@@ -1814,6 +1955,108 @@ func _update_captive_ui() -> void:
 	_bond_label.text = "%s が捕虜の %s とつがいになりたがっている。" % [
 		GobNames.of(mate) if mate != null else "誰か", GobNames.of(pending)]
 	_bond_banner.visible = true
+
+# ════ 役職任命 (操作の深み) ════
+## 選択中ゴブリンの現役シャーマン数を数える (枠表示・自動任命と同じ集計)。
+func _shaman_count() -> int:
+	var n := 0
+	for g in world.goblins:
+		if g.role == Goblin.Role.SHAMAN:
+			n += 1
+	return n
+
+## 役職を任命/解任する。選択中ゴブリンへ APPOINT_ROLE コマンドを積む (controller.gd で
+## 即時反映)。妥当性 (性別/年齢/枠) はここで弾く (シム側の枠は強制でない / KI-03)。
+func _appoint_role(role: int) -> void:
+	var g := _find_goblin(sel_id) if sel_kind == SelKind.GOBLIN else null
+	if g == null:
+		return
+	if role != Goblin.Role.NONE:
+		if g.is_child():
+			_push_feed("event", "子どもには役職を任せられない。")
+			return
+		if g.is_unique:
+			_push_feed("event", "族長には別の役職を兼ねさせられない。")
+			return
+		if role == Goblin.Role.SHAMAN:
+			if g.sex != Goblin.Sex.MALE:
+				_push_feed("event", "シャーマンは雄の成体に限る。")
+				return
+			if g.role != Goblin.Role.SHAMAN and _shaman_count() >= world.shaman_slots():
+				_push_feed("event", "シャーマンの任命枠が埋まっている (トーテムのランクを上げると増える)。")
+				return
+	controller.queue.append({"type": Controller.CommandType.APPOINT_ROLE,
+			"goblin_id": g.id, "role": role})
+
+## 役職任命パネルの毎フレーム更新 (ゴブリン選択中だけ表示。枠超過/不適はボタン無効化)。
+func _update_role_panel() -> void:
+	if _role_panel == null:
+		return
+	var g := _find_goblin(sel_id) if sel_kind == SelKind.GOBLIN else null
+	# 子・族長・捕虜由来 (側室/苗床) は任命対象外なので隠す。
+	var targetable := g != null and not g.is_child() and not g.is_unique \
+			and g.role != Goblin.Role.CONCUBINE and g.role != Goblin.Role.NURSERY_HOST
+	_role_panel.visible = targetable
+	if not targetable:
+		return
+	var shamans := _shaman_count()
+	_role_info.text = "%s — 現在: %s   (シャーマン %d/%d 枠)" % [
+		GobNames.of(g), ROLE_JP.get(g.role, "?"), shamans, world.shaman_slots()]
+	for rbd in _role_buttons:
+		var role_v: int = rbd.role
+		var btn := rbd.btn as Button
+		var ok := g.role != role_v
+		if role_v == Goblin.Role.SHAMAN:
+			ok = ok and g.sex == Goblin.Sex.MALE and shamans < world.shaman_slots()
+		btn.disabled = not ok
+	_role_unassign_button.disabled = g.role == Goblin.Role.NONE
+
+# ════ 文脈駆動チュートリアル (オンボーディング・演出ローカル / KI-09) ════
+## 平和な序盤に操作ヒントを 1 つずつ出す。autosave 復元後は出さない (既見扱い)。
+## バナーは数秒で自動的に畳む (新しいヒントが来たら差し替え)。
+func _show_tutorial(key: String, text: String) -> void:
+	if _tutorial_seen.has(key) or text.is_empty():
+		return
+	_tutorial_seen.append(key)
+	_tutorial_label.text = text
+	_tutorial_banner.visible = true
+	# 約 12 実秒で自動的に畳む (speed に依らず実時間。tick で近似)。
+	_tutorial_hide_tick = world.tick + int(round(12.0 / (MS_PER_TICK / 1000.0)))
+
+func _update_tutorial() -> void:
+	if _tutorial_banner == null:
+		return
+	# 表示中のバナーを時間で畳む。
+	if _tutorial_banner.visible and _tutorial_hide_tick >= 0 and world.tick >= _tutorial_hide_tick:
+		_tutorial_banner.visible = false
+	if world.outcome != World.Outcome.ONGOING:
+		return
+	# 平和な間だけ序盤ヒントを順に出す (day はシムの確定値だが表示判断は演出ローカル)。
+	if world.phase == World.Phase.PEACE:
+		if world.day == 0:
+			_show_tutorial("day0_select", TextDB.label("tutorial", "day0_select"))
+		elif world.day == 1 and _tutorial_seen.has("day0_select"):
+			_show_tutorial("day0_role", TextDB.label("tutorial", "day0_role"))
+		elif world.day == 2 and _tutorial_seen.has("day0_role"):
+			_show_tutorial("day1_build", TextDB.label("tutorial", "day1_build"))
+		elif world.day == 3 and _tutorial_seen.has("day1_build"):
+			_show_tutorial("day2_dispatch", TextDB.label("tutorial", "day2_dispatch"))
+	# 最初の大襲撃が近づいたら 1 回だけ防衛のヒント。
+	if world.phase == World.Phase.PEACE and world.outcome == World.Outcome.ONGOING:
+		var days_left := float(world.next_big_raid_tick - world.tick) / float(params.ticks_per_day)
+		if days_left <= 1.0:
+			_show_tutorial("raid_incoming", TextDB.label("tutorial", "raid_incoming"))
+
+# ════ 夜の演出フィード (オンボーディング/雰囲気・演出ローカル) ════
+## 昼→夜の切り替わりを 1 回だけフィードに流す (夜は外征不可・就寝の合図)。
+func _update_ambience() -> void:
+	if world.outcome != World.Outcome.ONGOING:
+		_night_was_day = world.is_day()
+		return
+	var is_day := world.is_day()
+	if _night_was_day and not is_day:
+		_push_feed("event", TextDB.msg_pick("night_fall", _conv_rng, {}, ""))
+	_night_was_day = is_day
 
 # ════ 派遣パネル (§11.5) ════
 ## 出現物クリックで開く。スライダー上限は開いた時点の手すき頭数

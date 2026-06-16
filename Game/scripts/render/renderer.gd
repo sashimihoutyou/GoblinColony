@@ -17,6 +17,8 @@ var _world: World = null
 var _font: Font
 var _t: float = 0.0            # 演出時計 (実時間)
 var _night: float = 0.0        # 昼夜トーン (0=昼, 1=夜。滑らかに追従)
+var _flash: float = 0.0        # 全画面フラッシュの残量 (襲撃/勝敗。実時間で減衰。演出ローカル)
+var _flash_color: Color = Color("c0432e")  # フラッシュ色 (イベント種別で切替)
 var _sim_speed: float = 1.0    # 停止中は吐息など演出を止めるフラグ
 var _ticked: bool = false      # on_tick を一度でも経たか (初回フレームのフォールバック判定)
 
@@ -137,6 +139,9 @@ func render(world: World, delta: float, sim_speed: float, alpha: float) -> void:
 	# 昼夜トーンは常に滑らかに追従 (停止中も見た目は保持)。
 	var target := 0.0 if world.is_day() else 1.0
 	_night = lerpf(_night, target, minf(1.0, delta * 1.5))
+	# 全画面フラッシュは実時間で減衰 (停止中も自然に消える)。
+	if _flash > 0.0:
+		_flash = maxf(0.0, _flash - delta * 1.8)
 	queue_redraw()
 
 ## シムイベントを演出へ翻訳する (main が tick ごとに転送)。
@@ -199,6 +204,25 @@ func on_event(e: Dictionary) -> void:
 			if _world != null:
 				_burst(_tile_center(_world.map.storage), 4,
 					{"speed": 14.0, "up": 6.0, "life": 0.6, "size": 1.1, "color": COL_EMBER})
+		"raid":
+			# 襲撃開始: 画面全体を赤くフラッシュ (特大襲撃はより強く・長く)。
+			_flash = 1.6 if bool(e.get("final", false)) else 1.0
+			_flash_color = Color("c0432e")
+		"alarm":
+			# 見張りの警報 (夜襲): 短い赤フラッシュ。
+			_flash = maxf(_flash, 0.7)
+			_flash_color = Color("c0432e")
+		"victory":
+			# 勝利: 琥珀の祝祭バーストをトーテムから。
+			if _world != null:
+				_burst(_tile_center(_world.map.totem), 24,
+					{"speed": 44.0, "up": 20.0, "life": 1.4, "size": 1.8, "color": COL_EMBER})
+			_flash = 1.0
+			_flash_color = Color("ffb454")
+		"defeat":
+			# 敗北: 画面が暗く沈む一拍 (黒のフラッシュ)。
+			_flash = 1.4
+			_flash_color = Color(0.0, 0.0, 0.0)
 
 ## クリック位置 (ワールド座標) から最寄りの生存ゴブリン id を返す (-1 = なし)。
 func pick(world: World, pos: Vector2) -> int:
@@ -466,6 +490,18 @@ func _draw() -> void:
 		var grown: bool = (i < m.forage_regrow.size()) and m.forage_regrow[i] == 0
 		_draw_forage(_tile_center(m.forage_spots[i] as Vector2i), i, grown)
 
+	# --- 苗床の稼働マーカー (§3-19)。母体が孕み中 (nursery_timer>0) の間、
+	#     苗床部屋の中心に脈動する温かい輪を出す (個体ではなく抽象カウントの可視化) ---
+	if _world.nursery_timer > 0.0:
+		var npulse := 0.5 + 0.5 * sin(_t * 2.4)
+		for r in m.rooms:
+			if r.room_type != TileMapData.RoomType.NURSERY:
+				continue
+			var nc := Vector2((float(r.x) + float(r.w) / 2.0) * ts, (float(r.y) + float(r.h) / 2.0) * ts)
+			draw_arc(nc, ts * 0.6 + npulse * 2.0, 0, TAU, 20,
+				Color(0.91, 0.55, 0.62, 0.35 + 0.25 * npulse), 1.6)
+			draw_circle(nc, 2.2, Color(0.95, 0.72, 0.78, 0.6 + 0.3 * npulse))
+
 	# --- 破壊予告 (§3-20)。壁破壊役が狙う壁を脈動する警告色でハイライト ---
 	_draw_breach_warnings(ts)
 	# --- ジョブ指示 (§3-12) + 建築ゴースト (§3-15)。動的状態なので直接描く ---
@@ -517,6 +553,13 @@ func _draw() -> void:
 	# --- 昼夜トーン (夜は青く沈む) ---
 	if _night > 0.02:
 		draw_rect(Rect2(0, 0, m.width * ts, m.height * ts), Color(0.03, 0.055, 0.125, _night * 0.38), true)
+
+	# --- 全画面フラッシュ (襲撃開始/警報/勝敗。脈動しながら減衰) ---
+	if _flash > 0.02:
+		var pulse := 0.5 + 0.5 * sin(_t * 18.0)
+		var a := clampf(_flash, 0.0, 1.0) * (0.18 + 0.14 * pulse)
+		draw_rect(Rect2(0, 0, m.width * ts, m.height * ts),
+			Color(_flash_color.r, _flash_color.g, _flash_color.b, a), true)
 
 	# --- 交戦ヴィネット ---
 	if _world.phase == World.Phase.COMBAT:
