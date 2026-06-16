@@ -864,6 +864,25 @@ func _bust_desc(g: Goblin) -> String:
 func _chat_fields(g: Goblin, who: String) -> Dictionary:
 	return {"name": who, "cock": _cock_desc(g), "bust": _bust_desc(g)}
 
+# 相手(雄)の竿サイズ(0..1)に応じた、受け手の反応フレーズ (サイズに合わせた反応)。控えめ→凶悪。
+const _COCK_REACT := ["ちょうどよくて", "ぐいぐい きて", "おくまで とどいて", "おおきすぎて"]
+
+## 相手(雄)の竿サイズに応じた、受け手の反応フレーズ。雄でなければ ""。
+func _cock_react(partner: Goblin) -> String:
+	if partner == null or partner.sex != Goblin.Sex.MALE:
+		return ""
+	var e := Goblin.endowment(partner.id)
+	return _COCK_REACT[mini(int(e * _COCK_REACT.size()), _COCK_REACT.size() - 1)]
+
+## mating/courting の差し込みに相手の身体を足す: 相手の竿 {mate_cock}・胸 {mate_bust}・
+## 竿サイズに応じた反応 {cock_react} (ペニス/バストサイズに合わせた反応・描写に使う)。
+func _pair_fields(g: Goblin, partner: Goblin, who: String) -> Dictionary:
+	var d := _chat_fields(g, who)
+	d["mate_cock"] = _cock_desc(partner)
+	d["mate_bust"] = _bust_desc(partner)
+	d["cock_react"] = _cock_react(partner)
+	return d
+
 ## 話者の種族 + 性別でカテゴリを選ぶ (ゴブリン=<base>_g<sex> / 人間=<base>_h<sex>)。無ければ
 ## <base>_<sex> → <base> へフォールバック。ゴブリンはバカっぽく、人間は普通に喋る分離に使う
 ## (捕虜つがい系。ゴブリン捕虜=dumb / 人間捕虜=articulate)。演出 RNG のみ消費 (KI-09)。
@@ -895,10 +914,11 @@ func _pick_pair_chatter(base: String, g: Goblin, partner: Goblin, who: String) -
 	var s := _species_tag(g)
 	var x := "m" if g.sex == Goblin.Sex.MALE else "f"
 	var p := _species_tag(partner)
+	var fields := _pair_fields(g, partner, who)  # 自分+相手の身体・サイズ反応を差し込む
 	for key in ["%s_%s%s_%s" % [base, s, x, p], "%s_%s%s" % [base, s, x], "%s_%s" % [base, x], base]:
 		if not TextDB.chatter_lines(key).is_empty():
-			return TextDB.pick_chatter(key, _conv_rng, _chat_fields(g, who))
-	return TextDB.pick_chatter(base, _conv_rng, _chat_fields(g, who))
+			return TextDB.pick_chatter(key, _conv_rng, fields)
+	return TextDB.pick_chatter(base, _conv_rng, fields)
 
 ## R-18 交尾の地の文を、話者の性別・種族で文法を選び、相手の呼称 {mate} を差し込んで合成する。
 ## ゴブリン話者は mating_explicit_m/f、人間話者は mating_explicit_hm/hf。失敗時は "" (通常文面へ)。
@@ -908,12 +928,13 @@ func _mating_explicit(g: Goblin, partner: Goblin, who: String) -> String:
 		key = "mating_explicit_hf" if g.sex == Goblin.Sex.FEMALE else "mating_explicit_hm"
 	else:
 		key = "mating_explicit_f" if g.sex == Goblin.Sex.FEMALE else "mating_explicit_m"
-	# {cock}/{bust}=話者自身の身体、{mate_cock}=相手(雄)の竿、{mate}=相手の呼称。
-	# いずれも id 由来で決定的 (同じ個体は常に同じ描写)。
+	# {cock}/{bust}=話者自身の身体、{mate_cock}/{mate_bust}=相手の竿/胸、{cock_react}=相手の
+	# 竿サイズに応じた反応、{mate}=相手の呼称。いずれも id 由来で決定的 (同じ個体は常に同じ描写)。
 	return TextDB.compose(key, _conv_rng, {
 		"name": who, "mate": _mate_descriptor(partner),
 		"cock": _cock_desc(g), "bust": _bust_desc(g),
-		"mate_cock": _cock_desc(partner)})
+		"mate_cock": _cock_desc(partner), "mate_bust": _bust_desc(partner),
+		"cock_react": _cock_react(partner)})
 
 ## R-18 地の文用の相手呼称 (性別 × 種族)。相手不在なら汎用語。
 func _mate_descriptor(partner: Goblin) -> String:

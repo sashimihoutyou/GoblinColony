@@ -115,7 +115,7 @@ func _test_placeholders() -> bool:
 				ok = false
 			for m in re.search_all(line):
 				var tok := m.get_string()
-				if tok != "{name}" and tok != "{other}" and tok != "{cock}" and tok != "{bust}":
+				if tok not in ["{name}", "{other}", "{cock}", "{bust}", "{mate_cock}", "{mate_bust}", "{cock_react}"]:
 					print("  FAIL: '%s' bad placeholder %s in: %s" % [cat, tok, line])
 					ok = false
 				if tok == "{other}" and cat != "chatter_pair":
@@ -246,7 +246,8 @@ func _test_compose() -> bool:
 	for gk in ["mating_explicit_m", "mating_explicit_f", "mating_explicit_hm", "mating_explicit_hf"]:
 		for mate in ["雌", "雄", "人間の女", "人間の男"]:
 			var solo := TextDB.compose(gk, rng, {"name": "ゴブA", "mate": mate,
-					"cock": "凶悪な巨根", "bust": "たわわな巨乳", "mate_cock": "長大な逸物"})
+					"cock": "凶悪な巨根", "bust": "たわわな巨乳", "mate_cock": "長大な逸物",
+					"mate_bust": "豊かな乳房", "cock_react": "おく まで とどいて"})
 			if solo.is_empty() or solo.find("{") >= 0:
 				print("  FAIL: compose %s (mate=%s) → '%s'" % [gk, mate, solo])
 				ok = false
