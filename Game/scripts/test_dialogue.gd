@@ -24,8 +24,10 @@ const CHATTER_CATEGORIES := [
 	"concubine_gm", "concubine_gf", "pending_bond_gm", "pending_bond_gf",
 	# 人間 (アミナ/承認済み捕虜) の状態別・普通口調 (ゴブリンのバカ口調と対比)。
 	"hungry_h", "sleep_h", "work_h", "wander_h", "fear_h",
-	# 交尾の終盤=中出し/孕ませの段階 (mating_ticks 進行度 >=0.7 で出る)。
+	# 交尾の終盤=中出し/孕ませの段階 (mating_ticks 進行度 >=0.8 で出る)。
 	"mating_climax_m", "mating_climax_f", "mating_climax_hm", "mating_climax_hf",
+	# 前戯 (mating_ticks 進行度 <0.2 で出る)。
+	"mating_foreplay_m", "mating_foreplay_f",
 ]
 
 const EVENT_KEYS := [
@@ -59,6 +61,8 @@ const FEMALE_CATEGORIES := [
 	"concubine_gf", "pending_bond_gf",
 	# 中出し/孕ませ climax の雌 (ゴブリン=あたい / 人間=わたし)。
 	"mating_climax_f", "mating_climax_hf",
+	# 前戯の雌。
+	"mating_foreplay_f",
 ]
 const MALE_CATEGORIES := [
 	"courting_m", "mating_m", "concubine_m", "pending_bond_m",
@@ -69,6 +73,8 @@ const MALE_CATEGORIES := [
 	"concubine_gm", "pending_bond_gm",
 	# 中出し/孕ませ climax の雄 (ゴブリン=おれ / 人間=俺)。
 	"mating_climax_m", "mating_climax_hm",
+	# 前戯の雄。
+	"mating_foreplay_m",
 ]
 
 func _init() -> void:
@@ -241,29 +247,52 @@ func _test_gender_voice() -> bool:
 	return ok
 
 ## R-18 地の文の合成 (data/adult.json / ランダム表記)。非空・スロット取りこぼし無し・
-## {name}/{other} 解決を確認。性別別 (雄/雌) + つがい両者 + 苗床の各グラマを検証。
+## {name}/{other} 解決を確認。性別別 (雄/雌) + つがい両者 + 苗床 + 前戯 + クライマックスの各グラマを検証。
 ## 未知グラマは "" を返す。
 func _test_compose() -> bool:
 	var ok := true
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 777
+	var body_fields := {"name": "ゴブA", "mate": "雌",
+			"cock": "凶悪な巨根", "bust": "たわわな巨乳", "mate_cock": "長大な逸物",
+			"mate_bust": "豊かな乳房", "cock_react": "おく まで とどいて"}
 	# 個体視点 (ゴブリン m/f・人間 hm/hf)。相手呼称 {mate}・身体特性 {cock}/{bust}/{mate_cock} を
 	# 渡す。異種・各サイズでも {} の取りこぼしが無いこと。
 	for gk in ["mating_explicit_m", "mating_explicit_f", "mating_explicit_hm", "mating_explicit_hf"]:
 		for mate in ["雌", "雄", "人間の女", "人間の男"]:
-			var solo := TextDB.compose(gk, rng, {"name": "ゴブA", "mate": mate,
-					"cock": "凶悪な巨根", "bust": "たわわな巨乳", "mate_cock": "長大な逸物",
-					"mate_bust": "豊かな乳房", "cock_react": "おく まで とどいて"})
+			var f := body_fields.duplicate()
+			f["mate"] = mate
+			var solo := TextDB.compose(gk, rng, f)
 			if solo.is_empty() or solo.find("{") >= 0:
 				print("  FAIL: compose %s (mate=%s) → '%s'" % [gk, mate, solo])
 				ok = false
-	# つがい両者 (フィード)。{fpre}/{mpre} に種族接頭辞を渡す (異種/同種の両方)。
-	for pre in [["", ""], ["人間の ", ""], ["", "人間の "]]:
-		var pair := TextDB.compose("mating_explicit_pair", rng,
-				{"name": "ゴブA", "other": "ゴブB", "fpre": pre[0], "mpre": pre[1]})
-		if pair.is_empty() or pair.find("{") >= 0:
-			print("  FAIL: compose mating_explicit_pair (fpre=%s mpre=%s) → '%s'" % [pre[0], pre[1], pair])
+	# 前戯 (foreplay) 系: 個体視点 + サブ行為。
+	for gk in ["foreplay_m", "foreplay_f", "foreplay_hm", "foreplay_hf",
+			"foreplay_oral_m", "foreplay_oral_f", "foreplay_paizuri", "foreplay_sumata"]:
+		var solo := TextDB.compose(gk, rng, body_fields)
+		if solo.is_empty() or solo.find("{") >= 0:
+			print("  FAIL: compose %s → '%s'" % [gk, solo])
 			ok = false
+	# クライマックス (climax) 系: 個体視点。
+	for gk in ["climax_explicit_m", "climax_explicit_f", "climax_explicit_hm", "climax_explicit_hf"]:
+		var solo := TextDB.compose(gk, rng, body_fields)
+		if solo.is_empty() or solo.find("{") >= 0:
+			print("  FAIL: compose %s → '%s'" % [gk, solo])
+			ok = false
+	# つがい両者 (フィード): mating_explicit_pair + foreplay_pair。
+	for pair_key in ["mating_explicit_pair", "foreplay_pair"]:
+		for pre in [["", ""], ["人間の ", ""], ["", "人間の "]]:
+			var pair := TextDB.compose(pair_key, rng,
+					{"name": "ゴブA", "other": "ゴブB", "fpre": pre[0], "mpre": pre[1]})
+			if pair.is_empty() or pair.find("{") >= 0:
+				print("  FAIL: compose %s (fpre=%s mpre=%s) → '%s'" % [pair_key, pre[0], pre[1], pair])
+				ok = false
+	# クライマックス pair。
+	var cpair := TextDB.compose("climax_explicit_pair", rng,
+			{"name": "ゴブA", "other": "ゴブB", "fpre": "", "mpre": ""})
+	if cpair.is_empty() or cpair.find("{") >= 0:
+		print("  FAIL: compose climax_explicit_pair → '%s'" % cpair)
+		ok = false
 	# 苗床 (ゴブリン母体 / 人間母体)。
 	var nursery := ""
 	for nk in ["nursery_explicit", "nursery_explicit_human"]:

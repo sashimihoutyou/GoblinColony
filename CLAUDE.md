@@ -5,66 +5,76 @@
 ## プロジェクト概要
 
 **GoblinColony** はゴブリン・コロニーのターン/リアルタイム混在シミュレーションゲーム。
-現在は**第一期 = 描画なしの「検証済みシミュレーションコア」**に絞っている。
-
-設計思想は **力学先行・描画後回し**。GDD §12 と `known_issues` の机上検証で固めた力学を
-TypeScript に正確に移植し、その一致を機械的に保証することがスコープ。確定済みの安定帯
-（辛勝レンジ）とズレた実装を後から発見すると手戻りが大きいため、先に「力学が正しく乗っているか」
-を保証してから可視化を被せる。Unity/Godot 等のゲームエンジンには依存しない純 TypeScript 実装。
+Godot 4.6 / GDScript で実装。設計思想は **力学先行・描画後回し**。GDD §12 と `known_issues` の
+机上検証で固めた力学を正確に実装し、その一致を機械的に保証する。
 
 ## ディレクトリ構成（重要）
 
-README が記す `src/sim/` `parity/` `viz/` の階層へ整理済み。各 import パスはこの階層を前提に
-書かれている（コア同士は `./xxx.ts`、テストは `../src/sim/xxx.ts`、browser_entry は `./sim/xxx.ts`）。
-
 ```
-src/
-  browser_entry.ts          可視化用の薄い再エクスポート。
-  sim/                      コア（純粋シミュレーション層。互いに ./xxx.ts で import）
-    rng.ts params.ts cycle.ts goblin.ts state_machine.ts tick_driver.ts
-    world_state.ts world_params.ts world.ts
-parity/                     テスト + Python 照合基準（../src/sim/... を import）
-  cycle.py snapshot_test.ts state_machine_test.ts tick_driver_test.ts
-  timescale_test.ts world_test.ts
-viz/                        可視化アセット
-  dashboard_template.html goblin_colony_dashboard.html dashboard_smoke.mjs
-build_dashboard.mjs         ビルドスクリプト（リポジトリ直下から実行。src/ と viz/ を参照）
+Game/                           Godot 4.6 プロジェクト
+  data/
+    adult.json                  R-18 地の文の合成素材（ランダム表記）
+    dialogue.json               会話セリフ（状態別カテゴリ）+ 名前音節
+    messages.json               イベントフィード文面 + ラベル
+  scenes/
+    Main.tscn                   メインシーン
+  scripts/
+    sim/                        シミュレーション層（純粋力学）
+      world.gd  goblin.gd  params.gd  state_machine.gd
+      rng.gd  pathfinding.gd  tile_map.gd  map_template.gd
+      field_resource.gd  mite.gd  enemy.gd
+    render/                     演出層（描画・テキスト・名前）
+      renderer.gd  text_db.gd  gob_names.gd
+    play/                       操作層
+      controller.gd  auto_controller.gd
+    main.gd                     エントリポイント（フィード・会話ログ・R-18 地の文合成）
+    test_*.gd                   ヘッドレステスト群（20+ スイート）
+tools/
+  godot/                        Godot 4.6 バイナリ同梱（setup.sh で展開）
 ```
 
 | パス | 役割 |
 |------|------|
-| `src/sim/rng.ts` | 決定的 xorshift128 PRNG。状態を完全に保存・復元できる（KI-09）。`Math.random` は使わない。 |
-| `src/sim/params.ts` | マクロ集計サイクルの定数型 + 既定値（v5 の base）。**力学定数の単一の真実源**。 |
-| `src/sim/cycle.ts` | マクロ層。単一 state を純粋 step で 1 日進める。Python (`cycle.py`) と照合する基準。 |
-| `src/sim/world_state.ts` | World 層の状態スキーマ（個体ゴブリン配列 + レイド等）。 |
-| `src/sim/world_params.ts` | 日次サイクルのパラメータを tick ベースへ変換する。レートを再定義しない。per-tick 定数は基準解像度 `TICKS_PER_DAY_BASE=10` で校正し、`scale = ticksPerDay/10` で別解像度へ変換する（KI-02）。 |
-| `src/sim/world.ts` | World 層。全個体を 1 tick 進め、戦闘解決・出生・事故死などを処理する。 |
-| `src/sim/goblin.ts` | 個体ゴブリンの型（§5 ステート / 性格 / 役職 / 進行中フラグ）。 |
-| `src/sim/state_machine.ts` | §5 個体ステートマシン。個体 1 体・1 tick の純粋遷移（副作用なし）。 |
-| `src/sim/tick_driver.ts` | 実時間→tick 変換層。**実時間に触れるのはここだけ**（KI-09）。速度倍率・端数持ち越し。 |
-| `src/browser_entry.ts` | ブラウザ可視化用の薄い再エクスポート（コアを `globalThis.GoblinSim` に載せる）。 |
-| `parity/cycle.py` | TS 版の照合基準（Python 移植）。共有 Rng でビット単位一致を狙う。※下記「落とし穴」参照。 |
-| `parity/snapshot_test.ts` | KI-09 スナップショット往復テスト（セーブ/ロードがバイト一致するか）。 |
-| `parity/state_machine_test.ts` | §5/§8 ステートマシンの確定仕様検証。 |
-| `parity/tick_driver_test.ts` | 速度倍率・端数持ち越し・暴走防止・実時間非依存。 |
-| `parity/timescale_test.ts` | tick 解像度変換の不変性（日次レート/所要日数が解像度に依らない・KI-02）。 |
-| `parity/world_test.ts` | World 層の統合テスト。 |
-| `build_dashboard.mjs` | esbuild でコアを IIFE バンドルし HTML テンプレートへ注入、自己完結 HTML を出力。 |
-| `viz/dashboard_template.html` | `<!--CORE_BUNDLE-->` プレースホルダを持つダッシュボードのテンプレート。**編集はこちら**（`goblin_colony_dashboard.html` は生成物）。個体の移動・名前・イベントフィードはすべて演出層（このファイル内）のローカル状態で、シム状態に触れない。 |
-| `viz/dashboard_smoke.mjs` | ダッシュボードの DOM スタブ実行スモーク（ReferenceError 検出。ビルド後に実行）。 |
+| `Game/scripts/sim/world.gd` | World 層。全個体を 1 tick 進め、移動・戦闘解決・出生・事故死・襲撃を処理。 |
+| `Game/scripts/sim/goblin.gd` | 個体ゴブリンの型（§5 ステート / 性格 / 役職 / 進行中フラグ）。 |
+| `Game/scripts/sim/params.gd` | **力学定数の単一の真実源**（KI-01）。日次レートを per-tick へ変換。 |
+| `Game/scripts/sim/state_machine.gd` | §5 個体ステートマシン。1 体・1 tick の純粋遷移。 |
+| `Game/scripts/sim/rng.gd` | 決定的 xorshift128 PRNG。状態を完全に保存・復元（KI-09）。 |
+| `Game/scripts/sim/pathfinding.gd` | A* 経路探索（56×40 有機洞窟マップ）。 |
+| `Game/scripts/sim/tile_map.gd` | タイルマップデータ（部屋・巣口・床キャッシュ）。 |
+| `Game/scripts/render/text_db.gd` | 演出テキストの一元ロード。`compose()` で R-18 地の文を合成。 |
+| `Game/scripts/render/renderer.gd` | 描画層。個体の補間移動・パーティクル・UI 更新。 |
+| `Game/scripts/main.gd` | エントリポイント。フィード・会話ログ・R-18 地の文合成・操作受付。 |
+| `Game/data/adult.json` | R-18 地の文のスロット文法（`TextDB.compose` が合成）。 |
+| `Game/data/dialogue.json` | 会話セリフ + 名前音節。`TextDB.pick_chatter` が選択。 |
+| `Game/data/messages.json` | イベントフィード文面 + ラベル。`TextDB.msg` が整形。 |
 
-### Godot 版（`Game/` — game_spec_v1 P1 プロトタイプ）
+### タイムスケール
 
-`Game/` に Godot 4.6 / GDScript の別実装がある（TS コアには依存しない移植。設計の参照元は共通）。
-こちらは TS コアと違い**本物のグリッドマップ（56×40 有機洞窟） + A* + 連続移動 + 昼夜 + 勝敗判定**
-を持つ。タイムスケールは 1 tick = 0.75 実秒 × `ticks_per_day=240` = 1 日 180 秒（3x で 60 秒。昼 8 割。
-tick が細かいのは連続移動のサンプリングのため）。個体は連続座標 `fx/fy` で A* 経路上を
-速度（**タイル/日**で定義）で歩き、タイル座標 `x/y` は丸めの派生値（隣接判定など力学はタイルのまま）。
-`params.gd` が日次レートを per-tick へ変換する（KI-02。per-tick 定数を素で書かない。移動速度・
-食事消費も日次定義）。検証はヘッドレスで:
+1 tick = 0.75 実秒 × `ticks_per_day=240` = 1 日 180 秒（3x で 60 秒。昼 8 割）。
+per-tick 定数は `params.gd` が日次レートから変換する（KI-02。per-tick 定数を素で書かない）。
+
+## 守るべき不変条件 / コーディング規約
+
+- **決定的 Rng に統一**。RNG 状態は `world.rng`（xorshift128）に保存する。RNG の**消費順序を変えない**。
+- **全状態を tick の関数として閉じる（KI-09）**。セーブ/ロード往復はバイト一致が必須。
+  セーブ状態に実時間を含めない（保持するのは `tick` / `day` のみ）。
+- **力学定数は `params.gd` が単一の真実源（KI-01）**。World 層は日次レートを tick レートへ
+  *変換*するのみで、レートをその場で再定義しない。
+- 比率は小数で表現する（0.15 = 15%）。`tick` と `day` のスケールを混同しない（KI-02）。
+- **裏で難度を動かすフックは作らない**（KI-10: DDA 不採用。固定のレイドスケジュール）。
+- 既存ファイルのコメント密度・命名（`cap`=容量, `cum`=累積, `pop`=人口 等）に合わせる。
+- ステートは優先度順の数値 enum（値が小さいほど高優先）。コア層では文字列ステート名を使わない。
+- **演出テキストはシム RNG を消費しない**（KI-09）。`_conv_rng`（演出 RNG）のみ使用。
+
+## ビルド / テストコマンド
+
+`godot` が無い環境（Claude Code リモート実行等）では同梱バイナリを使う:
+`tools/godot/setup.sh` で展開し、`tools/godot/Godot_v4.6-stable_linux.x86_64` を
+`godot` の代わりに実行する（Linux x86_64 / 4.6-stable。zip 同梱・展開物は gitignore）。
 
 ```
-godot --headless --path Game --import   # 初回のみ (グローバルクラスキャッシュ生成)
+godot --headless --path Game --import                                    # 初回のみ (グローバルクラスキャッシュ生成)
 godot --headless --path Game --script res://scripts/test_smoke.gd        # SMOKE_OK (マップ検証含む)
 godot --headless --path Game --script res://scripts/test_scene_smoke.gd  # SCENE_SMOKE_OK
 godot --headless --path Game --script res://scripts/test_miracles.gd     # MIRACLES_OK (§3/§4 奇跡+ランク)
@@ -72,93 +82,24 @@ godot --headless --path Game --script res://scripts/test_dialogue.gd     # DIALO
 godot --headless --path Game --script res://scripts/test_seeds.gd        # 多シード勝率 (手動・数分)
 ```
 
-**演出テキストは `Game/data/*.json` に集約**（会話セリフ・イベント文面・名前音節）。コードを
-触らず JSON を編集するだけで増減できる（`scripts/render/text_db.gd` が読む。シム RNG 非依存 /
-KI-09）。`dialogue.json`=会話セリフ（状態別カテゴリ）+ 名前音節、`messages.json`=フィード文面 +
-ラベル。プレースホルダは `{name}`/`{other}`（会話）・`String.format` 形式（文面）。編集後は
-`test_dialogue.gd` で検証。詳細は `Game/README.md`「セリフ・テキストの編集」。
-
-`godot` が無い環境 (Claude Code リモート実行等) では同梱バイナリを使う:
-`tools/godot/setup.sh` で展開し、`tools/godot/Godot_v4.6-stable_linux.x86_64` を
-`godot` の代わりに実行する (Linux x86_64 / 4.6-stable。zip 同梱・展開物は gitignore)。
-
-詳細は `Game/README.md`。**シム (scripts/sim/) と演出 (scripts/render/) の分離は TS 側と同じ規律**
-（補間位置・パーティクル・名前は描画層ローカル。シム状態に書き込まない / KI-09）。
-
-## アーキテクチャ（層構造）
-
-各層は純粋関数 `step(state, params) → { state, log }` で、入力を破壊せず新しい state を返す。
-
-```
-マクロ層     cycle.ts        日単位。集計モデル。Python と照合済み（確定）。
-   ↓
-World 層     world.ts        tick 単位。個体集合 + 一括戦闘解決（§8 簡易ランチェスター）
-   ↓                          + 事故死の離散イベント。マクロ層と個体層の橋渡し。
-個体層       state_machine.ts 1 体・1 tick。欲求しきい値を評価し優先度順に遷移を出す。
-   ↓
-実時間層     tick_driver.ts  frame 単位。経過実時間を tick 数へ変換（速度 0/1x/3x）。
-```
-
-## 守るべき不変条件 / コーディング規約
-
-- **決定的 Rng に統一**。`Math.random` 禁止。RNG 状態は `SimState.rng`（xorshift128 の 4-tuple）に
-  保存する。RNG の**消費順序を変えない**こと（Python とのビット一致が崩れる）。
-- **全状態を tick の関数として閉じる（KI-09）**。セーブ/ロード往復はバイト一致が必須。
-  セーブ状態に実時間を含めない（保持するのは `tick` / `day` のみ）。
-- **力学定数は `params.ts` の base が単一の真実源（KI-01）**。World 層は日次レートを tick レートへ
-  *変換*するのみで、レートをその場で再定義しない。
-- **純粋関数 + 不変オブジェクト**。step は入力 state を破壊せず新しいオブジェクトを返す。
-- 比率は小数で表現する（0.15 = 15%）。`tick` と `day` のスケールを混同しない（KI-02）。
-- **裏で難度を動かすフックは作らない**（KI-10: DDA 不採用。固定のレイドスケジュール）。
-- 既存ファイルのコメント密度・JSDoc スタイル・命名（`cap`=容量, `cum`=累積, `pop`=人口 等）に合わせる。
-- ステートは優先度順の数値 enum（値が小さいほど高優先）。コア層では文字列ステート名を使わない。
-
-## ビルド / テストコマンド
-
-`package.json` 整備済み。初回は `npm install`（esbuild のみ）。リポジトリ直下から:
-
-```
-npm test               # 5 スイート (snapshot / statemachine / tickdriver / timescale / world)
-npm run parity:check   # Python ↔ TS のビット一致照合 (cycle 層・ALL_MATCH)
-npm run build          # 自己完結 HTML を viz/goblin_colony_dashboard.html へ生成
-node viz/dashboard_smoke.mjs   # ビルド後、可視化ロジックの DOM スタブスモーク
-```
-
-テストは Node ネイティブの型ストリップで直接実行している。コアが `enum`（`GoblinState` 等）を
-使うため **`--experimental-transform-types` が必須**（素の `--experimental-strip-types` だと
-enum で失敗する）。個別実行は `npm run test:world` のように（package.json 参照）。
-
-### タイムスケール（1 日 = 実時間 60 秒）
-
-ダッシュボードは `ticksPerDay=120` × `2 tick/秒` で駆動し 1 日 ≒ 60 実秒（3x で 20 秒）。
-力学の per-tick 定数（求愛率・欲求レート等）は基準解像度 10 tick/日 で校正されており、
-`makeWorldParams(ticksPerDay)` が日次レート不変のまま変換する（`scaleStateMachineParams` /
-`parity/timescale_test.ts` が保証）。**per-tick 定数を素で追加してはいけない** —
-必ず `scale = ticksPerDay / TICKS_PER_DAY_BASE` を通すこと（KI-02）。
+**演出テキストは `Game/data/*.json` に集約**。コードを触らず JSON を編集するだけで増減できる。
+編集後は `test_dialogue.gd` で検証。詳細は `Game/README.md`「セリフ・テキストの編集」。
 
 ### ⚠ 既知の落とし穴（着手前に必読）
 
-ファイル階層・import パスの不整合は解消済み。Python パリティ照合ハーネスも成立済み。
-以下は現状の注意点:
-
-- **Python パリティ照合ハーネスは成立済み。** `parity/rng.py`（rng.ts の Python 移植）+
-  `parity/cycle_ts.ts` + `parity/compare.mjs` が揃い、`npm run parity:check` が Python ↔ TS の
-  ビット一致を検証する（9 シナリオ・4050 フィールド比較で ALL_MATCH）。`cycle.py` / `rng.ts` /
-  cycle 系の RNG 消費順序を触ったら parity:check で必ず再確認すること。
-- **World 層の reproduction/襲撃系は稼働済み（KI-22〜25）。** `parity/world_test.ts` は WORLD_OK。
-  求愛→つがい→出産、人間母体の苗床、敵対度メーター、自動襲撃スケジューラ、二層襲撃の小規模側まで
-  実装・検証済み。実数バランス（一腹分布 / 人間母体倍率 / 敵対度係数 / 小規模報酬）は §15 調整対象で、
-  力学の確定前提を崩さないよう安易にいじらないこと（KI-22/25 の相互作用に注意）。
 - **Godot 第二期の実装状況は `backlog.md`、設計教訓は `known_issues_world.md` KI-27〜29 が一次情報。**
   実行時のタイル改変は床キャッシュ再構築が必須（KI-27）／autosave はテキスト精度の限界ゆえ
   「ロード後決定」を保証する設計（KI-28）／防衛・各新力学の実数は D1 で一括調整（KI-29）。
 - **サブエージェント（`isolation:worktree`）はローカル HEAD でなく古いリモート ref から分岐しうる。**
   マージ前に `git merge-base HEAD <worktree-branch>` で分岐ベースを検証し、ズレていれば差分を
   現 HEAD へ手で再適用する。完了報告を鵜呑みにせずメイン側で全スイート再検証する（AGENTS.md 詳述）。
+- **reproduction/襲撃系は稼働済み（KI-22〜25）。** 求愛→つがい→出産、人間母体の苗床、敵対度メーター、
+  自動襲撃スケジューラ、二層襲撃の小規模側まで実装・検証済み。実数バランスは §15 調整対象で、
+  力学の確定前提を崩さないよう安易にいじらないこと。
 
 ## 設計資料への入口（最初に読むべき順）
 
-1. `README.md` — 第一期サマリ・設計判断。
+1. `README.md` — プロジェクト概要。
 2. `backlog.md` — **残タスクの一次情報**（三面照合監査 `feature_gap_audit.md` が母体）。
 3. `known_issues.md` — KI-01〜KI-21 の設計教訓（過去の検証で潰したバグと解決策）。
 4. `known_issues_world.md` — World 層 / Godot 第二期の設計教訓（KI-12〜29）。
@@ -167,15 +108,14 @@ enum で失敗する）。個別実行は `npm run test:world` のように（pa
 
 ## 次の一手（残タスク）
 
-**残タスクの一次情報は `backlog.md`**（三面照合監査 `feature_gap_audit.md` が母体）。第一期（TS コア）と
-第二期（Godot 本体）の主要力学は実装・検証済み — TS 5 スイート + `parity:check`=ALL_MATCH、Godot
-ヘッドレス 15 スイートが緑。残るのは:
+**残タスクの一次情報は `backlog.md`**（三面照合監査 `feature_gap_audit.md` が母体）。
+Godot 本体の主要力学は実装・検証済み（ヘッドレス 15 スイートが緑）。残るのは:
 
 1. **B7** P2 UI 群 — 4 分割ダイヤルの資源/建築/撤去・任命 UI・ミニカード列・通知の階層化。
 2. **B11/B12** 個体成長（戦闘微経験値）・オンボーディング（初期盤面 spec 突き合わせ・助走窓・
    文脈駆動チュートリアル）。
 3. **C2** AutoController 牧場補充の矛盾修正 / **C3** §15 調整インフラ（パラメータ上書き・テレメトリ・
-   夜間バッチ自動化）/ **C4** 性能計測 / **C5** TS World 層へのランク連動移植。
+   夜間バッチ自動化）/ **C4** 性能計測。
 4. **D1** §15 実数調整（KI-29: 防衛ラインの隘路迎撃で勝率が 6/6 へ易化したのを「辛勝レンジ」へ戻す。
    C3 が前提）→ **D2** 勝敗演出 + 最終 QA。
 

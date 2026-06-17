@@ -580,9 +580,9 @@ func _push_feed_event(e: Dictionary) -> void:
 			var mm := _find_goblin(int(e.get("m", -1)))
 			var mfn: String = GobNames.of(mf) if mf != null else "雌ゴブリン"
 			var mmn: String = GobNames.of(mm) if mm != null else "雄ゴブリン"
-			# R-18 ON ならつがい成立の瞬間を露骨な地の文に ({name}=雌・{other}=雄で雄を能動側に。
+			# R-18 ON ならつがい成立の瞬間を前戯の地の文に ({name}=雌・{other}=雄で雄を能動側に。
 			# {fpre}/{mpre} に種族接頭辞を渡し異種を示す)。OFF/データ不在は通常文面 (variant) へ。
-			var mtext := TextDB.compose("mating_explicit_pair", _conv_rng, {
+			var mtext := TextDB.compose("foreplay_pair", _conv_rng, {
 					"name": mfn, "other": mmn,
 					"fpre": _species_prefix(mf), "mpre": _species_prefix(mm)}) if _explicit_on else ""
 			if mtext == "":
@@ -829,19 +829,31 @@ func _conversation_line(g: Goblin, who: String) -> String:
 	if g.mating_ticks >= 0:
 		# 交尾の相手は courting_id が指す (寝床へ留めるため完了/中断まで保持される)。
 		var partner := _find_goblin(g.courting_id)
-		# R-18 ON は性別・種族別の露骨な地の文を合成する (雄=能動 / 雌=受け、相手呼称 {mate})。
-		# 成体のつがいのみ・子供は上で除外済み。
-		if _explicit_on:
-			var ex := _mating_explicit(g, partner, who)
-			if ex != "":
-				return ex
-		# 段階: 雌の mating_ticks/所要 で進行度を測り、終盤 (>=0.7) は中出し/孕ませの climax 台詞へ。
+		# 雌の mating_ticks/所要 で進行度を測り、3 フェーズに分割する。
 		# 雄側は mating_ticks が 0 のままなので、つがいの雌 (自分 or 相手) の値で判定する。
 		var fem := g if g.sex == Goblin.Sex.FEMALE else partner
 		var prog := 0.0
 		if fem != null and world.params.mating_duration_ticks > 0:
 			prog = float(fem.mating_ticks) / float(world.params.mating_duration_ticks)
-		var base := "mating_climax" if prog >= 0.7 else "mating"
+		# R-18 ON は性別・種族別の露骨な地の文を合成する (雄=能動 / 雌=受け、相手呼称 {mate})。
+		# 成体のつがいのみ・子供は上で除外済み。
+		if _explicit_on:
+			var ex := _mating_explicit(g, partner, who, prog)
+			if ex != "":
+				return ex
+		# セリフ: FOREPLAY (<0.2) / INSERTION (0.2..0.8) / CLIMAX (>=0.8)。
+		var base: String
+		if prog < 0.2:
+			base = "mating_foreplay"
+		elif prog >= 0.8:
+			base = "mating_climax"
+		else:
+			base = "mating"
+		# foreplay カテゴリが無ければ通常の mating へフォールバック。
+		if base == "mating_foreplay":
+			var sx := "m" if g.sex == Goblin.Sex.MALE else "f"
+			if TextDB.chatter_lines("mating_foreplay_" + sx).is_empty() and TextDB.chatter_lines("mating_foreplay").is_empty():
+				base = "mating"
 		return _pick_pair_chatter(base, g, partner, who)
 	if g.courting_id >= 0:
 		return _pick_pair_chatter("courting", g, _find_goblin(g.courting_id), who)
@@ -963,21 +975,54 @@ func _pick_pair_chatter(base: String, g: Goblin, partner: Goblin, who: String) -
 			return TextDB.pick_chatter(key, _conv_rng, fields)
 	return TextDB.pick_chatter(base, _conv_rng, fields)
 
-## R-18 交尾の地の文を、話者の性別・種族で文法を選び、相手の呼称 {mate} を差し込んで合成する。
-## ゴブリン話者は mating_explicit_m/f、人間話者は mating_explicit_hm/hf。失敗時は "" (通常文面へ)。
-func _mating_explicit(g: Goblin, partner: Goblin, who: String) -> String:
+## R-18 交尾の地の文を、フェーズ・話者の性別・種族で文法を選び合成する。
+## FOREPLAY (<0.2): foreplay サブ行為 → foreplay_* キー。
+## INSERTION (0.2..0.8): mating_explicit_m/f/hm/hf。
+## CLIMAX (>=0.8): climax_explicit_m/f/hm/hf。失敗時は "" (通常文面へ)。
+func _mating_explicit(g: Goblin, partner: Goblin, who: String, prog: float) -> String:
 	var key: String
-	if g.species == Goblin.Species.HUMAN:
-		key = "mating_explicit_hf" if g.sex == Goblin.Sex.FEMALE else "mating_explicit_hm"
+	if prog < 0.2:
+		key = _foreplay_key(g, partner)
+	elif prog >= 0.8:
+		if g.species == Goblin.Species.HUMAN:
+			key = "climax_explicit_hf" if g.sex == Goblin.Sex.FEMALE else "climax_explicit_hm"
+		else:
+			key = "climax_explicit_f" if g.sex == Goblin.Sex.FEMALE else "climax_explicit_m"
 	else:
-		key = "mating_explicit_f" if g.sex == Goblin.Sex.FEMALE else "mating_explicit_m"
-	# {cock}/{bust}=話者自身の身体、{mate_cock}/{mate_bust}=相手の竿/胸、{cock_react}=相手の
-	# 竿サイズに応じた反応、{mate}=相手の呼称。いずれも id 由来で決定的 (同じ個体は常に同じ描写)。
-	return TextDB.compose(key, _conv_rng, {
+		if g.species == Goblin.Species.HUMAN:
+			key = "mating_explicit_hf" if g.sex == Goblin.Sex.FEMALE else "mating_explicit_hm"
+		else:
+			key = "mating_explicit_f" if g.sex == Goblin.Sex.FEMALE else "mating_explicit_m"
+	var fields := {
 		"name": who, "mate": _mate_descriptor(partner),
 		"cock": _cock_desc(g), "bust": _bust_desc(g),
 		"mate_cock": _cock_desc(partner), "mate_bust": _bust_desc(partner),
-		"cock_react": _cock_react(partner)})
+		"cock_react": _cock_react(partner)}
+	return TextDB.compose(key, _conv_rng, fields)
+
+## FOREPLAY のサブ行為を選び、対応する grammar_key を返す。
+## サブ行為: GENERAL / ORAL / PAIZURI (bust 条件) / SUMATA。
+func _foreplay_key(g: Goblin, partner: Goblin) -> String:
+	var acts: Array[int] = [0, 1, 3]  # GENERAL=0, ORAL=1, SUMATA=3
+	var fem: Goblin = g if g.sex == Goblin.Sex.FEMALE else partner
+	if fem != null:
+		var can_paizuri := fem.species == Goblin.Species.HUMAN or Goblin.bust(fem.id) >= 0.66
+		if can_paizuri:
+			acts.append(2)  # PAIZURI
+	var act: int = acts[_conv_rng.randi() % acts.size()]
+	var is_human := g.species == Goblin.Species.HUMAN
+	var is_male := g.sex == Goblin.Sex.MALE
+	match act:
+		1:  # ORAL
+			return "foreplay_oral_f" if not is_male else "foreplay_oral_m"
+		2:  # PAIZURI
+			return "foreplay_paizuri"
+		3:  # SUMATA
+			return "foreplay_sumata"
+		_:  # GENERAL
+			if is_human:
+				return "foreplay_hf" if not is_male else "foreplay_hm"
+			return "foreplay_f" if not is_male else "foreplay_m"
 
 ## R-18 地の文用の相手呼称 (性別 × 種族)。相手不在なら汎用語。
 func _mate_descriptor(partner: Goblin) -> String:
